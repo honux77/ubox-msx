@@ -25,6 +25,8 @@ If you want to build the example you will also need:
  - python 3
  - pillow
  - GCC (only the C compiler)
+ - Disark, one of the tools distributed with Arkos 2 Tracker (download from
+   [Arkos 2 Tracker website](http://www.julien-nevo.com/arkostracker/))
 
 If you want to build the docs you will also need:
 
