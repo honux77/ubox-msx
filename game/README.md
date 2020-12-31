@@ -4,9 +4,10 @@ This is a example game to demo and test functionality of ubox MSX lib.
 
 It has only one screen is not too exciting!
 
-In the menu press fire on any joystick or space to play with cursors.
+In the menu press fire on any joystick or space to play with cursors (space as
+fire).
 
-Use space to activate the elevators and ESC to exit the game.
+Use fire to activate the elevators and ESC to exit the game.
 
 This game is meant to be a demo, and because of that, it is simple and not
 specially optimised; but you can see that it moves the player and 7 enemies
