@@ -19,7 +19,7 @@ configure the player to remove features saving space and CPU.
 Arkos 2 Player is licensed MIT, please check `src/mplayer/akm/` directory for
 further info about configuring the player.
 
-Visit [Arkos Tracker website](http://www.julien-nevo.com/arkostracker/) to
+Visit [Arkos 2 Tracker website](http://www.julien-nevo.com/arkostracker/) to
 download the tracker.
 
 ## Exporting songs and effects
