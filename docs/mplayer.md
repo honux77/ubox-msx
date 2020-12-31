@@ -12,10 +12,6 @@ already being played or if the effect being played has less priority. The
 effect number is used as priority, being effect number 1 the one with lowest
 priority.
 
-The player comes with a generic configuration supporting all the features. If
-the songs/effects don't use everything that AKM can offer, it is possible to
-configure the player to remove features saving space and CPU.
-
 Arkos 2 Player is licensed MIT, please check `src/mplayer/akm/` directory for
 further info about configuring the player.
 
