@@ -24,12 +24,15 @@ mplayer:
 	mkdir -p lib
 	make -C src/mplayer
 
-.PHONY: clean docs ubox libs bin/game.rom
+.PHONY: clean cleanall docs ubox libs bin/game.rom
 clean:
-	rm -rf ./bin
+	rm -f ./bin/game.rom
 	make -C src/ubox clean
 	make -C src/spman clean
 	make -C src/mplayer clean
-	make -C docs clean
 	make -C game clean
+
+cleanall:
+	rm -rf ./bin
+	make -C docs clean
 
