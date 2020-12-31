@@ -32,7 +32,7 @@ clean:
 	make -C src/mplayer clean
 	make -C game clean
 
-cleanall:
+cleanall: clean
 	rm -rf ./bin
 	make -C docs clean
 
