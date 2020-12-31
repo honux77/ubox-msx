@@ -370,6 +370,8 @@ void update_player()
 
 void run_game()
 {
+    uint8_t i;
+
     // init some variables; look at game.h for description
     lives = MAX_LIVES;
     invuln = 0;
@@ -421,7 +423,7 @@ void run_game()
         // - self is a pointer to THIS entity
         // - because we don't create/destroy entities dynamically
         //   when we found one that is unused we are done
-        for (self = entities; self->type; self++)
+        for (i = 0, self = entities; i < MAX_ENTITIES && self->type; i++, self++)
             self->update();
 
         // ensure we wait to our desired update rate
