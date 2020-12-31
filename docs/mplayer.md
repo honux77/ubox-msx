@@ -13,7 +13,7 @@ effect number is used as priority, being effect number 1 the one with lowest
 priority.
 
 Arkos 2 Player is licensed MIT, please check `src/mplayer/akm/` directory for
-further info about configuring the player.
+further info.
 
 Visit [Arkos Tracker 2 website](http://www.julien-nevo.com/arkostracker/) to
 download the tracker.
