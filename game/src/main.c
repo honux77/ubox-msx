@@ -75,7 +75,7 @@ void draw_game_over()
     // play game over music
     mplayer_init(SONG, SONG_GAME_OVER);
 
-    wait_for(128);
+    ubox_wait_for(128);
 }
 
 void main()
@@ -126,7 +126,7 @@ redraw_menu:
         if (ctl != UBOX_MSX_CTL_NONE)
         {
             mplayer_play_effect_p(EFX_START, EFX_CHAN_NO, 0);
-            wait_for(16);
+            ubox_wait_for(16);
 
             // play the game
             run_game();
