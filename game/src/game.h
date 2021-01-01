@@ -115,7 +115,7 @@ LOCAL uint8_t lives;
 LOCAL uint8_t invuln;
 // batteries left
 LOCAL uint8_t batteries;
-// show dome delay once the lives run out
+// show some delay once the lives run out
 LOCAL uint8_t gameover_delay;
 
 // used by all entities
