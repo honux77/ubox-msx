@@ -2,7 +2,7 @@
 
 This is a example game to demo and test functionality of ubox MSX lib.
 
-It has only one screen is not too exciting!
+It has only one screen, is not too exciting!
 
 In the menu press fire on any joystick or space to play with cursors (space as
 fire).
