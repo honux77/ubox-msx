@@ -103,9 +103,10 @@ LOCAL struct entity entities[MAX_ENTITIES];
 // used to read our control method
 LOCAL uint8_t control;
 
-// current map; we don't use ROM because we will modify it
+// current map; pointer in ROM
 LOCAL const uint8_t *cur_map;
 // current map tile map (map data, not entities)
+// we don't use ROM because we will modify it
 LOCAL uint8_t cur_map_data[MAP_W * MAP_H];
 
 // player lives
