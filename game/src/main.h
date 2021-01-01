@@ -21,7 +21,7 @@ enum songs
 // we will use 0 and 1 for the music
 #define EFX_CHAN_NO 2
 
-// sound effects matching our Arkos efc song
+// sound effects matching our Arkos efx song
 // configure the song to use MSX AY
 enum effects
 {
