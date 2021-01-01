@@ -61,7 +61,7 @@ See the example game and the commands run automatically for further details.
 
 ### Exporting the song
 
-In Arkos 2 Tracker, export the song as "AKM", using "Export as source file" and
+In Arkos Tracker 2, export the song as "AKM", using "Export as source file" and
 "Generate configuration file for players".
 
 Save the file as `song.asm`.
@@ -70,7 +70,7 @@ It should create `song_playerconfig.asm` in the same directory.
 
 ### Exporting the effects
 
-In Arkos 2 Tracker, export the effects as "AKX", using "Export as source file" and
+In Arkos Tracker 2, export the effects as "AKX", using "Export as source file" and
 "Generate configuration file for players".
 
 Save the file as `effects.asm`.
