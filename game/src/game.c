@@ -44,7 +44,7 @@ void init_map_entities()
         entities[last].x = m[1];
         entities[last].y = m[2];
         // in the map: param is 1 (int) to look left
-        entities[last].dir = m[0] & DIR_FLAG ? 1 : 0;
+        entities[last].dir = m[0] & DIR_FLAG ? DIR_LEFT : DIR_RIGHT;
 
         switch (typ)
         {
