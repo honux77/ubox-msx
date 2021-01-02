@@ -36,3 +36,11 @@ just fine and **it is a good example on how to write a game in C for the MSX**.
 
 The graphics, music and sound are CC BY NC SA 4.0 (basically: no commercial).
 
+## External tools
+
+ - [Tiled](https://www.mapeditor.org/) was used to edit the game map, via JSON
+   export (see `map.json`)
+ - All the graphics were drawn with [GIMP](https://www.gimp.org/)
+ - The music and sound effects were made with [Arkos Tracker
+   2](http://www.julien-nevo.com/arkostracker/)
+
