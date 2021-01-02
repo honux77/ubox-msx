@@ -283,13 +283,13 @@ void ubox_fill_screen(uint8_t tile) __z88dk_fastcall;
  * preserved or used.
  *
  * For performance reasons the BIOS keyboard buffer and key repeat functionality
- * are disabled, and because of that the some BIOS functions, such as `CHGET`,
+ * are disabled, and because of that some BIOS functions, such as `CHGET`,
  * won't work.
  */
 void ubox_init_isr(uint8_t wait_ticks) __z88dk_fastcall;
 
 /**
- * Installs an user interrupt handler.
+ * Installs a user interrupt handler.
  *
  * The function pointed by `fn` doesn't need to preserve any registers because
  * that is done by the main interrupt handler.
