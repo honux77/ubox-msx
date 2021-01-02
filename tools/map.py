@@ -200,8 +200,10 @@ def main():
                     parser.error("max_bytes: no 'bytes' found for %r" % name)
 
         try:
-            objs = sorted(
-                entities_layer["objects"], key=lambda o: et_names.index(o["name"].lower()))
+            objs = entities_layer["objects"]
+            objs.sort(key=lambda o: o["y"])
+            objs.sort(key=lambda o: o["x"])
+            objs.sort(key=lambda o: et_names.index(o["name"].lower()))
         except ValueError:
             parser.error("map has an unnamed object")
 
