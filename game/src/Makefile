@@ -9,6 +9,7 @@ ROM_MAX=8000
 
 OUTPUT=../build
 OBJS = $(patsubst %.c,$(OUTPUT)/%.rel,$(wildcard *.c)) $(OUTPUT)/akm.rel
+UBOX_LIBS = $(wildcard ../../lib/*.lib)
 LIBS = -lubox -lspman -lmplayer
 
 CC=sdcc
@@ -35,7 +36,7 @@ $(OUTPUT)/akm.rel: akm.z80 song.asm effects.asm
 	Disark --sourceProfile sdcc --symbolFile $(OUTPUT)/akm.sym --src16bitsValuesInHex --src8bitsValuesInHex --undocumentedOpcodesToBytes $(OUTPUT)/akm.bin $(OUTPUT)/akm_sdcc.asm
 	$(AS) -g -o $@ $(OUTPUT)/akm_sdcc.asm
 
-$(OUTPUT)/$(TARGET).rom: $(OBJS) $(OUTPUT)/crt0.rel ../../lib/*.lib
+$(OUTPUT)/$(TARGET).rom: $(OBJS) $(OUTPUT)/crt0.rel $(UBOX_LIBS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LIBS) --code-loc $(CODE) --data-loc $(DATA) $(OUTPUT)/crt0.rel $(OBJS) -o $(OUTPUT)/$(TARGET).ihx
 	../../bin/hex2bin -e bin -p 00 -l $(ROM_MAX) $(OUTPUT)/$(TARGET).ihx
 	mv $(OUTPUT)/$(TARGET).bin ../bin/$(TARGET).rom
