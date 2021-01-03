@@ -2,6 +2,7 @@
 
 ## Release ? - ?
 
+ - Improved windows compatibility
  - Small doc fixes
  - Improvements in the example game
 
