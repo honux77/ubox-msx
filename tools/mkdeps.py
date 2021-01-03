@@ -61,7 +61,8 @@ def main():
         with open(args.deps, "wt") as fd:
             fd.write(new)
     else:
-        print("%r didn't change, skipping" % args.deps)
+        if args.verbose:
+            print("%r didn't change, skipping" % args.deps)
 
 
 if __name__ == "__main__":
