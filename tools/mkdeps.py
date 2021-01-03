@@ -38,7 +38,7 @@ def main():
     inc = ["-I%s" % d for d in args.include.split(":")]
     cmd = ["sdcc", "-MM"] + inc
     result = []
-    for d in glob.glob(os.path.join(args.dir, "*.c")):
+    for d in sorted(glob.glob(os.path.join(args.dir, "*.c"))):
         if args.verbose:
             print("running %r" % ' '.join(cmd + [d]))
         out = subprocess.run(cmd + [d], stdout=subprocess.PIPE,
