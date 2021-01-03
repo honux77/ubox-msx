@@ -1,11 +1,10 @@
 all: libs
 
-libs: ubox spman mplayer
+libs: lib ubox spman mplayer
 
-game: libs bin/game.rom
+game: bin libs bin/game.rom
 
 bin/game.rom:
-	mkdir -p ./bin
 	make -C tools
 	make -C game
 
@@ -13,15 +12,12 @@ docs:
 	make -C docs
 
 ubox:
-	mkdir -p lib
 	make -C src/ubox
 
 spman:
-	mkdir -p lib
 	make -C src/spman
 
 mplayer:
-	mkdir -p lib
 	make -C src/mplayer
 
 .PHONY: clean cleanall docs ubox libs bin/game.rom
@@ -32,7 +28,13 @@ clean:
 	make -C src/mplayer clean
 	make -C game clean
 
+lib:
+	mkdir -p ./lib
+
+bin:
+	mkdir -p ./bin
+
 cleanall: clean
-	rm -rf ./bin
+	rm -rf ./bin ./lib
 	make -C docs clean
 
