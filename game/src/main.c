@@ -3,7 +3,7 @@
 #include "ubox.h"
 #include "mplayer.h"
 
-#include "aux.h"
+#include "helpers.h"
 #include "game.h"
 
 #define LOCAL

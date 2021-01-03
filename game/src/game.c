@@ -5,7 +5,7 @@
 #include "spman.h"
 #include "mplayer.h"
 
-#include "aux.h"
+#include "helpers.h"
 #include "main.h"
 
 #define LOCAL

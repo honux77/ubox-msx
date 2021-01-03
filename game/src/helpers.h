@@ -1,5 +1,5 @@
-#ifndef _AUX_H
-#define _AUX_H
+#ifndef _HELPERS_H
+#define _HELPERS_H
 
 #include <stdint.h>
 
@@ -9,4 +9,4 @@
 
 void put_text(uint8_t x, uint8_t y, const uint8_t *text);
 
-#endif // _AUX_H
+#endif // _HELPERS_H

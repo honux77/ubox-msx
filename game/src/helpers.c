@@ -2,7 +2,7 @@
 
 #include "ubox.h"
 
-#include "aux.h"
+#include "helpers.h"
 
 /**
  * Put a zero terminated string on the screen using tiles.
