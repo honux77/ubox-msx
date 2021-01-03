@@ -29,7 +29,8 @@ def main():
                         help="Enable verbose output")
 
     parser.add_argument("dir", help="Directory to scan")
-    parser.add_argument("deps", help="Dependencies makefile")
+    parser.add_argument(
+        "deps", help="Dependencies file (to include in Makefile)")
 
     args = parser.parse_args()
 
