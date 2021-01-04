@@ -24,7 +24,7 @@ def main():
     parser.add_argument("-b", "--build-dir", dest="build", default=None, type=str,
                         help="Directory to build")
     parser.add_argument("-I", "--include", dest="include", default=None, type=str,
-                        help="Include directory")
+                        help="Include directory (for multiple directories, use : as separator)")
     parser.add_argument("-v", "--verbose", dest="verbose", action="store_true",
                         help="Enable verbose output")
 
