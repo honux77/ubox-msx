@@ -14,7 +14,7 @@ specially optimised; but you can see that it moves the player and 7 enemies
 just fine and **it is a good example on how to write a game in C for the MSX**.
 
     GREEN, a demo for ubox MSX lib
-    Copyright (C) 2020 by Juan J. Martinez <jjm@usebox.net>
+    Copyright (C) 2020-2021 by Juan J. Martinez <jjm@usebox.net>
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
