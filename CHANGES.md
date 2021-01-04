@@ -1,6 +1,6 @@
 # What's new?
 
-## Release ? - ?
+## Release 1.0.3 - 2021-01-04
 
  - Improved windows compatibility
  - Small doc fixes
