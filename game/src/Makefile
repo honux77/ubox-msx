@@ -20,7 +20,7 @@ LDFLAGS = -L../../lib -L. --no-std-crt0 --fomit-frame-pointer
 
 all: $(OUTPUT)/$(TARGET).rom
 	@../../tools/chksize 8000 4000 $(OUTPUT)/$(TARGET).map
-	cp ../bin/$(TARGET).rom ../../bin
+	@cp ../bin/$(TARGET).rom ../../bin
 
 openmsx: all
 	openmsx -carta $(OUTPUT)/$(TARGET).rom -machine msx1
@@ -32,17 +32,18 @@ $(OUTPUT)/%.rel: %.z80
 	$(AS) -g -o $@ $<
 
 $(OUTPUT)/akm.rel: akm.z80 song.asm effects.asm
-	../../bin/rasm akm.z80 -o $(OUTPUT)/akm -s -sl -sq
+	rasm akm.z80 -o $(OUTPUT)/akm -s -sl -sq
 	Disark --sourceProfile sdcc --symbolFile $(OUTPUT)/akm.sym --src16bitsValuesInHex --src8bitsValuesInHex --undocumentedOpcodesToBytes $(OUTPUT)/akm.bin $(OUTPUT)/akm_sdcc.asm
 	$(AS) -g -o $@ $(OUTPUT)/akm_sdcc.asm
 
 $(OUTPUT)/$(TARGET).rom: $(OBJS) $(OUTPUT)/crt0.rel $(UBOX_LIBS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LIBS) --code-loc $(CODE) --data-loc $(DATA) $(OUTPUT)/crt0.rel $(OBJS) -o $(OUTPUT)/$(TARGET).ihx
-	../../bin/hex2bin -e bin -p 00 -l $(ROM_MAX) $(OUTPUT)/$(TARGET).ihx
-	mv $(OUTPUT)/$(TARGET).bin ../bin/$(TARGET).rom
+	hex2bin -e bin -p 00 -l $(ROM_MAX) $(OUTPUT)/$(TARGET).ihx
+	@cp $(OUTPUT)/$(TARGET).bin ../bin/$(TARGET).rom
 
 clean:
 	rm -f $(OUTPUT)/*
+	rm -f ../bin/$(TARGET).rom ../../bin/$(TARGET).rom
 
 .PHONY: all clean
 

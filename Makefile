@@ -1,10 +1,10 @@
 all: libs
 
+export PATH := $(shell realpath ./bin):$(PATH)
+
 libs: lib ubox spman mplayer
 
-game: bin libs bin/game.rom
-
-bin/game.rom:
+game: bin libs
 	make -C tools
 	make -C game
 
@@ -20,9 +20,8 @@ spman:
 mplayer:
 	make -C src/mplayer
 
-.PHONY: clean cleanall docs ubox libs bin/game.rom
+.PHONY: clean cleanall docs libs game
 clean:
-	rm -f ./bin/game.rom
 	make -C src/ubox clean
 	make -C src/spman clean
 	make -C src/mplayer clean
