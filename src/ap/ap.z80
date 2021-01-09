@@ -29,7 +29,7 @@ _ap_uncompress::
         ld h, (hl)
         ld l, a
 
-ap_depack::
+ap_uncompress::
         ld ixl, #128
 
 apbranch1:
