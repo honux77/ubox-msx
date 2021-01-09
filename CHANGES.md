@@ -1,5 +1,9 @@
 # What's new?
 
+## Release 1.1.0 - 2021-01-09
+
+ - Added extra libs: aPLib support
+
 ## Release 1.0.3 - 2021-01-04
 
  - Improved windows compatibility
