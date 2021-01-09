@@ -4,6 +4,7 @@
 #include "ubox.h"
 #include "spman.h"
 #include "mplayer.h"
+#include "ap.h"
 
 #include "helpers.h"
 #include "main.h"
@@ -383,9 +384,9 @@ void run_game()
 
     // we only have one map, select it
     cur_map = map[0];
-    // copy map data into RAM, we will modify it
+    // uncompress map data into RAM, we will modify it
     // map data starts on byte 3 (skip map data size and entities size)
-    memcpy(cur_map_data, cur_map + 3, MAP_W * MAP_H);
+    ap_uncompress(cur_map_data, cur_map + 3);
 
     // init entities before drawing
     init_map_entities();

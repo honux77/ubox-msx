@@ -13,7 +13,7 @@ $(OUTPUT)/enemy.h: enemy.png
 	../../tools/png2sprites.py -i enemy_sprite $< > $@
 
 $(OUTPUT)/map.h: map.json map_conf.json
-	../../tools/map.py --max-ents 11 --room-height 21 map.json map > $@
+	../../tools/map.py --aplib --max-ents 11 --room-height 21 map.json map > $@
 
 .PHONY: all clean
 clean:

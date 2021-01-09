@@ -10,7 +10,7 @@ ROM_MAX = 8000
 OUTPUT = ../build
 OBJS = $(patsubst %.c,$(OUTPUT)/%.rel,$(wildcard *.c)) $(OUTPUT)/akm.rel
 UBOX_LIBS = $(wildcard ../../lib/*.lib)
-LIBS = -lubox -lspman -lmplayer
+LIBS = -lubox -lspman -lmplayer -lap
 
 CC = sdcc
 AS = sdasz80
