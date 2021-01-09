@@ -1,5 +1,10 @@
 # What's new?
 
+## Release 1.1.1 - 2021-01-09
+
+ - Fix in ap.lib; the asm export was wrong
+ - Added aplib support to the example game: the map is compressed
+
 ## Release 1.1.0 - 2021-01-09
 
  - Added extra libs: aPLib support
