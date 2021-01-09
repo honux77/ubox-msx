@@ -1,4 +1,4 @@
-BIN=../bin/hex2bin ../bin/rasm
+BIN=../bin/hex2bin ../bin/rasm ../bin/apultra
 
 all: $(BIN)
 
@@ -10,6 +10,9 @@ all: $(BIN)
 
 ../bin/rasm:
 	make -C rasm
+
+../bin/apultra:
+	make -C apultra
 
 .PHONY: all clean
 clean:

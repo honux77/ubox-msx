@@ -1,18 +1,22 @@
-all: msx-lib-ref.html spman-lib-ref.html mplayer-lib-ref.html
+all: ubox-lib-ref.html spman-lib-ref.html mplayer-lib-ref.html extra-lib-ref.html
 
-msx-lib-ref.html: ../include/ubox.h ../tools/hdoc.py footer.md header.html
+ubox-lib-ref.html: ../include/ubox.h ../tools/hdoc.py footer.md header.html
 	../tools/hdoc.py --footer footer.md "ubox.lib reference" < ../include/ubox.h > reference.ubox.md
-	pandoc -s -t html5 -c water.css -c monokai.css --toc --no-highlight -F ../tools/pandocfilter-pygments.py -B header.html reference.ubox.md -o ubox-lib-ref.html
+	pandoc -s -t html5 -c water.css -c monokai.css --toc --no-highlight -F ../tools/pandocfilter-pygments.py -B header.html reference.ubox.md -o $@
 
 spman-lib-ref.html: ../include/spman.h ../tools/hdoc.py footer.md spman.md header.html
 	../tools/hdoc.py --header spman.md --footer footer.md "spman.lib reference" < ../include/spman.h > reference.spman.md
-	pandoc -s -t html5 -c water.css -c monokai.css --toc --no-highlight -F ../tools/pandocfilter-pygments.py -B header.html reference.spman.md -o spman-lib-ref.html
+	pandoc -s -t html5 -c water.css -c monokai.css --toc --no-highlight -F ../tools/pandocfilter-pygments.py -B header.html reference.spman.md -o $@
 
 mplayer-lib-ref.html: ../include/mplayer.h ../tools/hdoc.py footer.md mplayer.md header.html
 	../tools/hdoc.py --header mplayer.md --footer footer.md "mplayer.lib reference" < ../include/mplayer.h > reference.mplayer.md
-	pandoc -s -t html5 -c water.css -c monokai.css --toc --no-highlight -F ../tools/pandocfilter-pygments.py -B header.html reference.mplayer.md -o mplayer-lib-ref.html
+	pandoc -s -t html5 -c water.css -c monokai.css --toc --no-highlight -F ../tools/pandocfilter-pygments.py -B header.html reference.mplayer.md -o $@
+
+extra-lib-ref.html: ../include/ap.h ../tools/hdoc.py footer.md extra.md header.html
+	../tools/hdoc.py --header extra.md --footer footer.md "extra libs reference" < ../include/ap.h > reference.extra.md
+	pandoc -s -t html5 -c water.css -c monokai.css --toc --no-highlight -F ../tools/pandocfilter-pygments.py -B header.html reference.extra.md -o $@
 
 clean:
-	rm -f ubox-lib-ref.html spman-lib-ref.html mplayer-lib-ref.html reference.ubox.md reference.spman.md reference.mplayer.md
+	rm -f *-lib-ref.html reference.*.md
 
 .PHONY: clean all

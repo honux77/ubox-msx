@@ -3,7 +3,7 @@
 This is a set of libraries and tools to make MSX games using the C programming
 language.
 
-There are three components:
+There are three main components:
 
   - **ubox**: thin wrapper around MSX 1 BIOS, focusing on Screen 2 and 32K
     cartridge ROMs.
