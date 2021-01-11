@@ -1,5 +1,9 @@
 # What's new?
 
+## Release 1.1.2 - 2021-01-11
+
+ - Added missing files that prevented apultra from building
+
 ## Release 1.1.1 - 2021-01-09
 
  - Fix in ap.lib; the asm export was wrong
