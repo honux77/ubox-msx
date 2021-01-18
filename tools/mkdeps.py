@@ -35,7 +35,7 @@ def main():
     args = parser.parse_args()
 
     fix_path = args.dir if args.build is None else args.build
-    fix_path = r"%s\1" % (fix_path.rstrip(os.sep) + os.sep)
+    fix_path = r"%s\1" % (fix_path.strip("/") + "/").replace("\\", "\\\\")
     inc = ["-I%s" % d for d in args.include.split(":")]
     cmd = ["sdcc", "-MM"] + inc
     result = []
@@ -47,7 +47,8 @@ def main():
         if out.returncode:
             sys.exit("Error: %s" % out.stderr)
 
-        result.append(re.sub(FIX_RE, fix_path, out.stdout.decode('utf-8')))
+        out = out.stdout.decode('utf-8').strip()
+        result.append(re.sub(FIX_RE, fix_path, out))
 
     try:
         old = open(args.deps, "rt").read()
@@ -56,7 +57,7 @@ def main():
             print("%r not found, will generate" % args.deps)
         old = None
 
-    new = ''.join(result)
+    new = '\n'.join(result)
 
     if new != old:
         with open(args.deps, "wt") as fd:
