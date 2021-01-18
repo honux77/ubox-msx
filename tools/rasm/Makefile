@@ -1,7 +1,7 @@
 all: rasm
 
 rasm: rasm_v0120.c
-	gcc -s -O2 $< -o $@ -lm -lrt -march=native
+	$(CC) $< -s -O2 -lm -lrt -march=native -o $@
 	cp rasm ../../bin
 	rm -f rasm
 
