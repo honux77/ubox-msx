@@ -21,11 +21,17 @@ OBJS += $(OBJDIR)/src/libdivsufsort/lib/trsort.o
 
 all: $(APP)
 
+ifdef ($(OS),Windows_NT)
+    TARGET = apultra.exe
+else
+    TARGET = apultra
+endif
+
 $(APP): $(OBJS)
 	$(CC) $^ $(LDFLAGS) -o $(APP)
-	cp $(APP) ../../bin
-	@rm -rf $(APP) $(OBJDIR)
+	cp $(TARGET) ../../bin
+	@rm -rf $(TARGET) $(OBJDIR)
 
 clean:
-	@rm -rf $(APP) $(OBJDIR)
+	@rm -rf $(TARGET) $(OBJDIR)
 

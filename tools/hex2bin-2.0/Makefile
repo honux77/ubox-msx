@@ -17,6 +17,12 @@ CPFLAGS = -std=gnu99 -O3 -fsigned-char -Wall -pedantic
 # Compile
 all: objectdir $(TGT_FILES)
 
+ifdef ($(OS),Windows_NT)
+    TARGET = hex2bin.exe
+else
+    TARGET = hex2bin
+endif
+
 $(OBJDIR)/%.o: $(SRCDIR)/%.c
 	gcc -c $(CPFLAGS) $< -o $@
 
@@ -29,6 +35,7 @@ $(TGTDIR)/hex2bin.1: $(SRCDIR)/hex2bin.pod
 
 $(TGTDIR)/hex2bin: $(B_OBJFILES)
 	gcc $(CPFLAGS) -o $(TGTDIR)/hex2bin $(B_OBJFILES)
+	cp bin/$(TARGET) ../../bin
 
 $(TGTDIR)/mot2bin: $(M_OBJFILES)
 	gcc $(CPFLAGS) -o $(TGTDIR)/mot2bin $(M_OBJFILES)
