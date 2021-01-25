@@ -1,11 +1,11 @@
-LIB=../../lib/mplayer.lib
+LIB := ../../lib/mplayer.lib
 all: $(LIB)
 
-AS=sdasz80
-AR=sdar
+AS := sdasz80
+AR := sdar
 
-SOURCES=$(wildcard *.z80)
-OBJS=$(patsubst %.z80,%.rel,$(SOURCES))
+SOURCES := $(wildcard *.z80)
+OBJS := $(patsubst %.z80,%.rel,$(SOURCES))
 
 $(LIB): $(OBJS)
 	$(AR) -rcD $(LIB) $(OBJS)

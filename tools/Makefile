@@ -1,4 +1,4 @@
-BIN=../bin/hex2bin ../bin/rasm ../bin/apultra
+BIN := ../bin/hex2bin ../bin/rasm ../bin/apultra
 
 all: $(BIN)
 

@@ -1,11 +1,11 @@
-LIB=../../lib/ubox.lib
+LIB := ../../lib/ubox.lib
 all: $(LIB)
 
-AS=sdasz80
-AR=sdar
+AS := sdasz80
+AR := sdar
 
-SOURCES=$(wildcard ubox_*.z80)
-OBJS=$(patsubst %.z80,%.rel,$(SOURCES))
+SOURCES := $(wildcard ubox_*.z80)
+OBJS := $(patsubst %.z80,%.rel,$(SOURCES))
 
 $(LIB): $(OBJS)
 	$(AR) -rcD $(LIB) $(OBJS)

@@ -1,5 +1,5 @@
-OUTPUT=../generated
-GENERATED=$(OUTPUT)/tiles.h $(OUTPUT)/player.h $(OUTPUT)/enemy.h $(OUTPUT)/map.h
+OUTPUT := ../generated
+GENERATED := $(OUTPUT)/tiles.h $(OUTPUT)/player.h $(OUTPUT)/enemy.h $(OUTPUT)/map.h
 
 all: $(GENERATED)
 
