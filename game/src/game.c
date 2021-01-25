@@ -434,7 +434,7 @@ void run_game()
     }
 
     // stop the in game music
-    mplayer_init(SONG, SONG_IN_GAME);
+    mplayer_init(SONG, SONG_SILENCE);
     // hide all the sprites before going back to the menu
     spman_hide_all_sprites();
 }
