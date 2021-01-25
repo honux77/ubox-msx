@@ -1,5 +1,9 @@
 # What's new?
 
+## Release 1.1.3 - 2021-01-25
+
+ - Yet more Windows compatibility changes
+
 ## Release 1.1.2 - 2021-01-11
 
  - Added missing files that prevented apultra from building
