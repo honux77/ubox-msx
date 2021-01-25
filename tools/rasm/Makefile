@@ -1,13 +1,17 @@
 all: rasm
 
+CC := gcc
+
 ifdef ($(OS),Windows_NT)
-    TARGET = rasm.exe
+    TARGET := rasm.exe
+    LDFLAGS := -lrtm
 else
-    TARGET = rasm
+    TARGET := rasm
+    LDFLAGS := -lm -lrt
 endif
 
 rasm: rasm_v0120.c
-	$(CC) $< -s -O2 -lm -lrt -march=native -o $@
+	$(CC) $< -s -O2 $(LDFLAGS) -march=native -o $@
 	cp $(TARGET) ../../bin
 	rm -f $(TARGET)
 

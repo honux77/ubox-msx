@@ -1,6 +1,6 @@
 all: libs
 
-export PATH := $(shell realpath ./bin):$(PATH)
+export PATH := $(PWD)/bin:$(PATH)
 
 libs: lib ubox spman mplayer ap
 
