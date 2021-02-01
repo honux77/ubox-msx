@@ -35,7 +35,7 @@ Notes on **Disark**:
   - It is not open source yet, so it needs to be put in the PATH. It is
     distributed as part of Arkos 2 Traker tools.
   - Because it uses uppercase labels, the variable exported and accessible from
-    C will be all uppercase. For exampler: for `song` we will use `SONG`.
+    C will be all uppercase. For example: for `song` we will use `SONG`.
 
 This is automated, and the only counter-intuitive step is making an ASM file
 for **rasm** such as:
