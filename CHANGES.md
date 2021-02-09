@@ -1,5 +1,11 @@
 # What's new?
 
+## Release 1.1.4 - 2021-02-09
+
+ - Even more Windows compatibility changes. Now it should successfully build on
+   Windows 10, without big changes (if any)
+ - Small fix in the example game stopping the music
+
 ## Release 1.1.3 - 2021-01-25
 
  - Yet more Windows compatibility changes
