@@ -47,7 +47,7 @@ def main():
         if out.returncode:
             sys.exit("Error: %s" % out.stderr)
 
-        out = out.stdout.decode('utf-8').strip()
+        out = out.stdout.decode('utf-8').strip("\n\r")
         result.append(re.sub(FIX_RE, fix_path, out))
 
     try:
