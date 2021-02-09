@@ -28,6 +28,12 @@ If you want to build the example you will also need:
  - Disark, one of the tools distributed with Arkos Tracker 2 (download from
    [Arkos Tracker 2 website](http://www.julien-nevo.com/arkostracker/))
 
+On Windows 10, there are reports of successful builds using:
+
+ - latest version of Cygwin64 with package for gcc-core 10.2.0-1
+ - SDCC 4.0.0
+ - python 3.9.1
+
 If you want to build the docs you will also need:
 
  - pandoc
