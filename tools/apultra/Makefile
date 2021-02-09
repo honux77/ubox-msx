@@ -21,7 +21,7 @@ OBJS += $(OBJDIR)/src/libdivsufsort/lib/trsort.o
 
 all: $(APP)
 
-ifdef ($(OS),Windows_NT)
+ifeq ($(OS),Windows_NT)
     TARGET = apultra.exe
 else
     TARGET = apultra

@@ -1,13 +1,12 @@
 all: rasm
 
 CC := gcc
+LDFLAGS := -lm -lrt
 
-ifdef ($(OS),Windows_NT)
+ifeq ($(OS),Windows_NT)
     TARGET := rasm.exe
-    LDFLAGS := -lrtm
 else
     TARGET := rasm
-    LDFLAGS := -lm -lrt
 endif
 
 rasm: rasm_v0120.c

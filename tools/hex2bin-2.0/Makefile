@@ -17,7 +17,7 @@ CPFLAGS = -std=gnu99 -O3 -fsigned-char -Wall -pedantic
 # Compile
 all: objectdir $(TGT_FILES)
 
-ifdef ($(OS),Windows_NT)
+ifeq ($(OS),Windows_NT)
     TARGET = hex2bin.exe
 else
     TARGET = hex2bin
