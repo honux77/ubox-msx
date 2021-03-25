@@ -10,8 +10,8 @@ _mplayer_init::
 	ld h, 1 (ix)
 	ld a, 2 (ix)
 
-        di
+	di
 	call _PLY_AKM_INIT
-        ei
+	ei
 
-        ret
+	ret
