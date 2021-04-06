@@ -118,7 +118,7 @@ void main()
 redraw_menu:
     draw_menu();
 
-    // whait until fire is pressed
+    // wait until fire is pressed
     // can be space (control will be cursors), or any fire button on a joystick
     while (1)
     {
