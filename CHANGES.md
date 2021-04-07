@@ -1,5 +1,9 @@
 # What's new?
 
+## Release 1.1.5 - 2021-04-07
+
+ - Small fix in mplayer to prevent issues changing song
+
 ## Release 1.1.4 - 2021-02-09
 
  - Even more Windows compatibility changes. Now it should successfully build on
