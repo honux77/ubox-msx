@@ -59,8 +59,8 @@ def main():
                         help="variable name (default: sprites)")
     parser.add_argument("-a", "--asm", dest="asm", action="store_true",
                         help="ASM output (default: C header)")
-    parser.add_argument("-c", "--colors", dest="colors", action="store_true",
-                        help="print frame color as comment (default: false)")
+    parser.add_argument("-c", "--colors", dest="frame_colors", action="store_true",
+                        help="include frame color as a comment")
 
     parser.add_argument("image", help="image to convert")
 
@@ -114,7 +114,7 @@ def main():
 
         for i, frame in enumerate(out):
             print("%s_frame%d:" % (args.id, i))
-            if args.colors:
+            if args.frame_colors:
                 print("\t; color: #%02x%02x%02x" % (frame_colors[i][0],
                                                     frame_colors[i][1],
                                                     frame_colors[i][2]))
@@ -127,7 +127,7 @@ def main():
 
         data_out = ""
         for i, frame in enumerate(out):
-            if args.colors:
+            if args.frame_colors:
                 data_out += '/* color: 0x%02x%02x%02x */\n' % (frame_colors[i][0],
                                                                frame_colors[i][1],
                                                                frame_colors[i][2])
