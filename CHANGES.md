@@ -1,5 +1,13 @@
 # What's new?
 
+## Release 1.x.0 - ????-??-??
+
+ - Added a new `-c` flag to `png2sprites.py` to include the frame colour as
+   a comment. This works as a reference and should make easier assign colours
+   to frames later on in the game's code.
+
+   Thanks to Pedro de Medeiros for the feature!
+
 ## Release 1.1.5 - 2021-04-07
 
  - Small fix in mplayer to prevent issues changing song
