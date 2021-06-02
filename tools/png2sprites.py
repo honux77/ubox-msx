@@ -59,6 +59,8 @@ def main():
                         help="variable name (default: sprites)")
     parser.add_argument("-a", "--asm", dest="asm", action="store_true",
                         help="ASM output (default: C header)")
+    parser.add_argument("-c", "--colors", dest="colors", action="store_true",
+                        help="print frame color as comment (default: false)")
 
     parser.add_argument("image", help="image to convert")
 
@@ -81,6 +83,7 @@ def main():
     data = image.getdata()
 
     out = []
+    frame_colors = []
     for y in range(0, h, DEF_H):
         for x in range(0, w, DEF_W):
             tile = [data[x + i + ((y + j) * w)]
@@ -91,6 +94,7 @@ def main():
                 continue
 
             for c in cols:
+                frame_colors.append(c)
                 frame = []
                 for i, j in ((0, 0), (0, 8), (8, 0), (8, 8)):
                     for m in range(8):
@@ -110,6 +114,10 @@ def main():
 
         for i, frame in enumerate(out):
             print("%s_frame%d:" % (args.id, i))
+            if args.colors:
+                print("\t; color: #%02x%02x%02x" % (frame_colors[i][0],
+                                                    frame_colors[i][1],
+                                                    frame_colors[i][2]))
             print(to_hex_list_str_asm(frame))
     else:
         print("#ifndef _%s_H" % args.id.upper())
@@ -119,6 +127,10 @@ def main():
 
         data_out = ""
         for i, frame in enumerate(out):
+            if args.colors:
+                data_out += '/* color: 0x%02x%02x%02x */\n' % (frame_colors[i][0],
+                                                               frame_colors[i][1],
+                                                               frame_colors[i][2])
             data_out += '{\n' + to_hex_list_str(frame) + '}'
             if i + 1 < len(out):
                 data_out += ',\n'
