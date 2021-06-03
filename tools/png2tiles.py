@@ -21,6 +21,7 @@
 # THE SOFTWARE.
 #
 
+import os
 from argparse import ArgumentParser
 from PIL import Image
 from collections import defaultdict
@@ -66,44 +67,24 @@ def to_hex_list_str_asm(src):
     return out
 
 
-def main():
-
-    parser = ArgumentParser(description="PNG to MSX tiles",
-                            epilog="Copyright (C) 2019 Juan J Martinez <jjm@usebox.net>",
-                            )
-
-    parser.add_argument(
-        "--version", action="version", version="%(prog)s " + __version__)
-    parser.add_argument("-i", "--id", dest="id", default="tileset", type=str,
-                        help="variable name (default: tileset)")
-    parser.add_argument("-a", "--asm", dest="asm", action="store_true",
-                        help="ASM output (default: C header)")
-    parser.add_argument("--no-colors", dest="no_colors", action="store_true",
-                        help="don't include colors")
-
-    parser.add_argument("image", help="image to convert")
-
-    args = parser.parse_args()
-
+def read_image(image_name, out, color):
     try:
-        image = Image.open(args.image)
+        image = Image.open(image_name)
     except IOError:
-        parser.error("failed to open the image")
+        raise IOError("failed to open the image \"%s\"" % image_name)
 
     if image.mode != "RGB":
-        parser.error("not a RGB image")
+        raise Exception("not a RGB image")
 
     (w, h) = image.size
 
     if w % DEF_W or h % DEF_H:
-        parser.error("%s size is not multiple of tile size (%s, %s)" %
-                     (args.image, DEF_W, DEF_H))
+        raise Exception("%s size is not multiple of tile size (%s, %s)" %
+                        (image_name, DEF_W, DEF_H))
 
     data = image.getdata()
 
     color_idx = defaultdict(list)
-    color = []
-    out = []
     ntiles = 0
     for y in range(0, h, DEF_H):
         for x in range(0, w, DEF_W):
@@ -117,7 +98,7 @@ def main():
                 cols = list(set(tile[i:i + DEF_W]))
 
                 if len(cols) > 2:
-                    parser.error(
+                    raise Exception(
                         "tile %d (%d, %d) has more than two colors: %r" % (
                             ntiles, x, y, cols))
                 elif len(cols) == 1:
@@ -125,9 +106,10 @@ def main():
 
                 for c in cols:
                     if c not in MSX_COLS:
-                        parser.error(
-                            "tile %d (%d, %d) has a color not in the"
-                            " expected MSX palette: %r" % (ntiles, x, y, c))
+                        raise Exception(
+                            "%s: tile %d (%d, %d) has a color not in the"
+                            " expected MSX palette: %r" % (os.path.basename(image_name),
+                                                           ntiles, x, y, c))
 
                 # each tile has two color attributes per row
                 color_idx[ntiles * DEF_H + i // DEF_W] = cols
@@ -149,8 +131,39 @@ def main():
             ntiles += 1
             out.extend(frame)
 
-    if ntiles > 256:
-        parser.error("more than 256 tiles")
+    return ntiles
+
+
+def main():
+
+    parser = ArgumentParser(description="PNG to MSX tiles",
+                            epilog="Copyright (C) 2019 Juan J Martinez <jjm@usebox.net>",
+                            )
+
+    parser.add_argument(
+        "--version", action="version", version="%(prog)s " + __version__)
+    parser.add_argument("-i", "--id", dest="id", default="tileset", type=str,
+                        help="variable name (default: tileset)")
+    parser.add_argument("-a", "--asm", dest="asm", action="store_true",
+                        help="ASM output (default: C header)")
+    parser.add_argument("--no-colors", dest="no_colors", action="store_true",
+                        help="don't include colors")
+
+    parser.add_argument("image", nargs="+", help="image or images to convert")
+
+    args = parser.parse_args()
+
+    color = []
+    out = []
+    ntiles = 0
+    for image_name in args.image:
+        try:
+            ntiles += read_image(image_name, out, color)
+        except Exception as e:
+            parser.error(e)
+
+        if ntiles > 256:
+            parser.error("more than 256 tiles")
 
     if args.asm:
         print(";; %d tiles\n" % ntiles)
