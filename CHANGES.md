@@ -2,11 +2,13 @@
 
 ## Release 1.x.0 - ????-??-??
 
- - Added a new `-c` flag to `png2sprites.py` to include the frame colour as
+ - `png2sprites.py`: Added a new `-c` flag to include the frame colour as
    a comment. This works as a reference and should make easier assign colours
-   to frames later on in the game's code.
+   to frames later on in the game's code
+ - `map.py`: remove bin files on error, fixed an error in error reporting
+ - `png2tiles.py`: support to load the tileset combinng multiple images
 
-   Thanks to Pedro de Medeiros for the feature!
+   Thanks to Pedro de Medeiros for the changes!
 
 ## Release 1.1.5 - 2021-04-07
 
