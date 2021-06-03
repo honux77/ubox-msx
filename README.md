@@ -98,7 +98,9 @@ This was mostly written by Juan J. Martinez during the development of
 [Night Knight](https://www.usebox.net/jjm/night-knight/) and
 [Uchūsen Gamma](https://www.usebox.net/jjm/uchusen-gamma/).
 
- - Juan J. Martinez <jjm@usebox.net>
+Other contributors:
+
+ - Pedro de Medeiros
  - Your name here?
 
 ## Copying
