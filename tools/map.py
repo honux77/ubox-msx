@@ -318,6 +318,7 @@ def main():
     if args.bin:
         for i, block in enumerate(out):
             filename = path.join(args.dir, "%s%02d.bin" % (args.id, i))
+            remove_list.append(filename)
             with open(filename, "wb") as fd:
                 if i in empty:
                     fd.write(struct.pack("<B", 0))
@@ -379,9 +380,16 @@ def main():
 
 
 if __name__ == "__main__":
+    remove_list = []
+
     try:
         main()
     except Exception as ex:
         print("FATAL: %s\n***" % ex, file=sys.stderr)
-        traceback.print_exc(ex)
+        traceback.print_exc()
+
+        for filename in remove_list:
+            if os.path.exists(filename):
+                os.unlink(filename)
+
         sys.exit(1)
