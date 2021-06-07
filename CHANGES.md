@@ -1,6 +1,6 @@
 # What's new?
 
-## Release 1.x.0 - ????-??-??
+## Release 1.1.6 - 2021-06-07
 
  - `png2sprites.py`: Added a new `-c` flag to include the frame colour as
    a comment. This works as a reference and should make easier assign colours
