@@ -14,7 +14,7 @@ TODO
 
 ### png2sprites.py
 
-TODO
+The png2sprites.py tool converts an image that is a multiple of 16x16 into multiple sprites. Sprites are also separated by colour values. Dark grey (#1c1c1c) is assigned to transparent in the MSX colour index.
 
 ### map.py
 
