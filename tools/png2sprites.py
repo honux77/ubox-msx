@@ -49,8 +49,8 @@ def to_hex_list_str_asm(src):
 
 def main():
 
-    parser = ArgumentParser(description="PNG to MSX spites",
-                            epilog="Copyright (C) 2019 Juan J Martinez <jjm@usebox.net>",
+    parser = ArgumentParser(description="PNG to MSX sprites",
+                            epilog="Copyright (C) 2019 Juan J Martinez <jjm@usebox.net>"
                             )
 
     parser.add_argument(
