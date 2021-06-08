@@ -214,23 +214,6 @@ def main():
             x = obj["x"] % (args.rw * tilewidth)
             y = obj["y"] % (args.rh * tileheight)
 
-            if name == "blocked":
-                if obj["width"] > obj["height"]:
-                    if y == 0:
-                        # up blocked
-                        out[m][1] |= (1 << 4)
-                    else:
-                        # down blocked
-                        out[m][1] |= (1 << 5)
-                else:
-                    if x == 0:
-                        # left blocked
-                        out[m][1] |= (1 << 6)
-                    else:
-                        # tight blocked
-                        out[m][1] |= (1 << 7)
-                continue
-
             t = et_names.index(name)
 
             # MSB is direction
@@ -265,22 +248,6 @@ def main():
                     if not param:
                         y += special
                     special //= tileheight
-
-            if name == "elevator":
-                try:
-                    respawn = json.loads(get_property(obj, "respawn", "[]"))
-                    if args.max_bytes:
-                        for name in respawn:
-                            check_bytes(name)
-                    special = [et_names.index(et) for et in respawn]
-                    assert(len(special) < 255)
-                except Exception as ex:
-                    parser.error("Error parsing respawn: %s" % ex)
-
-                # terminator
-                special.append(0xff)
-                # size
-                special = [len(special), ] + special
 
             map_ents[m].extend([t, x, y])
             if special is not None:
