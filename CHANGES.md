@@ -1,5 +1,9 @@
 # What's new?
 
+## Release 1.1.7 - 2021-06-24
+
+ - Documented the auxiliary tools used to build the example game
+
 ## Release 1.1.6 - 2021-06-07
 
  - `png2sprites.py`: Added a new `-c` flag to include the frame colour as
