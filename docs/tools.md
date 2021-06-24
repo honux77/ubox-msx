@@ -153,7 +153,8 @@ rooms. In this case, the output is compressed with [aPLib](extra-lib-ref.html#ap
 
 The include by default will not include the data if `LOCAL` is undefined. It
 should be included as follows in **one** C module:
-```c
+
+```
 /* in data.c for example */
 #define LOCAL
 #include "rooms.h"
