@@ -84,7 +84,117 @@ png2sprites.py -i player_sprite player.png > player.h
 
 ### map.py
 
-TODO
+This is a map importer to use with [tiled](https://www.mapeditor.org/) JSON format.
+
+The map importer supports:
+
+- **entities**: an object layer describing game entities such as enemies.
+- **map**: a tile layer describing the map itself.
+
+#### Map requirements
+
+The map file is expected to follow this conventions:
+
+- It is in JSON format (File > Export > JSON file format; after exported, the
+  map file can be opened and saved normally with tiled).
+- The map entities will be in an object layer named "Entities".
+- The map tiles will be in a tile layer named "Map".
+- The tileset used will be named "default".
+
+Please check `map.json` of the example game for a reference.
+
+#### Configuration
+
+The map importer requires a configuration file in JSON format that provides
+information about the valid entities in the map.
+
+For each entity it expects:
+
+- **bytes**: number of bytes, if `--max-bytes` is used, otherwise use 0.
+- **w**: weight, if `--max-entities` is used, otherwise use 0.
+- **name**: name to refer to this entity in tiled (required).
+
+This allows the tool to validate the map and ensure that:
+
+- Unknown entities are not referenced.
+- The entities follow the same order expected by the game (the order is the
+  entity type).
+- No room has uses more bytes or entities than expected.
+
+Please check `data/map_conf.json` in the example game for an example.
+
+#### Rooms
+
+Tiled doesn't have support to define rooms in a big map, so this importer will
+split the map in rooms of a specific size (32x24 tiles by default), translating
+the information of any entity on that area.
+
+The map size must be multiple of the room size and the result will be a number
+of rooms to be used independently by the game.
+
+Each of these rooms will have the following structure:
+
+| Size | Description |
+| --- | --- |
+| 2 bytes | map data length (0 for empty map, and no more data will be included) |
+| 1 byte | entities length in bytes, including the terminator byte (0xff) |
+| n bytes | map data (n-bit per tile, default 8-bit), may be compressed |
+| m bytes | entity data (ends with 0xff) |
+
+The output by default it is an C include file.
+
+For example:
+```
+map.py --aplib map.json rooms > rooms.h
+```
+
+Will generate an include file with a `rooms` array pointing to the generated
+rooms. In this case, the output is compressed with [aPLib](extra-lib-ref.html#aplib-compression).
+
+The include by default will not include the data if `LOCAL` is undefined. It
+should be included as follows in **one** C module:
+```c
+/* in data.c for example */
+#define LOCAL
+#include "rooms.h"
+#undef LOCAL
+
+```
+
+Refer to the example game and `run_game()` in `game.c` for a full example.
+
+#### Entities
+
+Entities are defined in the `Entities` layer by using rectangle objects.
+
+The expected properties are:
+
+- **x** and **y** for the position.
+- **name** for the entity type, and it should match a name in the map configuration.
+- **width** and **height** optionally, see "Custom properties".
+
+In "Custom properties" the map importer supports:
+
+- **param** (type int, 0 or 1): a bit encoded in as MSB in the entity type.
+- **fixed** (type int, 0 or 1): if the width or the height should be encoded as
+  part of the entity.
+
+The entities are encoded as 3 bytes by default, as follows.
+
+| Byte | Description |
+| --- | --- |
+| t | MSB is set if param is 1, the rest (7 lower bits, from 0 to 127) is the index of the entity in the configuration file |
+| x | x position in the room, in pixels|
+| y | y position in the room, in pixels|
+
+If the entity has the `fixed` property, an extra byte is added with the width
+or height (whatever is bigger) *in tiles*. This can be used for entities that
+cover an area, for example a moving platform. The example game doesn't use
+this property.
+
+The entities are encoded a stream that ends with the byte `0xff` as terminator.
+
+Refer to the example game and `init_map_entities()` in `game.c` for a full example.
 
 ## Build helpers
 
