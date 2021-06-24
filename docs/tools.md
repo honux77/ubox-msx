@@ -225,5 +225,11 @@ report it with an error.
 
 ### mkdeps.py
 
-TODO
+This is a wrapper around `sdcc -MM` to automatically generate a `Makefile.deps`
+with the dependencies to build a project.
+
+This ensures that only the required files are compiled when there is a change
+in the project, reducing the compilation time during development.
+
+See `game/Makefile` for an example.
 
