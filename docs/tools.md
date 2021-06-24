@@ -200,7 +200,28 @@ Refer to the example game and `init_map_entities()` in `game.c` for a full examp
 
 ### chksize
 
-TODO
+This tool is used to calculate how much much space in the DATA and CODE
+sections is used by the game.
+
+It takes three parameters:
+
+- the CODE limit (in hexadecimal)
+- the DATA limit (in hexadecimal)
+- the map file (output of SDCC)
+
+For example:
+```
+chksize 8000 4000 game.map
+```
+
+Has the output:
+```
+ROM: 11430 bytes
+RAM: 01256 bytes
+```
+
+If the CODE (ROM) or the DATA (RAM) is over the provided limits, the tool will
+report it with an error.
 
 ### mkdeps.py
 
