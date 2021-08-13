@@ -192,7 +192,7 @@ or height (whatever is bigger) *in tiles*. This can be used for entities that
 cover an area, for example a moving platform. The example game doesn't use
 this property.
 
-The entities are encoded as a stream that ends with the byte `0xff` as terminator.
+The entities are encoded in a stream that ends with the byte `0xff` as terminator.
 
 Refer to the example game and `init_map_entities()` in `game.c` for a full example.
 
