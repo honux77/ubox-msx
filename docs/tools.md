@@ -65,9 +65,8 @@ be provided as part of the `attr` field in the `sprite_attr` struct when
 calling [ubox_set_sprite_attr](ubox-lib-ref.html#ubox_set_sprite_attr).
 
 The tool interprets dark grey (RGB: 28, 28, 28) as transparent in the MSX
-palette, and any other colour will be used as visible the monochrome data. If
-the image has more than one colour, it will be used to identify different
-sprites.
+palette, and any other colour will be used as visible monochrome data. If the
+image has more than one colour, it will be used to identify different sprites.
 
 For example:
 
@@ -119,7 +118,7 @@ This allows the tool to validate the map and ensure that:
 - Unknown entities are not referenced.
 - The entities follow the same order expected by the game (the order is the
   entity type).
-- No room has uses more bytes or entities than expected.
+- No room has more bytes or entities than expected.
 
 Please check `data/map_conf.json` in the example game for an example.
 
@@ -141,7 +140,7 @@ Each of these rooms will have the following structure:
 | n bytes | map data (n-bit per tile, default 8-bit), may be compressed |
 | m bytes | entity data (ends with 0xff) |
 
-The output by default it is an C include file.
+The output by default is a C include file.
 
 For example:
 ```
@@ -193,7 +192,7 @@ or height (whatever is bigger) *in tiles*. This can be used for entities that
 cover an area, for example a moving platform. The example game doesn't use
 this property.
 
-The entities are encoded a stream that ends with the byte `0xff` as terminator.
+The entities are encoded as a stream that ends with the byte `0xff` as terminator.
 
 Refer to the example game and `init_map_entities()` in `game.c` for a full example.
 
