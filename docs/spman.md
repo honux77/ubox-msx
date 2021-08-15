@@ -14,7 +14,7 @@ The manager is used as follows:
 
 1. Initialize the manager with [spman_init](#spman_init).
 2. Allocate patterns with [spman_alloc](#spman_alloc). This can be done at any
-   time, is not needed to allocate all the patterns in one go.
+   time, it is not needed to allocate all the patterns in one go.
 3. In the game loop:
    - Allocate sprites to be drawn on screen, using
      [spman_alloc_fixed_sprite](#spman_alloc_fixed_sprite) for sprites excluded
