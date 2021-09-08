@@ -49,7 +49,7 @@ extern "C" {
 #define VISITED_FLAG 0x8000000000000000ULL
 #define EXCL_VISITED_MASK  0x7fffffffffffffffULL
 
-#define NARRIVALS_PER_POSITION_MAX 55
+#define NARRIVALS_PER_POSITION_MAX 62
 #define NARRIVALS_PER_POSITION_NORMAL 46
 #define NARRIVALS_PER_POSITION_SMALL 9
 
@@ -85,6 +85,12 @@ typedef struct {
 
    int score;
 } apultra_arrival;
+
+/** Visited match */
+typedef struct {
+   int outer;
+   int inner;
+} apultra_visited;
 
 /** Compression statistics */
 typedef struct _apultra_stats {

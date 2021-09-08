@@ -1,5 +1,9 @@
 # What's new?
 
+## Release 1.1.8 - 2021-??-??
+
+ - Updated apultra to 1.4.2
+
 ## Release 1.1.7 - 2021-06-24
 
  - Documented the auxiliary tools used to build the example game
