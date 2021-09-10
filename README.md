@@ -16,7 +16,7 @@ deep knowledge of the system.
 
 ## Requirements
 
- - SDCC (3.9.0 recommended)
+ - SDCC (3.9.0 or later recommended)
  - GNU Make (others may work)
  - a POSIX compatible environment
 
