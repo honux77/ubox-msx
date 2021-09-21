@@ -6,7 +6,7 @@ libs: lib ubox spman mplayer ap
 
 game: bin libs
 	make -C tools
-	make -C game
+	make -C game all
 
 docs:
 	make -C docs
