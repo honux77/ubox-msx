@@ -1,0 +1,11 @@
+image: registry.gitlab.com/pvmm/ubox-msx-lib/ubox
+
+stages:
+  - build
+
+build-job: 
+  stage: build
+  script:
+    - echo "Compiling the code..."
+    - make game
+    - echo "Compile complete."
