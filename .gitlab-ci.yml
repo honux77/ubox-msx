@@ -1,9 +1,9 @@
-image: registry.gitlab.com/pvmm/ubox-msx-lib/ubox
+image: registry.gitlab.com/reidrac/ubox-msx-lib-ci:latest
 
 stages:
   - build
 
-build-job: 
+build-job:
   stage: build
   script:
     - echo "Compiling the code..."
