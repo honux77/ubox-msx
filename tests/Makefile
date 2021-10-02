@@ -2,7 +2,7 @@ default:
 	$(error Please use the Makefile from root directory)
 
 include ../config.env
-export $(shell sed 's/=.*//' ../config.env)
+.EXPORT_ALL_VARIABLES: test
 
 TESTS := $(wildcard test_*.py)
 
