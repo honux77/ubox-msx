@@ -56,6 +56,10 @@ Add those directories in `SDCC`'s search path and you are ready to go.
 Note: `make` is expected to be run from the root of the repo. The PATH env
 variable will be set automatically.
 
+### Running tests
+
+There are tests that can be run with `make test`.
+
 ### Building the example
 
 An example game is included with the libraries and it can be built with:

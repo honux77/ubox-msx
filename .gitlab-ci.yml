@@ -1,11 +1,5 @@
 image: registry.gitlab.com/reidrac/ubox-msx-lib-ci:latest
 
-stages:
-  - build
-
-build-job:
-  stage: build
+build-and-test:
   script:
-    - echo "Compiling the code..."
-    - make game
-    - echo "Compile complete."
+    - make test

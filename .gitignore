@@ -19,6 +19,7 @@ src/*/*.asm
 *.cas
 *.rom
 *.lib
+*.pyc
 Makefile.deps
 bin/
 lib/
