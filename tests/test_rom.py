@@ -2,6 +2,7 @@
 
 import unittest
 import struct
+from os import path
 
 
 class TestRom(unittest.TestCase):
@@ -11,10 +12,10 @@ class TestRom(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        with open("../bin/game.rom", "rb") as fd:
+        with open(path.join("..", "bin", "game.rom"), "rb") as fd:
             cls.data = fd.read(cls.ROM_SIZE)
 
-        with open("../game/build/game.map", "rb") as fd:
+        with open(path.join("..", "game", "build", "game.map"), "rb") as fd:
             game_map = fd.readlines()
 
         cls.main_init = 0
