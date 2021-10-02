@@ -8,6 +8,9 @@ game: bin libs
 	make -C tools
 	make -C game all
 
+test: game
+	make -C tests test
+
 docs:
 	make -C docs
 
