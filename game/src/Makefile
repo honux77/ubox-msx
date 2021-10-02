@@ -1,11 +1,10 @@
 TARGET := game
 
+include ../../config.env
+
 CODE := 0x4000
 # leaves 222 bytes for AKM player buffer
 DATA := 0xc0de
-
-# HEX, will fill with 0
-ROM_MAX := 8000
 
 OUTPUT := ../build
 OBJS := $(patsubst %.c,$(OUTPUT)/%.rel,$(wildcard *.c)) $(OUTPUT)/akm.rel
@@ -19,7 +18,7 @@ CFLAGS := -mz80 --Werror -I../../include -I../generated --fsigned-char --std-sdc
 LDFLAGS := -L../../lib -L. --no-std-crt0 --fomit-frame-pointer
 
 all: $(OUTPUT)/$(TARGET).rom
-	@../../tools/chksize 8000 4000 $(OUTPUT)/$(TARGET).map
+	@../../tools/chksize $(ROM_MAX) 4000 $(OUTPUT)/$(TARGET).map
 	@cp ../bin/$(TARGET).rom ../../bin
 
 openmsx: all

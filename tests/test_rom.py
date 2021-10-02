@@ -2,13 +2,13 @@
 
 import unittest
 import struct
-from os import path
+from os import path, environ
 
 
 class TestRom(unittest.TestCase):
     """Test that the generated game ROM is correct."""
 
-    ROM_SIZE = 0x8000
+    ROM_SIZE = int(environ.get("ROM_MAX", 0), 16)
 
     @classmethod
     def setUpClass(cls):
