@@ -13,7 +13,7 @@ class TestRom(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         with open(path.join("..", "bin", "game.rom"), "rb") as fd:
-            cls.data = fd.read(cls.ROM_SIZE)
+            cls.data = fd.read()
 
         with open(path.join("..", "game", "build", "game.map"), "rb") as fd:
             game_map = fd.readlines()
