@@ -31,7 +31,8 @@ class TestRom(unittest.TestCase):
         self.assertEqual(len(self.data), self.ROM_SIZE)
 
     def test_header_main_init_address(self):
-        self.assertEqual(struct.unpack("H", self.data[2:4]), (self.main_init,))
+        self.assertEqual(struct.unpack(
+            "<H", self.data[2:4]), (self.main_init,))
 
 
 if __name__ == '__main__':
