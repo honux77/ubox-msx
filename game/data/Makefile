@@ -1,7 +1,7 @@
 OUTPUT := ../generated
 GENERATED := $(OUTPUT)/tiles.h $(OUTPUT)/player.h $(OUTPUT)/enemy.h $(OUTPUT)/map.h
 
-.DELETE_ON_ERROR:
+.DELETE_ON_ERROR: $(GENERATED)
 all: $(GENERATED)
 
 $(OUTPUT)/tiles.h: tiles.png
