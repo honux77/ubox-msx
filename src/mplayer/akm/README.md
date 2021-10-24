@@ -5,6 +5,6 @@ at 0xc000.
 
 ## Local changes
 
- - A new function `PLY_AKM_IsDoundEffectOn` was added; this is used by the
+ - A new function `PLY_AKM_IsSoundEffectOn` was added; this is used by the
    priority based sound effects.
 
