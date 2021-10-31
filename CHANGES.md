@@ -1,9 +1,10 @@
 # What's new?
 
-## Release 1.1.8 - 2021-??-??
+## Release 1.1.8 - 2021-10-31
 
  - Updated apultra to 1.4.2
  - Improvements in the build pipeline, initial test code
+ - Documented SDCC compatibility
 
 ## Release 1.1.7 - 2021-06-24
 
