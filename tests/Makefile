@@ -7,6 +7,7 @@ include ../config.env
 TESTS := $(wildcard test_*.py)
 
 test:
+	@sdcc --version
 	python3 -m unittest $(TESTS)
 
 .PHONY: test default

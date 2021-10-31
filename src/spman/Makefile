@@ -1,9 +1,11 @@
 LIB := ../../lib/spman.lib
 all: $(LIB)
 
+include ../../config.env
+
 CC := sdcc
 AR := sdar
-CFLAGS := -mz80 --Werror -I../../include --fsigned-char --std-sdcc99 --opt-code-speed
+CFLAGS := -mz80 --Werror -I../../include --fsigned-char --std-sdcc99 --opt-code-speed $(EXTRA_CFLAGS)
 
 SOURCES := $(wildcard *.c)
 OBJS := $(patsubst %.c,%.rel,$(SOURCES))

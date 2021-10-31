@@ -14,7 +14,7 @@ LIBS := -lubox -lspman -lmplayer -lap
 CC := sdcc
 AS := sdasz80
 AR := sdcclib
-CFLAGS := -mz80 --Werror -I../../include -I../generated --fsigned-char --std-sdcc99 --opt-code-speed
+CFLAGS := -mz80 --Werror -I../../include -I../generated --fsigned-char --std-sdcc99 --opt-code-speed $(EXTRA_CFLAGS)
 LDFLAGS := -L../../lib -L. --no-std-crt0 --fomit-frame-pointer
 
 all: $(OUTPUT)/$(TARGET).rom
