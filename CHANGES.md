@@ -1,4 +1,6 @@
-# What's new?
+## Release 1.1.9 - 2021-??-??
+
+ - Generate a "what's new?" HTML page in the docs
 
 ## Release 1.1.8 - 2021-10-31
 
@@ -64,5 +66,5 @@
 
 ## Release 1.0 - 2020-12-30
 
-  - initial import
+  - First public release
 
