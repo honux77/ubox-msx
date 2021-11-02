@@ -8,7 +8,7 @@ def main():
         sys.exit("usage: %s code_limit_hex data_limit_hex filename.map" %
                  sys.argv[0])
 
-    sizes = {"CODE": 0, "DATA": 0}
+    sizes = {"CODE": 0, "DATA": 0, "INITIALIZED": 0}
 
     with open(sys.argv[3], "r") as fd:
         for line in fd.readlines():
@@ -16,7 +16,12 @@ def main():
                 if "l__%s" % seg in line:
                     sizes[seg] = int(line.split()[0], base=16)
 
-    print("\nROM: %(CODE)05d bytes\nRAM: %(DATA)05d bytes\n" % sizes)
+    sizes["ROM"] = sizes["CODE"] + sizes["INITIALIZED"]
+
+    print("\nROM: CODE  %(CODE)05d bytes\n"
+          "     INIT  %(INITIALIZED)05d bytes\n"
+          "     Total %(ROM)05d bytes\n"
+          "RAM:       %(DATA)05d bytes\n" % sizes)
 
     if sizes["CODE"] > int(sys.argv[1], 16):
         sys.exit("ROM is over the limit")
