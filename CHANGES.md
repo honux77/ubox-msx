@@ -1,7 +1,7 @@
 ## Release 1.1.9 - 2021-??-??
 
  - Generate a "what's new?" HTML page in the docs
- - `chsize` now accounts for data in INITIALIZED section that adds up to the
+ - `chksize` now accounts for data in INITIALIZED section that adds up to the
   ROM size
 
 ## Release 1.1.8 - 2021-10-31
