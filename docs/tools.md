@@ -216,12 +216,14 @@ chksize 8000 4000 game.map
 
 Has the output:
 ```
-ROM: 11430 bytes
-RAM: 01256 bytes
+ROM: CODE  11430 bytes
+     INIT  00016 bytes
+     Total 11446 bytes
+RAM:       01256 bytes
 ```
 
-If the CODE (ROM) or the DATA (RAM) is over the provided limits, the tool will
-report it with an error.
+If the CODE + INIT (ROM) or the DATA (RAM) is over the provided limits, the
+tool will report it with an error.
 
 ### mkdeps.py
 
