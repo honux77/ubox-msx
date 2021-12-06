@@ -3,6 +3,7 @@
  - Generate a "what's new?" HTML page in the docs
  - `chksize` now accounts for data in INITIALIZED section that adds up to the
   ROM size
+ - Updated apultra to 1.4.4
 
 ## Release 1.1.8 - 2021-10-31
 
