@@ -11,6 +11,9 @@ game: bin libs
 test: game
 	make -C tests test
 
+openmsx: game
+	make -C game openmsx
+
 docs:
 	make -C docs
 

@@ -6,43 +6,48 @@ CODE := 0x4000
 # leaves 222 bytes for AKM player buffer
 DATA := 0xc0de
 
-OUTPUT := ../build
-OBJS := $(patsubst %.c,$(OUTPUT)/%.rel,$(wildcard *.c)) $(OUTPUT)/akm.rel
+OUTDIR := ../../bin
+TMPDIR := ../build
+OBJS := $(patsubst %.c,$(TMPDIR)/%.rel,$(wildcard *.c)) $(TMPDIR)/akm.rel
 UBOX_LIBS := $(wildcard ../../lib/*.lib)
 LIBS := -lubox -lspman -lmplayer -lap
 
 CC := sdcc
 AS := sdasz80
 AR := sdcclib
+CHKSIZE := ../../tools/chksize
 CFLAGS := -mz80 --Werror -I../../include -I../generated --fsigned-char --std-sdcc99 --opt-code-speed $(EXTRA_CFLAGS)
 LDFLAGS := -L../../lib -L. --no-std-crt0 --fomit-frame-pointer
 
-all: $(OUTPUT)/$(TARGET).rom
-	@../../tools/chksize $(ROM_MAX) 4000 $(OUTPUT)/$(TARGET).map
-	@cp ../bin/$(TARGET).rom ../../bin
+default:
+	$(error Please use the Makefile from root directory)
+
+all: $(TMPDIR)/$(TARGET).rom
+	@$(CHKSIZE) $(ROM_MAX) 4000 $(TMPDIR)/$(TARGET).map
+	@cp $(TMPDIR)/$(TARGET).rom $(OUTDIR)
 
 openmsx: all
-	openmsx -carta $(OUTPUT)/$(TARGET).rom -machine msx1
+	openmsx -carta $(OUTDIR)/$(TARGET).rom -machine msx1
 
-$(OUTPUT)/%.rel: %.c
+$(TMPDIR)/%.rel: %.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -c $< -o $@
 
-$(OUTPUT)/%.rel: %.z80
+$(TMPDIR)/%.rel: %.z80
 	$(AS) -g -o $@ $<
 
-$(OUTPUT)/akm.rel: akm.z80 song.asm effects.asm
-	rasm akm.z80 -o $(OUTPUT)/akm -s -sl -sq
-	Disark --sourceProfile sdcc --symbolFile $(OUTPUT)/akm.sym --src16bitsValuesInHex --src8bitsValuesInHex --undocumentedOpcodesToBytes $(OUTPUT)/akm.bin $(OUTPUT)/akm_sdcc.asm
-	$(AS) -g -o $@ $(OUTPUT)/akm_sdcc.asm
+$(TMPDIR)/akm.rel: akm.z80 song.asm effects.asm
+	rasm akm.z80 -o $(TMPDIR)/akm -s -sl -sq
+	Disark --sourceProfile sdcc --symbolFile $(TMPDIR)/akm.sym --src16bitsValuesInHex --src8bitsValuesInHex --undocumentedOpcodesToBytes $(TMPDIR)/akm.bin $(TMPDIR)/akm_sdcc.asm
+	$(AS) -g -o $@ $(TMPDIR)/akm_sdcc.asm
 
-$(OUTPUT)/$(TARGET).rom: $(OBJS) $(OUTPUT)/crt0.rel $(UBOX_LIBS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(LIBS) --code-loc $(CODE) --data-loc $(DATA) $(OUTPUT)/crt0.rel $(OBJS) -o $(OUTPUT)/$(TARGET).ihx
-	hex2bin -e bin -p 00 -l $(ROM_MAX) $(OUTPUT)/$(TARGET).ihx
-	@cp $(OUTPUT)/$(TARGET).bin ../bin/$(TARGET).rom
+$(TMPDIR)/$(TARGET).rom: $(OBJS) $(TMPDIR)/crt0.rel $(UBOX_LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(LIBS) --code-loc $(CODE) --data-loc $(DATA) $(TMPDIR)/crt0.rel $(OBJS) -o $(TMPDIR)/$(TARGET).ihx
+	hex2bin -e bin -p 00 -l $(ROM_MAX) $(TMPDIR)/$(TARGET).ihx
+	@cp $(TMPDIR)/$(TARGET).bin $(TMPDIR)/$(TARGET).rom
 
 clean:
-	rm -f $(OUTPUT)/*
-	rm -f ../bin/$(TARGET).rom ../../bin/$(TARGET).rom
+	rm -f $(TMPDIR)/*
+	rm -f $(OUTDIR)/$(TARGET).rom
 
 .PHONY: all clean
 
