@@ -9,7 +9,8 @@ CFLAGS := -mz80 --Werror -I../../include --fsigned-char --std-sdcc99 --opt-code-
 
 SOURCES := $(wildcard *.c)
 OBJS := $(patsubst %.c,%.rel,$(SOURCES))
-EXTS := $(patsubst %.c,%.asm,$(SOURCES)) $(patsubst %.c,%.lst,$(SOURCES)) $(patsubst %.c,%.sym,$(SOURCES))
+CLEAN := $(patsubst %.c,%.asm,$(SOURCES)) $(patsubst %.c,%.lst,$(SOURCES)) $(patsubst %.c,%.sym,$(SOURCES)) \
+	 $(OBJS) $(LIB)
 $(LIB): $(OBJS)
 	$(AR) -rcD $(LIB) $(OBJS)
 
@@ -18,5 +19,5 @@ $(LIB): $(OBJS)
 
 .PHONY: clean
 clean:
-	rm -f $(EXTS) $(OBJS) $(LIB)
+	rm -f $(CLEAN)
 
