@@ -1,4 +1,4 @@
-## Release 1.1.9 - 2021-??-??
+## Release 1.1.9 - 2021-12-29
 
  - Generate a "what's new?" HTML page in the docs
  - `chksize` now accounts for data in INITIALIZED section that adds up to the
@@ -6,6 +6,8 @@
  - Updated apultra to 1.4.4
  - Small improvements to the build system, including a new openMSX target
   to run the game (thanks to Pedro de Medeiros)
+ - Fix: `spman` could leave `sp_idx` unitialised, preventing the sprites from
+  being shown. Thanks to ToriHino for reporting the issue.
 
 ## Release 1.1.8 - 2021-10-31
 
