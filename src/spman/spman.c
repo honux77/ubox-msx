@@ -17,6 +17,7 @@ uint8_t sp_last_pat;
 void spman_init()
 {
     sp_last_pat = 0;
+    sp_idx = 0;
     memset(sp_pat_map, SPMAN_PAT_UNUSED, SPMAN_MAX_PATTERNS);
     spman_sprite_flush();
 }
