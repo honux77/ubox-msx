@@ -1,6 +1,7 @@
 .globl _ubox_set_sprite_pat8_flip
 
 WRTVRM = 0x004d
+SP_PATTERNS = 0x3800
 
 _ubox_set_sprite_pat8_flip::
 	ld hl, #2
@@ -16,7 +17,7 @@ _ubox_set_sprite_pat8_flip::
 	add hl, hl
 	add hl, hl
 	add hl, hl
-	ld bc, #0x3800
+	ld bc, #SP_PATTERNS
 	add hl, bc
 
 	ld b, #8
