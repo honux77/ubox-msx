@@ -1,6 +1,8 @@
 .globl _ubox_set_sprite_attr
 .globl _ubox_write_vm
 
+SP_ATTRS = 0x1b00
+
 _ubox_set_sprite_attr::
 	ld hl, #2
 	add hl, sp
@@ -14,7 +16,7 @@ _ubox_set_sprite_attr::
 	sla l
 	sla l
 	ld h, #0
-	ld bc, #0x1b00
+	ld bc, #SP_ATTRS
 	add hl, bc
 
 	push de

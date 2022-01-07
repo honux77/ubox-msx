@@ -17,6 +17,8 @@
 #include "player.h"
 #include "enemy.h"
 
+#define BG_TILE_MAP 0x1800
+
 void init_map_entities()
 {
     const uint8_t *m = cur_map;
@@ -91,7 +93,7 @@ void draw_map()
     // so we do it in one call by coping our map to the backtround tile map
     // addr in the VDP VRAM
     ubox_wait_vsync();
-    ubox_write_vm((uint8_t *)0x1800, MAP_W * MAP_H, cur_map_data);
+    ubox_write_vm((uint8_t *)BG_TILE_MAP, MAP_W * MAP_H, cur_map_data);
 }
 
 void draw_hud()

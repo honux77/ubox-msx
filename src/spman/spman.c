@@ -6,6 +6,7 @@
 #define SPMAN_PAT_UNUSED    0xff
 #define SPMAN_MAX_SPRITES   32
 #define SPMAN_MAX_PATTERNS  64
+#define SPMAN_SPR_ATTRS     0x1b00
 
 uint8_t sp_last_sprite, sp_last_fixed_sprite, sp_idx;
 struct sprite_attr sp_fixed[SPMAN_MAX_SPRITES];
@@ -84,7 +85,7 @@ static uint8_t *p;
 
 void spman_update()
 {
-    p = (uint8_t*) 0x1b00;
+    p = (uint8_t*)SPMAN_SPR_ATTRS;
 
     if (sp_last_sprite)
     {
@@ -115,5 +116,5 @@ void spman_update()
 void spman_hide_all_sprites()
 {
     ubox_wait_vsync();
-    ubox_write_vm((uint8_t *)0x1b00, 4, (uint8_t *)hide);
+    ubox_write_vm((uint8_t *)SPMAN_SPR_ATTRS, 4, (uint8_t *)hide);
 }
