@@ -36,7 +36,7 @@
 //
 // The VRAM layout for Screen 2 is as follows:
 //
-// | Address range          | Desctiption         |
+// | Address range          | Description         |
 // | ---                    | ---                 |
 // | <tt>0x0000-0x17ff</tt> | Background tiles    |
 // | <tt>0x1800-0x1aff</tt> | Background tile map |
