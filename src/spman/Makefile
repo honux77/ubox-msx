@@ -15,7 +15,7 @@ $(LIB): $(OBJS)
 	$(AR) -rcD $(LIB) $(OBJS)
 
 %.rel: %.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -c $<
+	$(CC) $(CFLAGS) -c $<
 
 .PHONY: clean
 clean:
