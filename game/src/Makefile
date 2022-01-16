@@ -16,8 +16,8 @@ CC := sdcc
 AS := sdasz80
 AR := sdcclib
 CHKSIZE := ../../tools/chksize
-CFLAGS := -mz80 --Werror -I../../include -I../generated --fsigned-char --std-sdcc99 --opt-code-speed $(EXTRA_CFLAGS)
-LDFLAGS := -L../../lib -L. --no-std-crt0 --fomit-frame-pointer
+CFLAGS := -mz80 --Werror -I../../include -I../generated --fsigned-char --std-sdcc99 --opt-code-speed --fomit-frame-pointer $(EXTRA_CFLAGS)
+LDFLAGS := -L../../lib -L. --no-std-crt0
 
 default:
 	$(error Please use the Makefile from root directory)
