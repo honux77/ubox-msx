@@ -35,32 +35,50 @@ TRANS = (28, 28, 28)
 def to_hex_list_str(src):
     out = ""
     for i in range(0, len(src), 8):
-        out += ', '.join(["0x%02x" % b for b in src[i:i + 8]]) + ',\n'
+        out += ", ".join(["0x%02x" % b for b in src[i : i + 8]]) + ",\n"
     return out
 
 
 def to_hex_list_str_asm(src):
     out = ""
     for i in range(0, len(src), 8):
-        out += '\tdb ' + ', '.join(["#%02x" % b for b in src[i:i + 8]])
-        out += '\n'
+        out += "\tdb " + ", ".join(["#%02x" % b for b in src[i : i + 8]])
+        out += "\n"
     return out
 
 
 def main():
 
-    parser = ArgumentParser(description="PNG to MSX sprites",
-                            epilog="Copyright (C) 2019 Juan J Martinez <jjm@usebox.net>"
-                            )
+    parser = ArgumentParser(
+        description="PNG to MSX sprites",
+        epilog="Copyright (C) 2019 Juan J Martinez <jjm@usebox.net>",
+    )
 
     parser.add_argument(
-        "--version", action="version", version="%(prog)s " + __version__)
-    parser.add_argument("-i", "--id", dest="id", default="sprites", type=str,
-                        help="variable name (default: sprites)")
-    parser.add_argument("-a", "--asm", dest="asm", action="store_true",
-                        help="ASM output (default: C header)")
-    parser.add_argument("-c", "--colors", dest="frame_colors", action="store_true",
-                        help="include frame color as a comment")
+        "--version", action="version", version="%(prog)s " + __version__
+    )
+    parser.add_argument(
+        "-i",
+        "--id",
+        dest="id",
+        default="sprites",
+        type=str,
+        help="variable name (default: sprites)",
+    )
+    parser.add_argument(
+        "-a",
+        "--asm",
+        dest="asm",
+        action="store_true",
+        help="ASM output (default: C header)",
+    )
+    parser.add_argument(
+        "-c",
+        "--colors",
+        dest="frame_colors",
+        action="store_true",
+        help="include frame color as a comment",
+    )
 
     parser.add_argument("image", help="image to convert")
 
@@ -77,8 +95,10 @@ def main():
     (w, h) = image.size
 
     if w % DEF_W or h % DEF_H:
-        parser.error("%s size is not multiple of sprite size (%s, %s)" %
-                     (args.image, DEF_W, DEF_H))
+        parser.error(
+            "%s size is not multiple of sprite size (%s, %s)"
+            % (args.image, DEF_W, DEF_H)
+        )
 
     data = image.getdata()
 
@@ -86,8 +106,9 @@ def main():
     frame_colors = []
     for y in range(0, h, DEF_H):
         for x in range(0, w, DEF_W):
-            tile = [data[x + i + ((y + j) * w)]
-                    for j in range(DEF_H) for i in range(DEF_W)]
+            tile = [
+                data[x + i + ((y + j) * w)] for j in range(DEF_H) for i in range(DEF_W)
+            ]
             cols = set([c for c in tile if c != TRANS])
 
             if not cols:
@@ -115,9 +136,10 @@ def main():
         for i, frame in enumerate(out):
             print("%s_frame%d:" % (args.id, i))
             if args.frame_colors:
-                print("\t; color: #%02x%02x%02x" % (frame_colors[i][0],
-                                                    frame_colors[i][1],
-                                                    frame_colors[i][2]))
+                print(
+                    "\t; color: #%02x%02x%02x"
+                    % (frame_colors[i][0], frame_colors[i][1], frame_colors[i][2])
+                )
             print(to_hex_list_str_asm(frame))
     else:
         print("#ifndef _%s_H" % args.id.upper())
@@ -128,20 +150,25 @@ def main():
         data_out = ""
         for i, frame in enumerate(out):
             if args.frame_colors:
-                data_out += '/* color: 0x%02x%02x%02x */\n' % (frame_colors[i][0],
-                                                               frame_colors[i][1],
-                                                               frame_colors[i][2])
-            data_out += '{\n' + to_hex_list_str(frame) + '}'
+                data_out += "/* color: 0x%02x%02x%02x */\n" % (
+                    frame_colors[i][0],
+                    frame_colors[i][1],
+                    frame_colors[i][2],
+                )
+            data_out += "{\n" + to_hex_list_str(frame) + "}"
             if i + 1 < len(out):
-                data_out += ',\n'
+                data_out += ",\n"
 
         print("#ifdef LOCAL")
-        print("const unsigned char %s[%d][%d] = {\n%s\n};\n" % (
-            args.id, len(out), len(out[0]), data_out))
+        print(
+            "const unsigned char %s[%d][%d] = {\n%s\n};\n"
+            % (args.id, len(out), len(out[0]), data_out)
+        )
 
         print("#else\n")
-        print("extern const unsigned char %s[%d][%d];" %
-              (args.id, len(out), len(out[0])))
+        print(
+            "extern const unsigned char %s[%d][%d];" % (args.id, len(out), len(out[0]))
+        )
         print("#endif // LOCAL\n")
         print("#endif // _%s_H\n" % args.id.upper())
 

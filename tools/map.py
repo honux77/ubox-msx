@@ -75,34 +75,71 @@ def get_property(obj, name, default):
 
 def main():
 
-    parser = ArgumentParser(description="Map importer",
-                            epilog="Copyright (C) 2020 Juan J Martinez <jjm@usebox.net>",
-                            )
+    parser = ArgumentParser(
+        description="Map importer",
+        epilog="Copyright (C) 2020 Juan J Martinez <jjm@usebox.net>",
+    )
 
     parser.add_argument(
-        "--version", action="version", version="%(prog)s " + __version__)
+        "--version", action="version", version="%(prog)s " + __version__
+    )
     parser.add_argument(
-        "--room-width", dest="rw", default=DEF_ROOM_WIDTH, type=int,
-        help="room width (default: %s)" % DEF_ROOM_WIDTH)
+        "--room-width",
+        dest="rw",
+        default=DEF_ROOM_WIDTH,
+        type=int,
+        help="room width (default: %s)" % DEF_ROOM_WIDTH,
+    )
     parser.add_argument(
-        "--room-height", dest="rh", default=DEF_ROOM_HEIGHT, type=int,
-        help="room height (default: %s)" % DEF_ROOM_HEIGHT)
-    parser.add_argument("--max-ents", dest="max_ents", default=0, type=int,
-                        help="max entities per room (default: unlimited)")
-    parser.add_argument("--max-bytes", dest="max_bytes", default=0, type=int,
-                        help="max bytes per room (default: unlimited)")
-    parser.add_argument("-b", dest="bin", action="store_true",
-                        help="output binary data (default: C code)")
-    parser.add_argument("-d", dest="dir", default=".", type=str,
-                        help="directory to generate the bin files (default: .)")
-    parser.add_argument("-c", dest="conf", default=DEF_MAP_CONF, type=str,
-                        help="JSON configuration file (default: %s)" % DEF_MAP_CONF)
-    parser.add_argument("--aplib", dest="aplib", action="store_true",
-                        help="APLIB compressed")
-    parser.add_argument("-r", dest="reverse", action="store_true",
-                        help="Reverse map order")
-    parser.add_argument("-q", dest="quiet", action="store_true",
-                        help="Don't output stats on stderr")
+        "--room-height",
+        dest="rh",
+        default=DEF_ROOM_HEIGHT,
+        type=int,
+        help="room height (default: %s)" % DEF_ROOM_HEIGHT,
+    )
+    parser.add_argument(
+        "--max-ents",
+        dest="max_ents",
+        default=0,
+        type=int,
+        help="max entities per room (default: unlimited)",
+    )
+    parser.add_argument(
+        "--max-bytes",
+        dest="max_bytes",
+        default=0,
+        type=int,
+        help="max bytes per room (default: unlimited)",
+    )
+    parser.add_argument(
+        "-b",
+        dest="bin",
+        action="store_true",
+        help="output binary data (default: C code)",
+    )
+    parser.add_argument(
+        "-d",
+        dest="dir",
+        default=".",
+        type=str,
+        help="directory to generate the bin files (default: .)",
+    )
+    parser.add_argument(
+        "-c",
+        dest="conf",
+        default=DEF_MAP_CONF,
+        type=str,
+        help="JSON configuration file (default: %s)" % DEF_MAP_CONF,
+    )
+    parser.add_argument(
+        "--aplib", dest="aplib", action="store_true", help="APLIB compressed"
+    )
+    parser.add_argument(
+        "-r", dest="reverse", action="store_true", help="Reverse map order"
+    )
+    parser.add_argument(
+        "-q", dest="quiet", action="store_true", help="Don't output stats on stderr"
+    )
     parser.add_argument("map_json", help="Map to import")
     parser.add_argument("id", help="variable name")
 
@@ -162,7 +199,7 @@ def main():
     # track empty maps
     empty = []
     for i, block in enumerate(out):
-        if all([byte == 0xff for byte in block]):
+        if all([byte == 0xFF for byte in block]):
             empty.append(i)
 
     if args.aplib:
@@ -181,7 +218,7 @@ def main():
         size = len(out[i])
 
         # ents size placeholder 0
-        out[i] = [size & 0xff, size >> 8, 0] + out[i]
+        out[i] = [size & 0xFF, size >> 8, 0] + out[i]
 
     entities_layer = find_name(data["layers"], "Entities")
     if len(entities_layer):
@@ -209,8 +246,9 @@ def main():
 
         for obj in objs:
             name = obj["name"].lower()
-            m = ((obj["x"] // tilewidth) // args.rw) \
-                + (((obj["y"] // tileheight) // args.rh) * (mw // args.rw))
+            m = ((obj["x"] // tilewidth) // args.rw) + (
+                ((obj["y"] // tileheight) // args.rh) * (mw // args.rw)
+            )
             x = obj["x"] % (args.rw * tilewidth)
             y = obj["y"] % (args.rh * tileheight)
 
@@ -259,14 +297,17 @@ def main():
         if args.max_ents:
             for i, weight in map_ents_w.items():
                 if weight > args.max_ents:
-                    parser.error("map %i has %d entities, max is %d" %
-                                 (i, weight, args.max_ents))
+                    parser.error(
+                        "map %i has %d entities, max is %d" % (i, weight, args.max_ents)
+                    )
 
         if args.max_bytes:
             for i, byts in map_ents_bytes.items():
                 if byts > args.max_bytes:
-                    parser.error("map %i entities are %d bytes, max is %d" %
-                                 (i, byts, args.max_bytes))
+                    parser.error(
+                        "map %i entities are %d bytes, max is %d"
+                        % (i, byts, args.max_bytes)
+                    )
 
         # append the entities to the map data
         for i in range(len(out)):
@@ -276,7 +317,7 @@ def main():
                 out[i].extend(map_ents[i])
                 out[i][2] += len(map_ents[i])
             # terminator
-            out[i].append(0xff)
+            out[i].append(0xFF)
             out[i][2] += 1
 
     if args.reverse:
@@ -295,10 +336,17 @@ def main():
         if not args.quiet:
             screen_with_data = len(out) - len(empty)
             total_bytes = sum(len(b) if b else 0 for b in out)
-            print("%s: %s (%d screens, %d bytes, %.2f bytes avg)" % (
-                path.basename(sys.argv[0]), args.id,
-                screen_with_data, total_bytes, total_bytes / screen_with_data),
-                file=sys.stderr)
+            print(
+                "%s: %s (%d screens, %d bytes, %.2f bytes avg)"
+                % (
+                    path.basename(sys.argv[0]),
+                    args.id,
+                    screen_with_data,
+                    total_bytes,
+                    total_bytes / screen_with_data,
+                ),
+                file=sys.stderr,
+            )
         return
 
     print("#ifndef _%s_H" % args.id.upper())
@@ -318,16 +366,19 @@ def main():
         for part in range(0, len(block), args.rw // 2):
             if data_out_part:
                 data_out_part += ",\n"
-            data_out_part += ', '.join(
-                ["0x%02x" % byte for byte in block[part: part + args.rw // 2]])
-        data_out += "const unsigned char %s_%d[%d] = {\n" % (
-            args.id, i, len(block))
+            data_out_part += ", ".join(
+                ["0x%02x" % byte for byte in block[part : part + args.rw // 2]]
+            )
+        data_out += "const unsigned char %s_%d[%d] = {\n" % (args.id, i, len(block))
         data_out += data_out_part + "\n};\n"
 
     data_out += "const unsigned char * const %s[%d] = { " % (args.id, len(out))
-    data_out += ', '.join(
-        ["%s_%d" % (args.id,
-                    i) if i not in empty else "(unsigned char *)0" for i in range(len(out))])
+    data_out += ", ".join(
+        [
+            "%s_%d" % (args.id, i) if i not in empty else "(unsigned char *)0"
+            for i in range(len(out))
+        ]
+    )
     data_out += " };\n"
     print(data_out)
 
@@ -340,10 +391,17 @@ def main():
     if not args.quiet:
         screen_with_data = len(out) - len(empty)
         total_bytes = sum(len(b) if b else 0 for b in out)
-        print("%s: %s (%d screens, %d bytes, %.2f bytes avg)" % (
-            path.basename(sys.argv[0]), args.id,
-            screen_with_data, total_bytes, total_bytes / screen_with_data),
-            file=sys.stderr)
+        print(
+            "%s: %s (%d screens, %d bytes, %.2f bytes avg)"
+            % (
+                path.basename(sys.argv[0]),
+                args.id,
+                screen_with_data,
+                total_bytes,
+                total_bytes / screen_with_data,
+            ),
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
