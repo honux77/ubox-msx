@@ -105,6 +105,15 @@ Some advice if you want to make a successful contribution:
  - Get early feedback, specially when working on a large contribution
  - Contributions always require a pull request and a review
 
+### Formatting
+
+This project uses [Black](https://github.com/psf/black) to format the Python
+code, and this is checked in CI.
+
+Before submitting any code to review, ensure you have installed Black 22.1.0 and run:
+
+    black .
+
 ## Authors
 
 This was mostly written by Juan J. Martinez during the development of
