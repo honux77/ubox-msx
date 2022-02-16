@@ -1,5 +1,18 @@
 image: registry.gitlab.com/reidrac/ubox-msx-lib-ci:latest
 
-build-and-test:
+stages:
+  - lint
+  - build
+  - test
+
+lint:
+  script:
+    - black --check --diff .
+
+build:
+  script:
+    - make game
+
+test:
   script:
     - make test
