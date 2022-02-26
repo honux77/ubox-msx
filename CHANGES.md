@@ -1,6 +1,6 @@
 ## Release 1.x.x - 2021-??-??
 
- - Updated apultra to 1.4.5
+ - Updated apultra to 1.4.6
 
 ## Release 1.1.9 - 2021-12-29
 
