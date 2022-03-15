@@ -5,14 +5,17 @@ stages:
   - build
   - test
 
-lint:
+check:
+  stage: lint
   script:
     - black --check --diff .
 
-build:
+compile:
+  stage: build
   script:
     - make game
 
 test:
+  stage: test
   script:
     - make test
