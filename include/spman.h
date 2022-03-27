@@ -86,7 +86,7 @@ uint8_t spman_alloc_pat(uint8_t type, uint8_t *data, uint8_t len, uint8_t flip);
  * call to [spman_update](#spman_update). This sprite will be excluded from
  * flickering.
  *
- * It is recommended that the number of fixes sprites per line is below 4, or
+ * It is recommended that the number of fixed sprites per line is below 4, or
  * some sprites may never be shown.
  *
  * The limit of sprites to be allocated is 31, including non-fixed sprites.
