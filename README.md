@@ -22,12 +22,12 @@ deep knowledge of the system.
 The [SDCC](http://sdcc.sourceforge.net/) compiler is also needed. Check the
 following table for some hints on compatibility.
 
-| Version             | Compatible | Comments                                                |
-| ---                 | ---        | ---                                                     |
-| 3.9.0               | yes        | -                                                       |
-| 4.0.0               | yes        | -                                                       |
-| 4.1.0               | no         | At least on Linux amd64 it generates broken Z80 code    |
-| sdcc-20211031-12748 | yes        | Needs option in `config.env`, edit the file for details |
+| Version | Compatible | Comments                                                |
+| ---     | ---        | ---                                                     |
+| 3.9.0   | yes        | -                                                       |
+| 4.0.0   | yes        | -                                                       |
+| 4.1.0   | no         | At least on Linux amd64 it generates broken Z80 code    |
+| 4.2.0   | yes        | Needs option in `config.env`, edit the file for details |
 
 If you want to build the example you will also need:
 
