@@ -1,6 +1,7 @@
-## Release 1.x.x - 2021-??-??
+## Release 1.1.10 - 2022-04-27
 
  - Updated apultra to 1.4.6
+ - Tested SDCC 4.2.0
 
 ## Release 1.1.9 - 2021-12-29
 
@@ -11,7 +12,7 @@
  - Small improvements to the build system, including a new openMSX target
   to run the game (thanks to Pedro de Medeiros)
  - Fix: `spman` could leave `sp_idx` unitialised, preventing the sprites from
-  being shown. Thanks to ToriHino for reporting the issue.
+  being shown. Thanks to ToriHino for reporting the issue
 
 ## Release 1.1.8 - 2021-10-31
 
