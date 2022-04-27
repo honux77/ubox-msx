@@ -16,7 +16,7 @@ def main():
 
     parser = ArgumentParser(
         description="mkdeps for SDCC",
-        epilog="Copyright (C) 2021 Juan J Martinez <jjm@usebox.net>",
+        epilog="Copyright (C) 2021-2022 Juan J Martinez <jjm@usebox.net>",
     )
 
     parser.add_argument(
