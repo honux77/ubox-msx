@@ -16,7 +16,6 @@ _ubox_set_colors::
 	inc hl
 	ld (BAKCLR), a
 	ld a, (hl)
-	inc hl
 	ld (BDRCLR), a
 	call CHGCLR
 	ret
