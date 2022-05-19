@@ -35,8 +35,8 @@ call_psg:
 	call RDPSG
 	ei
 	cpl
-        and #0x3f
-        ld e, a
+	and #0x3f
+	ld e, a
 
 	; button 2 (M)
 	ld a, #4
@@ -46,9 +46,9 @@ call_psg:
 	rra
 	ld a, #0x20
 	jr nc, joy_extra_m
-        xor a
+	xor a
 joy_extra_m:
-        or e
+	or e
 	ld l, a
 	ret
 

@@ -46,10 +46,10 @@ flip0:
 flip_and_copy:
 	ld a, (de)
 	ld c, a
-  	rlca
-  	rlca
-  	xor c
- 	and #0xaa
+	rlca
+	rlca
+	xor c
+	and #0xaa
 	xor c
 	ld c, a
 	rlca
