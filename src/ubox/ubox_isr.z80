@@ -32,7 +32,7 @@ _ubox_init_isr::
 	ret
 
 ubox_isr:
-        push af
+	push af
 	push ix
 	push iy
 	push bc
@@ -67,7 +67,7 @@ no_user_isr:
 	pop bc
 	pop iy
 	pop ix
-        pop af
+	pop af
 	ret
 
 .area _DATA
