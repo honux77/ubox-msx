@@ -12,7 +12,7 @@ TMPDIR := ../build
 # will automatically include (and compile) any .c or .z80 file
 OBJS := $(patsubst %.c,$(TMPDIR)/%.rel,$(wildcard *.c)) $(patsubst %.z80,$(TMPDIR)/%.rel,$(wildcard *.z80))
 # crt0.z80 is compiled as requirement of the targets and MUST be linked first,
-# so we exlude it from the list of user-provided source
+# so we exclude it from the list of user-provided source
 OBJS := $(filter-out $(TMPDIR)/crt0.rel,$(OBJS))
 
 UBOX_LIBS := $(wildcard ../../lib/*.lib)
