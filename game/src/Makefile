@@ -8,7 +8,8 @@ DATA := 0xc0de
 
 OUTDIR := ../../bin
 TMPDIR := ../build
-OBJS := $(patsubst %.c,$(TMPDIR)/%.rel,$(wildcard *.c)) $(TMPDIR)/akm.rel
+OBJS := $(patsubst %.c,$(TMPDIR)/%.rel,$(wildcard *.c)) $(patsubst %.z80,$(TMPDIR)/%.rel,$(wildcard *.z80))
+OBJS := $(filter-out $(TMPDIR)/crt0.rel,$(OBJS))
 UBOX_LIBS := $(wildcard ../../lib/*.lib)
 LIBS := -lubox -lspman -lmplayer -lap
 
