@@ -471,26 +471,6 @@ void ubox_set_sprite_pat16(uint8_t *data, uint8_t pattern);
  */
 void ubox_set_sprite_pat16_flip(uint8_t *data, uint8_t pattern);
 
-/**
- * Sets the sprite attributes of sprite number `sprite` using the attributes
- * pointed by `attr`.
- *
- * `sprite` is the index in the sprite table of Screen 2.
- *
- * See [struct sprite_attr](#struct-sprite_attr) description for details on
- * the sprite attributes.
- *
- * Example:
- * ```c
- * ubox_set_sprite_attr(&player_sprite_attr, 0);
- * ```
- *
- * To set the attributes of multiple sprites that are contiguous in the sprite
- * table, it is recommended to use [ubox_write_vm](#ubox_write_vm). The sprite
- * attribute table is in the memory address `0x1b00`.
- */
-void ubox_set_sprite_attr(struct sprite_attr *attr, uint8_t sprite);
-
 // @Control functions
 //
 // The supported controls are: cursor and joystick (port 1 and port 2).
