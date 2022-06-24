@@ -14,7 +14,7 @@
 // It will be compiled as part of the tools, but you can compile it
 // independently with:
 //
-// ```
+// ```bash
 // make bin/apultra
 // ```
 //

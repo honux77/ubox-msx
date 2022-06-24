@@ -45,9 +45,10 @@ identifier (if the default "tiles" is used, the table will use `tiles_colors`).
 The colour table can be omitted using the `--no-colors` flag.
 
 Example of use:
-```
+```bash
 png2tiles.py tiles.png > tiles.h
 ```
+
 This will result in a C include output. To generate assembler, use `--asm` flag.
 
 The output can be used with [ubox_set_tiles](ubox-lib-ref.html#ubox_set_tiles) and
@@ -77,7 +78,7 @@ corresponding to the sprite defined by the green colour and the sprite
 defined by the white colour.
 
 Usage following the example:
-```
+```bash
 png2sprites.py -i player_sprite player.png > player.h
 ```
 
@@ -143,7 +144,7 @@ Each of these rooms will have the following structure:
 The output by default is a C include file.
 
 For example:
-```
+```bash
 map.py --aplib map.json rooms > rooms.h
 ```
 
@@ -153,7 +154,7 @@ rooms. In this case, the output is compressed with [aPLib](extra-lib-ref.html#ap
 The include by default will not include the data if `LOCAL` is undefined. It
 should be included as follows in **one** C module:
 
-```
+```C
 /* in data.c for example */
 #define LOCAL
 #include "rooms.h"
@@ -210,7 +211,7 @@ It takes three parameters:
 - the map file (output of SDCC)
 
 For example:
-```
+```bash
 chksize 8000 4000 game.map
 ```
 

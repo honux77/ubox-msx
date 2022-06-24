@@ -40,7 +40,7 @@ Notes on **Disark**:
 This is automated, and the only counter-intuitive step is making an ASM file
 for **rasm** such as:
 
-```
+```nasm
 ;
 ; to build the custom AKM player with song + effects
 ;
