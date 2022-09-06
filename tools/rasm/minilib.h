@@ -1,9 +1,16 @@
-#define __FILENAME__ "minilib.h"
+﻿#define __FILENAME__ "minilib.h"
 
 #include<string.h>
 #include<stdlib.h>
 #include<stddef.h>
+#ifdef _MSC_VER
+#if _MSC_VER>1500
 #include<stdint.h>
+#endif
+#else
+#include<stdint.h>
+#endif
+
 #include<stdarg.h>
 #include<stdio.h>
 #include<errno.h>
@@ -41,11 +48,17 @@
 #define MemRealloc realloc
 #define MemMalloc malloc
 #define MemMove memmove
-#ifdef OS_WIN
+#if defined(__BORLANDC__)
+#define TxtStrDup strdup
+#elif defined(OS_WIN)
 #define TxtStrDup _strdup
 #else
 #define TxtStrDup strdup
 #endif
+
+#ifdef __BORLANDC__
+#define _setmode setmode
+#endif /* __BORLANDC__ */
 
 #define loginfo(...); {printf(__VA_ARGS__);printf("\n");}
 #define logdebug(...); {printf(__VA_ARGS__);printf("\n");}
@@ -89,7 +102,7 @@ int MinMaxInt(int zeval, int zemin, int zemax)
 }
 
 /* (c) FSF */
-#ifdef __WATCOMC__
+#if defined(__WATCOMC__) || defined(__BORLANDC__)
 size_t strnlen (s, maxlen)
      register const char *s;
      size_t maxlen;
@@ -101,8 +114,63 @@ size_t strnlen (s, maxlen)
     ;
   return n;
 }
+#define _strnlen strnlen
 #endif
 
+/*
+** Call syntax:  char *stristr(char *String, char *Pattern)
+**
+** Description:  This function is an ANSI version of strstr() with
+**               case insensitivity.
+** Return item:  char *pointer if Pattern is found in String, else
+**               pointer to 0
+** Rev History:  07/04/95  Bob Stout  ANSI-fy
+**               02/03/94  Fred Cole  Original
+** Hereby donated to public domain.
+** Modified for use with libcyrus by Ken Murchison 06/01/00.
+**
+** from Debian package cyrus-imapd
+
+modified for Rasm as pattern is always upper case...
+
+*/
+
+char *_internal_stristr(const char *ZeString, const unsigned int ZeLen, const char *Pattern)
+{
+	char *pptr, *sptr, *start;
+	unsigned int slen,plen;
+
+	start = (char *)ZeString;
+	pptr  = (char *)Pattern;
+	plen  = strlen(Pattern);
+	slen  = ZeLen;
+	for ( /* while string length not shorter than pattern length */;
+		slen >= plen;
+		start++, slen--) {
+		/* find start of pattern in string */
+		while (toupper(*start) != *Pattern) {
+			start++;
+			slen--;
+			/* if pattern longer than string */
+			if (slen < plen)
+				return NULL;
+		}
+
+		// because pattern is always 2 or more...
+		sptr = start+1;
+		pptr = (char *)Pattern+1;
+
+		while (toupper(*sptr) == *pptr) {
+			sptr++;
+			pptr++;
+
+			if ('\0' == *pptr) {
+				return start;
+			}
+		}
+	}
+	return NULL;
+}
 
 char *TxtStrDupLen(char *str, int *len)
 {
@@ -665,15 +733,15 @@ char *_internal_fgetsmulti(char *filename, int read_mode)
 	#define FUNC "_internal_fgetsmulti"
 	static char buffer[MAX_LINE_BUFFER+1]={0};
 	FILE *last_id=NULL;
-	char * (*_file_get_string)(char *, int, FILE *);
+	char * (*_file_get_string)(char *, int, FILE *)=fgets;
 	
 	last_id=FileOpen(filename,"r");
 	
 	switch (read_mode)
 	{
+		default:logerr("Unknown read mode! (%d)",read_mode);
 		case RAW_READING:_file_get_string=fgets;break;
 		case CLOSE_READING:_file_get_string=_internal_fgetsClose;break;
-		default:logerr("Unknown read mode! (%d)",read_mode);
 	}	
 	
 	if (_file_get_string(buffer,MAX_LINE_BUFFER,last_id)!=NULL)
@@ -709,9 +777,9 @@ char **_internal_fgetsmultilines(char *filename, int read_mode)
 	
 	switch (read_mode)
 	{
+		default:logerr("Unknown read mode! (%d)",read_mode);
 		case RAW_READING:_file_get_string=fgets;break;
 		case CLOSE_READING:_file_get_string=_internal_fgetsClose;break;
-		default:logerr("Unknown read mode! (%d)",read_mode);
 	}	
 
 
@@ -860,6 +928,31 @@ int FileReadBinary(char *filename,char *data,int n)
 }
 
 /***
+	FileTruncate function
+	set file to zero size then leave	
+*/
+int FileTruncate(char *filename)
+{
+#undef FUNC
+#define FUNC "FileTruncate"
+FILE *last_id=NULL;
+
+#ifdef OS_WIN
+int sr;
+last_id=FileOpen(filename,"w");
+sr=_setmode(_fileno(last_id), _O_BINARY );
+if (sr==-1) {
+logerr("FATAL: cannot set binary mode for writing");
+exit(ABORT_ERROR);
+}
+#else
+last_id=FileOpen(filename,"a+");
+#endif
+FileClose(last_id);
+return 0;
+}
+
+/***
 	FileWriteBinary function
 	
 	write n bytes from buffer to file
@@ -917,6 +1010,7 @@ int FileWriteBinary(char *filename,char *data,int n)
 		/* NULL buffer sent, this means End of file, we close the handle */
 		//logdebug("%d byte(s) written to %s",FileGetCPT(last_id),filename);
 		FileClose(last_id);
+		nn=0;
 	}
 	return nn;
 }

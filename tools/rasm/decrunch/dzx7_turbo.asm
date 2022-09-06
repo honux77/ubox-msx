@@ -8,7 +8,7 @@
 ; -----------------------------------------------------------------------------
 
 dzx7_turbo:
-        ld      a, $80
+        ld      a, #80
 dzx7t_copy_byte_loop:
         ldi                             ; copy literal byte
 dzx7t_main_loop:
@@ -42,7 +42,7 @@ dzx7t_len_value_start:
 ; determine offset
         ld      e, (hl)                 ; load offset flag (1 bit) + offset value (7 bits)
         inc     hl
-        defb    $cb, $33                ; opcode for undocumented instruction "SLL E" aka "SLS E"
+        defb    #cb, #33                ; opcode for undocumented instruction "SLL E" aka "SLS E"
         jr      nc, dzx7t_offset_end    ; if offset flag is set, load 4 extra bits
         add     a, a                    ; check next bit
         call    z, dzx7t_load_bits      ; no more bits left?

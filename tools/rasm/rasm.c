@@ -1,6 +1,6 @@
 #define PROGRAM_NAME      "RASM"
-#define PROGRAM_VERSION   "0.120"
-#define PROGRAM_DATE      "xx/12/2019"
+#define PROGRAM_VERSION   "1.7"
+#define PROGRAM_DATE      "xx/11/2021"
 #define PROGRAM_COPYRIGHT "© 2017 BERGE Edouard / roudoudou from Resistance"
 
 #define RASM_VERSION PROGRAM_NAME" v"PROGRAM_VERSION" (build "PROGRAM_DATE")"
@@ -9,18 +9,18 @@
 #define TRACE_GENERALE 0
 #define TRACE_PREPRO 0
 #define TRACE_ASSEMBLE 0
+#define TRACE_POPEXPR 0
 #define TRACE_COMPUTE_EXPRESSION 0
 #define TRACE_HEXBIN 0
 #define TRACE_MAKEAMSDOSREAL 0
 #define TRACE_STRUCT 0
 #define TRACE_EDSK 0
-
-
+#define TRACE_LABEL 0
 
 /***
 Rasm (roudoudou assembler) Z80 assembler
 
-doc & latest official release at: http://www.cpcwiki.eu/forum/programming/rasm-z80-assembler-in-beta/
+doc & latest official release at: https://github.com/EdouardBERGE/rasm
 
 You may send requests/bugs in the same topic
 
@@ -45,21 +45,21 @@ arising from,  out of  or in connection  with  the software  or  the  use  or  o
 Software. »
 -----------------------------------------------------------------------------------------------------
 Linux compilation with GCC or Clang:
-cc rasm_v0116.c -O2 -lm -lrt -march=native -o rasm
+cc rasm.c -O2 -lm -lrt -march=native -o rasm
 strip rasm
 
 Windows compilation with Visual studio:
-cl.exe rasm_v0116.c -O2 -Ob3
+cl.exe rasm.c -O2 -Ob3
 
-pure MS-DOS 32 bits compilation with Watcom:
-wcl386 rasm_v0116.c -6r -6s -fp6 -d0 -k4000000 -ox /bt=DOS /l=dos4g
+pure MS-DOS 32 bits compilation with Watcom without native support of AP-Ultra:
+wcl386 rasm.c -6r -6s -fp6 -d0 -k4000000 -ox /bt=DOS /l=dos4g -DOS_WIN=1 -DNOAPLIB=1
 
 MorphOS compilation (ixemul):
-ppc-morphos-gcc-5 -O2 -c -o rasm rasm_v0116.c
+gcc -noixemul -O2 -c -o rasm rasm.c
 strip rasm
 
 MacOS compilation:
-cc rasm_v0116.c -O2 -lm -march=native -o rasm
+cc rasm.c -O2 -lm -march=native -o rasm
 
 */
 
@@ -84,17 +84,49 @@ cc rasm_v0116.c -O2 -lm -march=native -o rasm
 	#define TxtSplitWithChar _internal_TxtSplitWithChar
 #endif
 
+int MAX_OFFSET_ZX0=32640;
+
 #ifndef NO_3RD_PARTIES
 #define __FILENAME__ "3rd parties"
 /* 3rd parties compression */
 #include"zx7.h"
 #include"lz4.h"
 #include"exomizer.h"
+
+void zx0_reverse(unsigned char *first, unsigned char *last) {
+    unsigned char c;
+
+    while (first < last) {
+        c = *first;
+        *first++ = *last;
+        *last-- = c;
+    }
+}
+
+typedef struct block_t {
+    struct block_t *chain;
+    struct block_t *ghost_chain;
+    int bits;
+    int index;
+    int offset;
+    int references;
+} BLOCK;
+
+BLOCK *allocate(int bits, int index, int offset, BLOCK *chain);
+
+void assign(BLOCK **ptr, BLOCK *chain);
+
+BLOCK *zx0_optimize(unsigned char *input_data, int input_size, int skip, int offset_limit);
+
+unsigned char *zx0_compress(BLOCK *optimal, unsigned char *input_data, int input_size, int skip, int backwards_mode, int invert_mode, int *output_size, int *delta);
+
 #endif
 
 #ifdef __MORPHOS__
 /* Add standard version string to executable */
 const char __attribute__((section(".text"))) ver_version[]={ "\0$VER: "PROGRAM_NAME" "PROGRAM_VERSION" ("PROGRAM_DATE") "PROGRAM_COPYRIGHT"" };
+/* Expand the default stack to match rasm requirements (about 64KiB) */
+unsigned long __stack = 128 * 1024;
 #endif
 
 #undef __FILENAME__
@@ -143,26 +175,37 @@ struct s_parameter {
 	int export_snabrk;
 	int export_brk;
 	int nowarning;
+	int erronwarn;
+	int utf8enable;
+	int freequote;
 	int checkmode;
 	int dependencies;
 	int maxerr;
 	int macrovoid;
 	int extended_error;
+	int display_stats;
 	int edskoverwrite;
+	int xpr;
 	float rough;
-	int as80,dams;
+	int as80,dams,pasmo;
 	int v2;
 	int warn_unused;
 	char *symbol_name;
 	char *binary_name;
 	char *cartridge_name;
 	char *snapshot_name;
+	char *rom_name;
 	char *tape_name;
 	char *breakpoint_name;
+	char *cprinfo_name;
 	char **symboldef;
 	int nsymb,msymb;
 	char **pathdef;
 	int npath,mpath;
+	int noampersand;
+	int cprinfo,cprinfoexport;
+	char module_separator;
+	int enforce_symbol_case;
 };
 
 
@@ -219,13 +262,22 @@ E_COMPUTE_OPERATION_GET_B=42,
 E_COMPUTE_OPERATION_SET_R=43,
 E_COMPUTE_OPERATION_SET_V=44,
 E_COMPUTE_OPERATION_SET_B=45,
-E_COMPUTE_OPERATION_END=46
+E_COMPUTE_OPERATION_SOFT2HARD=46,
+E_COMPUTE_OPERATION_HARD2SOFT=47,
+/* string functions */
+E_COMPUTE_OPERATION_GETNOP=48,
+E_COMPUTE_OPERATION_GETTICK=49,
+E_COMPUTE_OPERATION_DURATION=50,
+E_COMPUTE_OPERATION_FILESIZE=51,
+E_COMPUTE_OPERATION_GETSIZE=52,
+E_COMPUTE_OPERATION_END=53
 };
 
 struct s_compute_element {
 enum e_compute_operation_type operator;
 double value;
 int priority;
+char *string;
 };
 
 struct s_compute_core_data {
@@ -242,10 +294,10 @@ struct s_compute_core_data {
   w a v   h e a d e r    f o r    a u d i o    i m p o r t
 ***********************************************************/
 struct s_wav_header {
-unsigned char ChunkID[4];
+char ChunkID[4];
 unsigned char ChunkSize[4];
-unsigned char Format[4];
-unsigned char SubChunk1ID[4];
+char Format[4];
+char SubChunk1ID[4];
 unsigned char SubChunk1Size[4];
 unsigned char AudioFormat[2];
 unsigned char NumChannels[2];
@@ -261,7 +313,9 @@ enum e_audio_sample_type {
 AUDIOSAMPLE_SMP,
 AUDIOSAMPLE_SM2,
 AUDIOSAMPLE_SM4,
-AUDIOSAMPLE_DMA,
+AUDIOSAMPLE_DMAA,
+AUDIOSAMPLE_DMAB,
+AUDIOSAMPLE_DMAC,
 AUDIOSAMPLE_END
 };
 
@@ -270,17 +324,20 @@ AUDIOSAMPLE_END
 ***********************************************************************/
 enum e_expression {
 	E_EXPRESSION_J8,     /* relative 8bits jump */
-	E_EXPRESSION_0V8,    /* 8 bits value to current adress */
-	E_EXPRESSION_V8,     /* 8 bits value to current adress+1 */
-	E_EXPRESSION_V16,    /* 16 bits value to current adress+1 */
-	E_EXPRESSION_V16C,   /* 16 bits value to current adress+1 */
-	E_EXPRESSION_0V16,   /* 16 bits value to current adress */
-	E_EXPRESSION_0V32,   /* 32 bits value to current adress */
-	E_EXPRESSION_0VR,    /* AMSDOS real value (5 bytes) to current adress */
-	E_EXPRESSION_IV8,    /* 8 bits value to current adress+2 */
-	E_EXPRESSION_IV81,   /* 8 bits value+1 to current adress+2 */
-	E_EXPRESSION_3V8,    /* 8 bits value to current adress+3 used with LD (IX+n),n */
-	E_EXPRESSION_IV16,   /* 16 bits value to current adress+2 */
+	E_EXPRESSION_0V8,    /* 8 bits value to current address */
+	E_EXPRESSION_V8,     /* 8 bits value to current address+1 */
+	E_EXPRESSION_J16,    /* 16 bits value to current address+1 */
+	E_EXPRESSION_J16C,   /* 16 bits value to current address+1 */
+	E_EXPRESSION_V16,    /* 16 bits value to current address+1 */
+	//E_EXPRESSION_V16C,   /* 16 bits value to current address+1 */
+	E_EXPRESSION_0V16,   /* 16 bits value to current address */
+	E_EXPRESSION_0V32,   /* 32 bits value to current address */
+	E_EXPRESSION_0VR,    /* AMSDOS real value (5 bytes) to current address */
+	E_EXPRESSION_0VRMike,/* Microsoft IEEE-754 real value (5 bytes) to current address */
+	E_EXPRESSION_IV8,    /* 8 bits value to current address+2 */
+	E_EXPRESSION_IV81,   /* 8 bits value+1 to current address+2 */
+	E_EXPRESSION_3V8,    /* 8 bits value to current address+3 used with LD (IX+n),n */
+	E_EXPRESSION_IV16,   /* 16 bits value to current address+2 */
 	E_EXPRESSION_RST,    /* the offset of RST is translated to the opcode */
 	E_EXPRESSION_IM,     /* the interrupt mode is translated to the opcode */
 	E_EXPRESSION_RUN,    /* delayed RUN value */
@@ -299,6 +356,7 @@ struct s_expression {
 	int lz;                   /* lz zone */
 	int ibank;                /* ibank of expression */
 	int iorgzone;             /* org of expression */
+	char *module;
 };
 
 struct s_expr_dico {
@@ -308,13 +366,29 @@ struct s_expr_dico {
 	double v;
 	int used;
 	int iw;
+	int external;
+};
+
+struct s_external_mapping {
+	int iorgzone;
+	int ptr;
+	int size;
+	int value; // do not relocate outside scope!
+};
+
+struct s_external {
+	char *name;
+	int crc;
+	/* mapping info */
+	struct s_external_mapping *mapping;
+	int nmapping,mmapping;
 };
 
 struct s_label {
 	char *name;   /* is alloced for local repeat or struct OR generated global -> in this case iw=-1 */
 	int iw;       /* index of the word of label name */
 	int crc;      /* crc of the label name */
-	int ptr;      /* "physical" adress */
+	int ptr;      /* "physical" address */
 	int lz;       /* is the label in a crunched section (or after)? */
 	int iorgzone; /* org of label */
 	int ibank;    /* current CPR bank / always zero in classic mode */
@@ -330,8 +404,11 @@ struct s_alias {
 	char *alias;
 	char *translation;
 	int crc,len,autorise_export;
-	int iw;
+	int iw,lz;
 	int used;
+	/* v1.5 */
+	int ptr;
+	float v;
 };
 
 struct s_ticker {
@@ -372,7 +449,8 @@ struct s_crcstring_tree {
 struct s_lz_section {
 	int iw;
 	int memstart,memend;
-	int lzversion; /* 4 -> LZ4 / 7 -> ZX7 / 48 -> LZ48 / 49 -> LZ49 / 8 -> Exomizer */
+	int lzversion; /* 0 -> NO CRUNCH but must be delayed / 4 -> LZ4 / 7 -> ZX7 / 48 -> LZ48 / 49 -> LZ49 / 8 -> Exomizer */
+	int version,minmatch; /* LZSA + ZX0 */
 	int iorgzone;
 	int ibank;
 	/* idx backup */
@@ -385,6 +463,7 @@ struct s_orgzone {
 	int memstart,memend;
 	int ifile,iline;
 	int nocode;
+	int inplace;
 };
 
 /**************************************************
@@ -395,6 +474,7 @@ struct s_hexbin {
 	int datalen,rawlen;
 	char *filename;
 	int crunch;
+	int version,minmatch;
 };
 
 /**************************************************
@@ -452,6 +532,7 @@ struct s_save {
 	int ioffset;
 	int isize;
 	int iw,irun;
+	char *filename;
 	int amsdos,hobeta;
 	int tape,dsk,face,iwdskname;
 };
@@ -474,6 +555,7 @@ struct s_repeat {
 	int maxim;
 	int repeat_counter;
 	char *repeatvar;
+	double varincrement;
 	int repeatcrc;
 };
 
@@ -537,7 +619,9 @@ struct s_macro {
 };
 
 struct s_macro_position {
-	int start,end,value;
+	int start,end,value,level,pushed;
+	//char *lastlocal;
+	//int lastlocalen,lastlocalalloc;
 };
 
 /* preprocessing only */
@@ -597,7 +681,7 @@ struct s_snapshot_symbol {
 	unsigned char size;
 	unsigned char name[256];
 	unsigned char reserved[6];
-	unsigned char bigendian_adress[2];
+	unsigned char bigendian_address[2];
 };
 
 
@@ -748,21 +832,41 @@ struct s_rasmstruct {
 /*********************************
            D E B U G        
 *********************************/
-struct s_debug_error {
-        char *filename;
-        int line;
-        char *msg;
-        int lenmsg,lenfilename;
+
+#define INSIDE_RASM
+#include "rasm.h"
+
+
+/*******************************************
+              P O K E R               
+*******************************************/
+enum e_poker {
+E_POKER_XOR8=0,
+E_POKER_SUM8=1,
+E_POKER_CIPHER001=2,
+E_POKER_CIPHER002=3,
+E_POKER_CIPHER003=4,
+E_POKER_CIPHER004=5,
+E_POKER_END
 };
-struct s_debug_symbol {
-        char *name;
-        int v;
+
+char *strpoker[]={
+	"XORMEM",
+	"SUMMEM",
+	"CIPHER001 running XOR initialised with first value",
+	"CIPHER002 running XOR initialised with memory location",
+	"CIPHER003 XOR with LSB of memory location",
+	"CIPHER004 XOR with key looping",
+	NULL
 };
-struct s_rasm_info {
-        struct s_debug_error *error;
-        int nberror,maxerror;
-        struct s_debug_symbol *symbol;
-        int nbsymbol,maxsymbol;
+
+struct s_poker {
+	enum e_poker method;
+	int istart,iend;
+	int outputadr;
+	int ibank;
+	int istring;
+	int ipoker;
 };
 
 /*******************************************
@@ -775,9 +879,11 @@ struct s_assenv {
 	unsigned char **mem;
 	int iwnamebank[BANK_MAX_NUMBER];
 	int nbbank,maxbank;
-	int forcetape,forcezx,forcecpr,forceROM,bankmode,activebank,amsdos,forcesnapshot,packedbank;
+	int forcetape,forcezx,forcecpr,forceROM,forceROMconcat,bankmode,activebank,amsdos,forcesnapshot,packedbank,extendedCPR,xpr,cprinfo,cprinfo_export;
+	char *cprinfo_filename;
 	struct s_snapshot snapshot;
 	struct s_zxsnapshot zxsnapshot;
+	int snapRAMsize;
 	int bankset[BANK_MAX_NUMBER>>2];   /* 64K selected flag */
 	int bankused[BANK_MAX_NUMBER]; /* 16K selected flag */
 	int bankgate[BANK_MAX_NUMBER+1];
@@ -791,10 +897,12 @@ struct s_assenv {
 	int label_line;
 	char **filename;
 	int ifile,maxfile;
+	char **rawfile; // case export
+	int *rawlen;    // case export
 	int nberr,flux;
 	int fastmatch[256];
 	unsigned char charset[256];
-	int maxerr,extended_error,nowarning;
+	int maxerr,extended_error,nowarning,erronwarn,utf8enable,freequote;
 	/* ORG tracking */
 	int codeadr,outputadr,nocode;
 	int codeadrbackup,outputadrbackup;
@@ -813,7 +921,7 @@ struct s_assenv {
 	/* expressions */
 	struct s_expression *expression;
 	int ie,me;
-	int maxam,as80,dams;
+	int maxam,as80,dams,pasmo;
 	float rough;
 	struct s_compute_core_data *computectx,ctx1,ctx2;
 	struct s_crcstring_tree stringtree;
@@ -823,14 +931,21 @@ struct s_assenv {
 	struct s_crclabel_tree labeltree; /* fast label access */
 	char *module;
 	int modulen;
+	char module_separator[2];
 	struct s_breakpoint *breakpoint;
 	int ibreakpoint,maxbreakpoint;
 	char *lastgloballabel;
-	char *lastsuperglobal;
+	//char *lastsuperglobal;
 	int lastgloballabellen, lastglobalalloc;
+	char **globalstack; /* retrieve back global from previous scope */
+	int igs,mgs;
+	char *source_bigbuffer;
+	int source_bigbuffer_len;
 	/* repeat */
 	struct s_repeat *repeat;
 	int ir,mr;
+	double repeat_start;
+	double repeat_increment;
 	/* while/wend */
 	struct s_whilewend *whilewend;
 	int iw,mw;
@@ -854,6 +969,9 @@ struct s_assenv {
 	struct s_lz_section *lzsection;
 	int ilz,mlz;
 	int lz,curlz;
+	/* poker */
+	struct s_poker *poker;
+	int nbpoker,maxpoker;
 	/* macro */
 	struct s_macro *macro;
 	int imacro,mmacro;
@@ -884,6 +1002,7 @@ struct s_assenv {
 	struct s_compute_element AutomateElement[256];
 	unsigned char psgtab[256];
 	unsigned char psgfine[256];
+	int noampersand;
 	/* output */
 	char *outputfilename;
 	int export_sym,export_local,export_multisym;
@@ -897,6 +1016,8 @@ struct s_assenv {
 	char *binary_name;
 	char *cartridge_name;
 	char *snapshot_name;
+	char *tape_name;
+	char *rom_name;
 	struct s_save *save;
 	int nbsave,maxsave;
 	int current_run_idx;
@@ -906,10 +1027,24 @@ struct s_assenv {
 	int checkmode,dependencies;
 	int stop;
 	int warn_unused;
+	int display_stats;
+	int enforce_symbol_case;
 	/* debug */
 	struct s_rasm_info debug;
 	struct s_rasm_info **retdebug;
 	int debug_total_len;
+	/* delayed print */
+	int *dprint_idx;
+	int idprint,mdprint;
+	/* OBJ output */
+	int buildobj;
+	struct s_external *external;
+	int nexternal,mexternal;
+	int external_mapping_size;
+	struct s_external_mapping *relocation;
+	int nrelocation,mrelocation;
+	char **procedurename;
+	int nprocedurename,mprocedurename;
 };
 
 /*************************************
@@ -948,6 +1083,15 @@ struct s_math_keyword math_keyword[]={
 {"SETV",0,E_COMPUTE_OPERATION_SET_V},
 {"SETG",0,E_COMPUTE_OPERATION_SET_V},
 {"SETB",0,E_COMPUTE_OPERATION_SET_B},
+{"SOFT2HARD_INK",0,E_COMPUTE_OPERATION_SOFT2HARD},
+{"S2H_INK",0,E_COMPUTE_OPERATION_SOFT2HARD},
+{"HARD2SOFT_INK",0,E_COMPUTE_OPERATION_HARD2SOFT},
+{"H2S_INK",0,E_COMPUTE_OPERATION_HARD2SOFT},
+{"GETNOP",0,E_COMPUTE_OPERATION_GETNOP},
+{"GETTICK",0,E_COMPUTE_OPERATION_GETTICK},
+{"DURATION",0,E_COMPUTE_OPERATION_DURATION},
+{"FILESIZE",0,E_COMPUTE_OPERATION_FILESIZE},
+{"GETSIZE",0,E_COMPUTE_OPERATION_GETSIZE},
 {"",0,-1}
 };
 
@@ -988,6 +1132,20 @@ struct s_math_keyword math_keyword[]={
 #define CRC_PO   0x4BD53717
 #define CRC_PE   0x4BD5370D
 #define CRC_M    0x7A98A6C5
+
+/* cut registers */
+#define CRC_HL_LOW	0xF9FDE22C
+#define CRC_HL_HIGH	0x2261E25A
+#define CRC_DE_LOW	0x3A3CE221
+#define CRC_DE_HIGH	0x23D0E04F
+#define CRC_BC_LOW	0xFDFF1E1D
+#define CRC_BC_HIGH	0x222BE44B
+#define CRC_IX_LOW	0xB9FD0439
+#define CRC_IX_HIGH	0xA3FD0667
+#define CRC_IY_LOW	0xD9ED6C3A
+#define CRC_IY_HIGH	0x23DD5068
+#define CRC_AF_LOW	0xDDCF141F
+#define CRC_AF_HIGH	0x223FEA4D
 
 /* 8 bits registers */
 #define CRC_F    0x7A98A6BE
@@ -1040,9 +1198,11 @@ struct s_math_keyword math_keyword[]={
 #define CRC_DS		0x4BD5DF0F
 #define CRC_DEFR	0x37D15399
 #define CRC_DR		0x4BD5DF0E
+#define CRC_DEFF	0x37D1538D
+#define CRC_DF	        0x4BD5DF02
 
 /* struct declaration use special instructions for defines */
-int ICRC_DEFB,ICRC_DEFW,ICRC_DEFI,ICRC_DEFR,ICRC_DEFS,ICRC_DB,ICRC_DW,ICRC_DR,ICRC_DS;
+int ICRC_DEFB,ICRC_DEFW,ICRC_DEFI,ICRC_DEFR,ICRC_DEFF,ICRC_DF,ICRC_DEFS,ICRC_DB,ICRC_DW,ICRC_DR,ICRC_DS;
 /* need to pre-declare var */
 extern struct s_asm_keyword instruction[];
 
@@ -1054,7 +1214,7 @@ A-Z variable ou fonction (cos, sin, tan, sqr, pow, mod, and, xor, mod, ...)
 +*-/&^m| operateur
 */
 
-#define AutomateExpressionValidCharExtendedDefinition "0123456789.ABCDEFGHIJKLMNOPQRSTUVWXYZ_{}@+-*/~^$#%§<=>|&"
+#define AutomateExpressionValidCharExtendedDefinition "0123456789.ABCDEFGHIJKLMNOPQRSTUVWXYZ_{}@+-*/~^$#%<=>|&" /* § */
 #define AutomateExpressionValidCharFirstDefinition "#%0123456789.ABCDEFGHIJKLMNOPQRSTUVWXYZ_@${"
 #define AutomateExpressionValidCharDefinition "0123456789.ABCDEFGHIJKLMNOPQRSTUVWXYZ_{}@$"
 #define AutomateValidLabelFirstDefinition ".ABCDEFGHIJKLMNOPQRSTUVWXYZ_@"
@@ -1069,7 +1229,83 @@ unsigned char *LZ4_crunch(unsigned char *data, int zelen, int *retlen){
 	*retlen=LZ4_compress_HC((char*)data,(char*)lzdest,zelen,65536,9);
 	return lzdest;
 }
+#ifndef NOAPULTRA
+size_t apultra_compress(const unsigned char *pInputData, unsigned char *pOutBuffer, size_t nInputSize, size_t nMaxOutBufferSize,
+      const unsigned int nFlags, size_t nMaxWindowSize, size_t nDictionarySize, void(*progress)(long long nOriginalSize, long long nCompressedSize), void *pStats);
+size_t apultra_get_max_compressed_size(size_t nInputSize);
+
+int do_apultra(unsigned char *datain, int lenin, unsigned char **dataout, int *lenout) {
+   size_t nCompressedSize = 0L, nMaxCompressedSize;
+   int nFlags = 0;
+   //apultra_stats stats;
+   unsigned char *pCompressedData;
+
+   /* Allocate max compressed size */
+
+   nMaxCompressedSize = apultra_get_max_compressed_size(lenin);
+   pCompressedData = (unsigned char*)MemMalloc(nMaxCompressedSize);
+   memset(pCompressedData, 0, nMaxCompressedSize);
+
+   nCompressedSize = apultra_compress(datain, pCompressedData, lenin, nMaxCompressedSize, nFlags, 65536, 0 /* dico */, NULL /*compression_progress*/, NULL /*&stats*/);
+
+   if (nCompressedSize == -1) {
+      fprintf(stderr, "APULTRA compression error\n");
+      *lenout=0;
+      *dataout=NULL;
+      return 100;
+   }
+
+   *lenout=nCompressedSize;
+   *dataout=pCompressedData;
+   return 0;
+}
+int APULTRA_crunch(unsigned char *data, int len, unsigned char **dataout, int *lenout) {
+   return do_apultra(data, len, dataout, lenout);
+}
+
+
+size_t lzsa_compress_inmem(unsigned char *pInputData, unsigned char *pOutBuffer, size_t nInputSize, size_t nMaxOutBufferSize,
+                             const unsigned int nFlags, const int nMinMatchSize, const int nFormatVersion);
+
+int LZSA_crunch(unsigned char *datain, int lenin, unsigned char **dataout, int *lenout, int version, int matchsize) {
+   size_t nCompressedSize = 0L, nMaxCompressedSize;
+   int nFlags = 0;
+   unsigned char *pCompressedData;
+
+pCompressedData=(unsigned char *)MemMalloc(65536);
+nMaxCompressedSize=65536;
+
+/* RAW */
+nFlags=1<<1; // nFlags=LZSA_FLAG_RAW_BLOCK;
+/* par défaut du LZSA1-Fast */
+if (version<1 || version>2) {
+	version=1;
+}
+if (matchsize<2 || matchsize>5) {
+	switch (version) {
+		case 1:matchsize=5;break;
+		case 2:matchsize=2;break;
+		default:break;
+	}
+}
+
+nCompressedSize=lzsa_compress_inmem(datain, pCompressedData, lenin, nMaxCompressedSize, nFlags, matchsize, version);
+
+   if (nCompressedSize == -1) {
+      fprintf(stderr, "LZSA compression error\n");
+      *lenout=0;
+      *dataout=NULL;
+      return 100;
+   }
+
+   *lenout=nCompressedSize;
+   *dataout=pCompressedData;
+   return 0;
+}
+
 #endif
+#endif
+
 unsigned char *LZ48_encode_legacy(unsigned char *data, int length, int *retlength);
 #define LZ48_crunch LZ48_encode_legacy
 unsigned char *LZ49_encode_legacy(unsigned char *data, int length, int *retlength);
@@ -1095,7 +1331,7 @@ unsigned char *_internal_readbinaryfile(char *filename, int *filelength)
         }
         return binary_data;
 }
-char **_internal_readtextfile(char *filename, char replacechar)
+char **_internal_readtextfile(struct s_assenv *ae,char *filename, char replacechar)
 {
         #undef FUNC
         #define FUNC "_internal_readtextfile"
@@ -1138,12 +1374,17 @@ char **_internal_readtextfile(char *filename, char replacechar)
         } else {
                 lines_buffer[nb_lines]=NULL;
         }
-        MemFree(bigbuffer);
+
+	if (ae->enforce_symbol_case && replacechar==':') {
+		ae->source_bigbuffer=bigbuffer;
+		ae->source_bigbuffer_len=file_size;
+	}
+        //MemFree(bigbuffer);
         return lines_buffer;
 }
 
-#define FileReadLines(filename) _internal_readtextfile(filename,':')
-#define FileReadLinesRAW(filename) _internal_readtextfile(filename,0x0D)
+#define FileReadLines(ae,filename) _internal_readtextfile(ae,filename,':')
+#define FileReadLinesRAW(ae,filename) _internal_readtextfile(ae,filename,0x0D)
 #define FileReadContent(filename,filesize) _internal_readbinaryfile(filename,filesize)
 
 
@@ -1306,6 +1547,16 @@ int _internal_LevenshteinDistance(char *s,  char *t)
    free(d);
    return r;
 }
+
+unsigned int FastRand()
+{
+        #undef FUNC
+        #define FUNC "FastRand"
+	static unsigned int zeseed=0x12345678;
+        zeseed=214013*zeseed+2531011;
+        return (zeseed>>16)&0x7FFF;
+}
+
 
 #ifdef RASM_THREAD
 /*
@@ -1509,9 +1760,9 @@ printf("filename=[%s]\n",filename);
 
 }
 
-char *GetPath(char *filename) {
+char *rasm_GetPath(char *filename) {
 	#undef FUNC
-	#define FUNC "GetPath"
+	#define FUNC "rasm_GetPath"
 
 	static char curpath[PATH_MAX];
 	int zelen,idx;
@@ -1557,7 +1808,7 @@ char *MergePath(struct s_assenv *ae,char *dadfilename, char *filename) {
 	#define FUNC "MergePath"
 
 	static char curpath[PATH_MAX];
-	int zelen;
+
 
 #ifdef OS_WIN
 	TxtReplace(filename,"/","\\",1);
@@ -1570,10 +1821,10 @@ char *MergePath(struct s_assenv *ae,char *dadfilename, char *filename) {
 		exit(-111);
 	} else {
 		if (filename[0]=='.' && filename[1]=='\\') {
-			strcpy(curpath,GetPath(dadfilename));
+			strcpy(curpath,rasm_GetPath(dadfilename));
 			strcat(curpath,filename+2);
 		} else {
-			strcpy(curpath,GetPath(dadfilename));
+			strcpy(curpath,rasm_GetPath(dadfilename));
 			strcat(curpath,filename);
 		}
 	}
@@ -1582,10 +1833,10 @@ char *MergePath(struct s_assenv *ae,char *dadfilename, char *filename) {
 		/* chemin absolu */
 		strcpy(curpath,filename);
 	} else if (filename[0]=='.' && filename[1]=='/') {
-		strcpy(curpath,GetPath(dadfilename));
+		strcpy(curpath,rasm_GetPath(dadfilename));
 		strcat(curpath,filename+2);
 	} else {
-		strcpy(curpath,GetPath(dadfilename));
+		strcpy(curpath,rasm_GetPath(dadfilename));
 		strcat(curpath,filename);
 	}
 #endif
@@ -1603,7 +1854,7 @@ void InitAutomate(char *autotab, const unsigned char *def)
 
 	memset(autotab,0,256);
 	for (i=0;def[i];i++) {
-		autotab[(int)def[i]]=1;
+		autotab[(unsigned int)def[i]]=1;
 	}
 }
 void StateMachineResizeBuffer(char **ABuf, int idx, int *ASize) {
@@ -1632,6 +1883,8 @@ int GetCRC(char *label)
 	}
 	return crc;
 }
+
+int IsDirective(char *expr);
 
 int IsRegister(char *zeexpression)
 {
@@ -1689,12 +1942,14 @@ int StringIsMem(char *w)
 					break;
 				case '(':p++;break;
 				case ')':p--;
+					/* si on sort de la première parenthèse */
 					if (!p && w[idx+1]) return 0;
 					break;
 				default:break;
 			}
 			idx++;
 		}
+		/* si on ne termine pas par une parenthèse */
 		if (w[idx-1]!=')') return 0;
 	} else {
 		return 0;
@@ -1702,6 +1957,8 @@ int StringIsMem(char *w)
 	return 1;
 
 }
+
+
 int StringIsQuote(char *w)
 {
 	#undef FUNC
@@ -1863,7 +2120,7 @@ void MakeError(struct s_assenv *ae, char *filename, int line, char *format, ...)
 		}
 		#endif
 		if (myalloc<1) {
-			/* do not crash */
+			/* does not crash */
 			return;
 		}
 
@@ -1878,126 +2135,245 @@ void MakeError(struct s_assenv *ae, char *filename, int line, char *format, ...)
 		va_end(argptr);
 	} else {
 		fprintf(stdout,KERROR);
-		va_start(argptr,format);
 		if (filename && line) {
 			printf("[%s:%d] ",filename,line);
 		} else if (filename) {
 			printf("[%s] ",filename);
 		}
+		va_start(argptr,format);
 		vfprintf(stdout,format,argptr);	
 		va_end(argptr);
 		fprintf(stdout,KNORMAL);
 	}
 }
 
+/* convert v double value to Microsoft REAL 
+ *
+ * https://en.wikipedia.org/wiki/Microsoft_Binary_Format
+ *
+ * exponent:8
+ * sign:1
+ * mantiss:23
+ *
+ * */
+unsigned char *__internal_MakeRosoftREAL(struct s_assenv *ae, double v, int iexpression)
+{
+	#undef FUNC
+	#define FUNC "__internal_MakeRosoftREAL"
+	
+	static unsigned char orc[5]={0};
+	unsigned char rc[5]={0};
+	int j,ib,ibb;
+	int fracmax=0;
+	int mesbits[32];
+	int ibit=0,exp=0;
+	// v2
+	unsigned long mantissa;
+	unsigned long deci;
+	unsigned long mask;
+	int isneg;
 
-/* convert v double value to Amstrad REAL */
+	if (v<0.0) {isneg=1;v=-v;} else isneg=0;
+
+	memset(rc,0,sizeof(rc));
+
+	// decimal hack
+	deci=v;
+#if TRACE_MAKEAMSDOSREAL
+printf("AmstradREAL decimal part is %s\n",doubletext);
+#endif
+	/*******************************************************************
+			     values >= 1.0
+	*******************************************************************/
+	if (deci) {
+		mask=0x80000000;
+		// find first significant bit of decimal part in order to get exponent value
+		while (!(deci & mask)) mask=mask/2;
+		while (mask) {
+			exp++;
+			mask=mask/2;
+		}
+		mantissa=v*pow(2.0,32-exp)+0.5; // 32 bits unsigned is the maximum value allowed
+		if (mantissa & 0xFF00000000L) mantissa=0xFFFFFFFF;
+#if TRACE_MAKEAMSDOSREAL
+printf("decimal part has %d bits\n",exp);
+printf("32 bits mantissa is %lu\n",mantissa);
+#endif
+		mask=0x80000000;
+		while (mask) {
+			mesbits[ibit]=!!(mantissa & mask);
+			ibit++;
+			mask=mask/2;
+		}
+	} else {
+		/*******************************************************************
+		                     negative exponent or zero
+		*******************************************************************/
+		/* handling zero special case */
+		if (v==0.0) {
+			exp=-128;
+			ibit=0;
+		} else {
+			mantissa=(v*4294967296.0+0.5); // as v is ALWAYS <1.0 we never reach the 32 bits maximum
+			if (mantissa & 0xFF00000000L) mantissa=0xFFFFFFFF;
+			mask=0x80000000;
+#if TRACE_MAKEAMSDOSREAL
+printf("32 bits mantissa for fraction is %lu\n",mantissa);
+#endif
+			// find first significant bit of fraction part
+			while (!(mantissa & mask)) {
+				mask=mask/2;
+				exp--;
+			}
+
+			mantissa=(v*pow(2.0,32-exp)+0.5); // as v is ALWAYS <1.0 we never reach the 32 bits maximum
+			if (mantissa & 0xFF00000000L) mantissa=0xFFFFFFFF;
+			mask=0x80000000;
+
+			while (mask && ibit<32) {
+				mesbits[ibit]=!!(mantissa & mask);
+				ibit++;
+				mask=mask/2;
+			}
+		}
+#if TRACE_MAKEAMSDOSREAL
+printf("\n%d bits used for mantissa\n",ibit);
+#endif
+	}
+
+	/* pack bits */
+	ib=3;ibb=0x80;
+	for (j=0;j<ibit;j++) {
+		if (mesbits[j])	rc[ib]|=ibb;
+		ibb>>=1;
+		if (ibb==0) {
+			ibb=0x80;
+			ib--;
+		}
+	}
+	/* exponent */
+	exp+=128;
+	if (exp<0 || exp>255) {
+		if (iexpression) MakeError(ae,GetExpFile(ae,iexpression),ae->wl[ae->expression[iexpression].iw].l,"Exponent overflow\n");
+		else MakeError(ae,GetExpFile(ae,0),ae->wl[ae->idx].l,"Exponent overflow\n");
+		exp=128;
+	}
+	rc[4]=exp;
+
+	/* Microsoft REAL sign */
+	if (!isneg) {
+		rc[3]&=0x7F;
+	} else {
+		rc[3]|=0x80;
+	}
+
+	/* switch byte order */
+	orc[0]=rc[4];
+	orc[1]=rc[3];
+	orc[2]=rc[2];
+	orc[3]=rc[1];
+	orc[4]=rc[0];
+
+#if TRACE_MAKEAMSDOSREAL
+	for (j=0;j<5;j++) printf("%02X ",orc[j]);
+	printf("\n");
+#endif
+
+	return orc;
+}
+
+
+/* convert v double value to Amstrad REAL 
+ *
+ * http://www.cpcwiki.eu/index.php?title=Technical_information_about_Locomotive_BASIC&mobileaction=toggle_view_desktop#Floating_Point_data_definition
+ *
+ * exponent:8
+ * sign:1
+ * mantiss:23
+ *
+ * */
 unsigned char *__internal_MakeAmsdosREAL(struct s_assenv *ae, double v, int iexpression)
 {
 	#undef FUNC
 	#define FUNC "__internal_MakeAmsdosREAL"
 	
 	static unsigned char rc[5];
-
-	double tmpval;
-	int j,ib,ibb,exp=0;
-	unsigned int deci;
-	int fracmax=0;
-	double frac;
-	int mesbits[32];
-	int ibit=0;
-	unsigned int mask;
+	int mesbits[32]={0}; // must be reseted!
+	int j,ib,ibb;
+	int ibit=0,exp=0;
+	// v2
+	unsigned long mantissa;
+	unsigned long deci;
+	unsigned long mask;
+	int isneg;
 
 	memset(rc,0,sizeof(rc));
 
-	deci=fabs(floor(v));
-	frac=fabs(v)-deci;
+	if (v<0.0) {isneg=1;v=-v;} else isneg=0;
 
+	// decimal hack
+	deci=v;
+#if TRACE_MAKEAMSDOSREAL
+printf("AmstradREAL decimal part is %s\n",doubletext);
+#endif
+	/*******************************************************************
+			     values >= 1.0
+	*******************************************************************/
 	if (deci) {
 		mask=0x80000000;
+		// find first significant bit of decimal part in order to get exponent value
 		while (!(deci & mask)) mask=mask/2;
 		while (mask) {
-			mesbits[ibit]=!!(deci & mask);
+			exp++;
+			mask=mask/2;
+		}
+		mantissa=v*pow(2.0,32-exp)+0.5; // 32 bits unsigned is the maximum value allowed
+		if (mantissa & 0xFF00000000L) mantissa=0xFFFFFFFF;
 #if TRACE_MAKEAMSDOSREAL
-printf("%d",mesbits[ibit]);
+printf("decimal part has %d bits\n",exp);
+printf("32 bits mantissa is %lu\n",mantissa);
 #endif
+		mask=0x80000000;
+		while (mask) {
+			mesbits[ibit]=!!(mantissa & mask);
 			ibit++;
 			mask=mask/2;
 		}
-#if TRACE_MAKEAMSDOSREAL
-printf("\nexposant positif: %d\n",ibit);
-#endif
-		exp=ibit;
-#if TRACE_MAKEAMSDOSREAL
-printf(".");
-#endif
-		while (ibit<32 && frac!=0) {
-			frac=frac*2;
-			if (frac>=1.0) {
-				mesbits[ibit++]=1;
-#if TRACE_MAKEAMSDOSREAL
-printf("1");
-#endif
-				frac-=1.0;
-			} else {
-				mesbits[ibit++]=0;
-#if TRACE_MAKEAMSDOSREAL
-printf("0");
-#endif
-			}
-			fracmax++;
-		}
 	} else {
-#if TRACE_MAKEAMSDOSREAL
-printf("\nexposant negatif a definir:\n");
-printf("x.");
-#endif
-		
-		/* handling zero */
-		if (frac==0.0) {
-			exp=0;
-			ibit=0;
+		/*******************************************************************
+		                     negative exponent or zero
+		*******************************************************************/
+		/* handling zero special case */
+		if (v==0.0) {
+			exp=-128;
 		} else {
-			/* looking for first significant bit */
-			while (1) {
-				frac=frac*2;
-				if (frac>=1.0) {
-					mesbits[ibit++]=1;
+			mantissa=(v*4294967296.0+0.5); // as v is ALWAYS <1.0 we never reach the 32 bits maximum
+			if (mantissa & 0xFF00000000L) mantissa=0xFFFFFFFF;
+			mask=0x80000000;
 #if TRACE_MAKEAMSDOSREAL
-printf("1");
+printf("32 bits mantissa for fraction is %lu\n",mantissa);
 #endif
-					frac-=1.0;
-					break; /* first significant bit found, now looking for limit */
-				} else {
-#if TRACE_MAKEAMSDOSREAL
-printf("o");
-#endif
-				}
-				fracmax++;
+			// find first significant bit of fraction part
+			while (!(mantissa & mask)) {
+				mask=mask/2;
 				exp--;
 			}
-			while (ibit<32 && frac!=0) {
-				frac=frac*2;
-				if (frac>=1.0) {
-					mesbits[ibit++]=1;
-#if TRACE_MAKEAMSDOSREAL
-printf("1");
-#endif
-					frac-=1.0;
-				} else {
-					mesbits[ibit++]=0;
-#if TRACE_MAKEAMSDOSREAL
-printf("0");
-#endif
-				}
-				fracmax++;
+
+			mantissa=(v*pow(2.0,32-exp)+0.5); // as v is ALWAYS <1.0 we never reach the 32 bits maximum
+			if (mantissa & 0xFF00000000L) mantissa=0xFFFFFFFF;
+			mask=0x80000000;
+
+			while (mask) {
+				mesbits[ibit]=!!(mantissa & mask);
+				ibit++;
+				mask=mask/2;
 			}
 		}
+#if TRACE_MAKEAMSDOSREAL
+printf("\n%d bits used for mantissa\n",ibit);
+#endif
 	}
 
-#if TRACE_MAKEAMSDOSREAL
-printf("\n%d bits utilises en mantisse\n",ibit);
-#endif
 	/* pack bits */
 	ib=3;ibb=0x80;
 	for (j=0;j<ibit;j++) {
@@ -2017,8 +2393,8 @@ printf("\n%d bits utilises en mantisse\n",ibit);
 	}
 	rc[4]=exp;
 
-	/* REAL sign */
-	if (v>=0) {
+	/* REAL sign replace the most significant implied bit */
+	if (!isneg) {
 		rc[3]&=0x7F;
 	} else {
 		rc[3]|=0x80;
@@ -2026,7 +2402,7 @@ printf("\n%d bits utilises en mantisse\n",ibit);
 
 #if TRACE_MAKEAMSDOSREAL
 	for (j=0;j<5;j++) printf("%02X ",rc[j]);
-	printf("\n");
+	printf("\n------------------\n");
 #endif
 
 	return rc;
@@ -2121,7 +2497,10 @@ void FreeAssenv(struct s_assenv *ae)
 
 #ifndef RDD
 	/* let the system free the memory in command line except when debug/dev */
+	#ifndef __MORPHOS__
+	/* MorphOS does not like when memory is not freed before exit */
 	if (!ae->flux) return;
+	#endif
 #endif
 	/*** debug info ***/	
 	if (!ae->retdebug) {
@@ -2158,6 +2537,12 @@ void FreeAssenv(struct s_assenv *ae)
 	}
 	/*** end debug ***/
 
+	if (ae->enforce_symbol_case) {
+		for (i=0;i<ae->ifile;i++) {
+			if (ae->rawlen[i]) MemFree(ae->rawfile[i]);
+		}
+	}
+
 	for (i=0;i<ae->nbbank;i++) {
 		MemFree(ae->mem[i]);
 	}
@@ -2169,12 +2554,20 @@ void FreeAssenv(struct s_assenv *ae)
 	/* free labels, expression, orgzone, repeat, ... */
 	if (ae->mo) MemFree(ae->orgzone);
 	if (ae->me) {
-		for (i=0;i<ae->ie;i++) if (ae->expression[i].reference) MemFree(ae->expression[i].reference);
+		for (i=0;i<ae->ie;i++) {
+			if (ae->expression[i].reference) MemFree(ae->expression[i].reference);
+			if (ae->expression[i].module) MemFree(ae->expression[i].module);
+		}
 		MemFree(ae->expression);
+	}
+	if (ae->nbsave) {
+		for (i=0;i<ae->nbsave;i++) {
+			if (ae->save[i].filename) MemFree(ae->save[i].filename);
+		}
 	}
 	if (ae->mh) {
 		for (i=0;i<ae->ih;i++) {
-			MemFree(ae->hexbin[i].data);
+			//MemFree(ae->hexbin[i].data);
 			MemFree(ae->hexbin[i].filename);
 		}
 		MemFree(ae->hexbin);
@@ -2192,6 +2585,7 @@ void FreeAssenv(struct s_assenv *ae)
 		for (j=0;j<ae->rasmstruct[i].irasmstructfield;j++) {
 			MemFree(ae->rasmstruct[i].rasmstructfield[j].fullname);
 			MemFree(ae->rasmstruct[i].rasmstructfield[j].name);
+			if (ae->rasmstruct[i].rasmstructfield[j].mdata) MemFree(ae->rasmstruct[i].rasmstructfield[j].data);
 		}
 		if (ae->rasmstruct[i].mrasmstructfield) MemFree(ae->rasmstruct[i].rasmstructfield);
 		MemFree(ae->rasmstruct[i].name);
@@ -2229,6 +2623,22 @@ void FreeAssenv(struct s_assenv *ae)
 
 	
 	if (ae->mmacro) MemFree(ae->macro);
+
+	for (i=0;i<ae->igs;i++) {
+		if (ae->globalstack[i]) MemFree(ae->globalstack[i]);
+	}
+	if (ae->mgs) MemFree(ae->globalstack);
+	if (ae->lastglobalalloc) {
+		MemFree(ae->lastgloballabel);
+		ae->lastglobalalloc=0;
+		ae->lastgloballabel=NULL;
+	}
+
+	/* external + mapping */
+	for (i=0;i<ae->nexternal;i++) {
+		if (ae->external[i].mmapping) MemFree(ae->external[i].mapping);
+	}
+	if (ae->mexternal) MemFree(ae->external);
 
 	for (i=0;i<ae->ialias;i++) {
 		MemFree(ae->alias[i].alias);
@@ -2282,14 +2692,14 @@ void MaxError(struct s_assenv *ae)
 	#define FUNC "MaxError"
 
 	char **source_lines=NULL;
-	int idx,crc,zeline;
-	char c;
+	int zeline;
+
 
 	/* extended error is useful with generated code we do not want to edit */
 	if (ae->extended_error && ae->wl) {
 		/* super dupper slow but anyway, there is an error... */
 		if (ae->wl[ae->idx].l) {
-			source_lines=FileReadLinesRAW(GetCurrentFile(ae));
+			source_lines=FileReadLinesRAW(ae,GetCurrentFile(ae));
 			zeline=0;
 			while (zeline<ae->wl[ae->idx].l-1 && source_lines[zeline]) zeline++;
 			if (zeline==ae->wl[ae->idx].l-1 && source_lines[zeline]) {
@@ -2300,7 +2710,7 @@ void MaxError(struct s_assenv *ae)
 			FreeArrayDynamicValue(&source_lines);
 		}
 	}
-	
+
 	ae->nberr++;
 	if (ae->nberr==ae->maxerr) {
 		rasm_printf(ae,KERROR"Too many errors!\n");
@@ -2364,7 +2774,7 @@ void ___output_set_limit(struct s_assenv *ae,int zelimit)
 	#undef FUNC
 	#define FUNC "___output_set_limit"
 
-	int limit=65535;
+	int limit=65536;
 	
 	if (zelimit<=limit) {
 		/* apply limit */
@@ -2373,7 +2783,7 @@ void ___output_set_limit(struct s_assenv *ae,int zelimit)
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"limit exceed hardware limitation!");
 		ae->stop=1;
 	}
-	if (ae->outputadr>=0 && ae->outputadr>limit) {
+	if (ae->outputadr>=0 && ae->outputadr>=limit) {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"limit too high for current output!");
 		ae->stop=1;
 	}
@@ -2434,7 +2844,7 @@ unsigned char *MakeAMSDOSHeader(int run, int minmem, int maxmem, char *amsdos_na
 	AmsdosHeader[0x5D]=AmsdosHeader[24];
 	AmsdosHeader[0x5E]=AmsdosHeader[25];
 
-	sprintf((char *)AmsdosHeader+0x47+17," generated by %s ",RASM_SNAP_VERSION);
+	sprintf((char *)AmsdosHeader+0x47+17," created by %-9.9s ",RASM_SNAP_VERSION);
 
 	return AmsdosHeader;
 }
@@ -2456,7 +2866,7 @@ unsigned char *MakeHobetaHeader(int minmem, int maxmem, char *trdos_name) {
    */
 	memset(HobetaHeader,0,sizeof(HobetaHeader));
 
-	strncpy(HobetaHeader,trdos_name,8);
+	strncpy((char*)&HobetaHeader[0],trdos_name,8);
 	HobetaHeader[8]='C';
 	HobetaHeader[0x9]=(maxmem-minmem)&0xFF;
 	HobetaHeader[0xA]=(maxmem-minmem)>>8;
@@ -2516,7 +2926,7 @@ int SearchAlias(struct s_assenv *ae, int crc, char *zemot)
 			while (ae->alias[dm].crc==crc && strcmp(ae->alias[dm].alias,zemot)) dm++;
 			if (ae->alias[dm].crc==crc && strcmp(ae->alias[dm].alias,zemot)==0) {
 				ae->alias[dm].used=1;
-//printf("found\n");
+//printf("[%s] found => [%s]\n",zemot,ae->alias[dm].translation);
 				return dm;
 			} else return -1;
 		} else if (ae->alias[dm].crc>crc) {
@@ -2567,7 +2977,7 @@ void CheckAndSortAliases(struct s_assenv *ae)
 	#define FUNC "CheckAndSortAliases"
 
 	struct s_alias tmpalias;
-	int i,dw,dm,du,crc;
+	int i,dw,dm=0,du,crc;
 	for (i=0;i<ae->ialias-1;i++) {
 		/* is there previous aliases in the new alias? */
 		if (strstr(ae->alias[ae->ialias-1].translation,ae->alias[i].alias)) {
@@ -2729,8 +3139,10 @@ void WarnLabelTreeRecurse(struct s_assenv *ae, struct s_crclabel_tree *lt)
 		if (!lt->label[i].used) {
 			if (!lt->label[i].name) {
 				rasm_printf(ae,KWARNING"[%s:%d] Warning: label %s declared but not used\n",ae->filename[lt->label[i].fileidx],lt->label[i].fileline,ae->wl[lt->label[i].iw].w);
+				if (ae->erronwarn) MaxError(ae);
 			} else {
 				rasm_printf(ae,KWARNING"[%s:%d] Warning: label %s declared but not used\n",ae->filename[lt->label[i].fileidx],lt->label[i].fileline,lt->label[i].name);
+				if (ae->erronwarn) MaxError(ae);
 			}
 		}
 	}
@@ -2753,8 +3165,8 @@ void WarnDicoTreeRecurse(struct s_assenv *ae, struct s_crcdico_tree *lt)
 	#undef FUNC
 	#define FUNC "WarnDicoTreeRecurse"
 
-	char symbol_line[1024];
 	int i;
+
 
 	for (i=0;i<256;i++) {
 		if (lt->radix[i]) {
@@ -2764,6 +3176,7 @@ void WarnDicoTreeRecurse(struct s_assenv *ae, struct s_crcdico_tree *lt)
 	for (i=0;i<lt->ndico;i++) {
 		if (strcmp(lt->dico[i].name,"IX") && strcmp(lt->dico[i].name,"IY") && strcmp(lt->dico[i].name,"PI") && strcmp(lt->dico[i].name,"ASSEMBLER_RASM") && lt->dico[i].autorise_export) {
 			rasm_printf(ae,KWARNING"[%s:%d] Warning: variable %s declared but not used\n",ae->filename[ae->wl[lt->dico[i].iw].ifile],ae->wl[lt->dico[i].iw].l,lt->dico[i].name);
+				if (ae->erronwarn) MaxError(ae);
 		}
 	}
 }
@@ -2803,6 +3216,42 @@ void ExportDicoTreeRecurse(struct s_crcdico_tree *lt, char *zefile, char *zeform
 		}
 	}
 }
+void ExportDicoTreeRecurseCase(struct s_assenv *ae,struct s_crcdico_tree *lt, char *zefile, char *zeformat)
+{
+	#undef FUNC
+	#define FUNC "ExportDicoTreeRecurseCase"
+
+	char symbol_line[512];
+	char symbol_name[512];
+	int i;
+
+	for (i=0;i<256;i++) {
+		if (lt->radix[i]) {
+			ExportDicoTreeRecurseCase(ae,lt->radix[i],zefile,zeformat);
+		}
+	}
+	if (lt->mdico) {
+		for (i=0;i<lt->ndico;i++) {
+			if (strcmp(lt->dico[i].name,"IX") && strcmp(lt->dico[i].name,"IY") && strcmp(lt->dico[i].name,"PI") && strcmp(lt->dico[i].name,"ASSEMBLER_RASM") && lt->dico[i].autorise_export) {
+				// case search
+				char *casefound;
+				int namelen;
+
+				if ((casefound=_internal_stristr(ae->rawfile[ae->wl[lt->dico[i].iw].ifile],ae->rawlen[ae->wl[lt->dico[i].iw].ifile],lt->dico[i].name))!=NULL) {
+					namelen=strlen(lt->dico[i].name);
+					if (namelen>511) namelen=511;
+					memcpy(symbol_name,casefound,namelen);
+					symbol_name[namelen]=0;
+					snprintf(symbol_line,sizeof(symbol_line)-1,zeformat,symbol_name,(int)floor(lt->dico[i].v+0.5));
+				} else {
+					snprintf(symbol_line,sizeof(symbol_line)-1,zeformat,lt->dico[i].name,(int)floor(lt->dico[i].v+0.5));
+				}
+				symbol_line[sizeof(symbol_line)-1]=0xD;
+				FileWriteLine(zefile,symbol_line);
+			}
+		}
+	}
+}
 void ExportDicoTree(struct s_assenv *ae, char *zefile, char *zeformat)
 {
 	#undef FUNC
@@ -2810,9 +3259,17 @@ void ExportDicoTree(struct s_assenv *ae, char *zefile, char *zeformat)
 
 	int i;
 
-	for (i=0;i<256;i++) {
-		if (ae->dicotree.radix[i]) {
-			ExportDicoTreeRecurse(ae->dicotree.radix[i],zefile,zeformat);
+	if (!ae->enforce_symbol_case) {
+		for (i=0;i<256;i++) {
+			if (ae->dicotree.radix[i]) {
+				ExportDicoTreeRecurse(ae->dicotree.radix[i],zefile,zeformat);
+			}
+		}
+	} else {
+		for (i=0;i<256;i++) {
+			if (ae->dicotree.radix[i]) {
+				ExportDicoTreeRecurseCase(ae,ae->dicotree.radix[i],zefile,zeformat);
+			}
 		}
 	}
 }
@@ -2859,7 +3316,6 @@ struct s_expr_dico *SearchDico(struct s_assenv *ae, char *dico, int crc)
 	#define FUNC "SearchDico"
 
 	struct s_crcdico_tree *curdicotree;
-	struct s_expr_dico *retdico=NULL;
 	int i,radix,dek=32;
 
 	curdicotree=&ae->dicotree;
@@ -2877,6 +3333,32 @@ struct s_expr_dico *SearchDico(struct s_assenv *ae, char *dico, int crc)
 	for (i=0;i<curdicotree->ndico;i++) {
 		if (strcmp(curdicotree->dico[i].name,dico)==0) {
 			curdicotree->dico[i].used=1;
+
+			if (curdicotree->dico[i].external) {
+				if (ae->external_mapping_size) {
+					/* outside crunched section of in intermediate section */
+					if (ae->lz<1 || ae->lzsection[ae->ilz-1].lzversion==0) {
+						// add mapping
+						struct s_external_mapping mapping;
+						int iex;
+						mapping.iorgzone=ae->io-1;
+						mapping.ptr=ae->outputadr;
+						mapping.size=ae->external_mapping_size;
+						for (iex=0;iex<ae->nexternal;iex++) {
+							if (ae->external[iex].crc==crc && strcmp(ae->external[iex].name,dico)==0) {
+	//printf("add mapping for [%s] ptr=%d size=%d\n",dico,mapping.ptr,mapping.size);
+								ObjectArrayAddDynamicValueConcat((void **)&ae->external[iex].mapping,&ae->external[iex].nmapping,&ae->external[iex].mmapping,&mapping,sizeof(mapping));
+								break;
+							}
+						}
+					} else {
+						MakeError(ae,GetCurrentFile(ae),GetExpLine(ae,0),"cannot use external variable [%s] inside a crunched section!\n",dico);
+					}
+				} else {
+					MakeError(ae,GetCurrentFile(ae),GetExpLine(ae,0),"invalid usage of external variable [%s]\n",dico);
+				}
+			}
+
 			return &curdicotree->dico[i];
 		}
 	}
@@ -2888,7 +3370,6 @@ int DelDico(struct s_assenv *ae, char *dico, int crc)
 	#define FUNC "DelDico"
 
 	struct s_crcdico_tree *curdicotree;
-	struct s_expr_dico *retdico=NULL;
 	int i,radix,dek=32;
 
 	curdicotree=&ae->dicotree;
@@ -3106,7 +3587,7 @@ struct s_crclabel_tree {
 
 
 
-/*
+
 struct s_crclabel_tree {
 	struct s_crclabel_tree *radix[256];
 	struct s_label *label;
@@ -3150,8 +3631,8 @@ struct s_label *SearchLabel(struct s_assenv *ae, char *label, int crc)
 	#define FUNC "SearchLabel"
 
 	struct s_crclabel_tree *curlabeltree;
-	struct s_label *retlabel=NULL;
 	int i,radix,dek=32;
+
 //printf("searchLabel [%s]",label);
 	curlabeltree=&ae->labeltree;
 	while (dek) {
@@ -3320,7 +3801,7 @@ char *TranslateTag(struct s_assenv *ae, char *varbuffer, int *touched, int enabl
 	char *starttag,*endtag,*tagcheck,*expr;
 	int newlen,lenw,taglen,tagidx,tagcount,validx;
 	char curvalstr[256]={0};
-	char *equpos=NULL,*equback;
+
 
 //printf("TranslateTag [%s]\n",varbuffer);
 
@@ -3388,6 +3869,1424 @@ char *TranslateTag(struct s_assenv *ae, char *varbuffer, int *touched, int enabl
 	return varbuffer;
 }
 
+#define CRC_HALT	0xD7D1BFA1
+#define CRC_NOP		0xE1830165
+#define CRC_LDI		0xE18B3F51
+#define CRC_LDD		0xE18B3F4C
+#define CRC_DEC		0xE06BDD44
+#define CRC_INC		0xE19F3B52
+#define CRC_CPI		0xE077C754
+#define CRC_CPD		0xE077C74F
+#define CRC_BIT		0xE073D557
+#define CRC_RES		0xE1B32D62
+#define CRC_SET		0xE1B71164
+#define CRC_CCF		0xE0742D44
+#define CRC_IND		0xE19F3B53
+#define CRC_INI		0xE19F3B58
+#define CRC_DAA		0xE068253E
+#define CRC_CPL		0xE077C757
+#define CRC_EI		0x4BD5DD06
+#define CRC_DI		0x4BD5DF05
+#define CRC_IM		0x4BD5250E
+#define CRC_SCF		0xE1B72D54
+#define CRC_NEG		0xE1833D52
+#define CRC_OUTI	0xEFA5F1B9
+#define CRC_OUTD	0xEFA5F1B4
+#define CRC_OUT		0xE1871170
+#define CRC_IN		0x4BD5250F
+
+#define CRC_RLA		0xE1B31F57
+#define CRC_RLCA	0x878DAD9A
+#define CRC_RRCA	0x87A5B5A0
+#define CRC_RRA		0xE1B30B5D
+#define CRC_RLD		0xE1B31F5A
+#define CRC_RRD		0xE1B30B60
+#define CRC_RST		0xE1B30971
+#define CRC_RR		0x4BD5331C
+#define CRC_RL		0x4BD53316
+#define CRC_RRC		0xE1B30B5F
+#define CRC_RLC		0xE1B31F59
+#define CRC_SLA		0xE1B71F58
+#define CRC_SLL		0xE1B71F63
+#define CRC_SRA		0xE1B70B5E
+#define CRC_SRL		0xE1B70B69
+
+#define CRC_ADD		0xE07C2F41
+#define CRC_ADC		0xE07C2F40
+#define CRC_SBC		0xE1B72B50
+#define CRC_SUB		0xE1B77162
+#define CRC_XOR		0xE1DB3971
+#define CRC_AND		0xE07FDB4B
+#define CRC_OR		0x4BD52919
+#define CRC_CP		0x4BD5D10B
+
+#define CRC_PUSH	0x97A1EDB8
+#define CRC_POP		0xE1BB1967
+
+#define CRC_CALL	0x826B994
+#define CRC_JR		0x4BD52314
+#define CRC_JP		0x4BD52312
+#define CRC_DJNZ	0x37CD7BAE
+#define CRC_RET		0xE1B32D63
+#define CRC_RETN	0x87E9EBB1
+#define CRC_RETI	0x87E9EBAC
+
+#define CRC_LD		0x4BD52F08
+
+#define CRC_EX		0x4BD5DD15
+#define CRC_EXX		0xE06FF76D
+#define CRC_LDIR	0xF7F59DA3
+#define CRC_LDDR	0xF7F5A79E
+#define CRC_INIR	0xDFE98BAA
+#define CRC_INDR	0xDFE99DA5
+#define CRC_OTIR	0xEFB9D7B6
+#define CRC_OTDR	0xEFB9A1B1
+#define CRC_CPIR	0xFF96FA6
+#define CRC_CPDR	0xFF959A1
+
+
+
+int __GETNOP(struct s_assenv *ae,char *oplist, int didx)
+{
+	#undef FUNC
+	#define FUNC "__GETNOP"
+
+	int idx=0,crc,tick=0;
+	char **opcode=NULL;
+	char *opref;
+
+	/* upper case */
+	while (oplist[idx]) {
+		oplist[idx]=toupper(oplist[idx]);
+		idx++;
+	}
+	/* duplicata */
+	opref=TxtStrDup(oplist);
+	/* clean-up */
+	TxtReplace(opref,"\t"," ",0);
+	TxtReplace(opref,"  "," ",1);
+	TxtReplace(opref,": ",":",1);
+	/* simplify extended registers to XL or IX */
+	TxtReplace(opref,"IY","IX",0);
+	TxtReplace(opref,"IXL","XL",0);
+	TxtReplace(opref,"IXH","XL",0);
+	TxtReplace(opref,"LX","XL",0);
+	TxtReplace(opref,"HX","XL",0);
+	TxtReplace(opref,"LY","XL",0);
+	TxtReplace(opref,"HY","XL",0);
+	TxtReplace(opref,"YL","XL",0);
+	TxtReplace(opref,"XH","XL",0);
+	TxtReplace(opref,"YH","XL",0);
+
+	/* count opcodes */
+	opcode=TxtSplitWithChar(opref,':');
+
+	idx=0;
+	while (opcode[idx]) {
+		char *zeopcode,*terminator,*zearg=NULL;
+		char **listarg;
+
+		zeopcode=opcode[idx];
+		/* trim */
+		while (*zeopcode==' ') zeopcode++;
+		terminator=zeopcode;
+		while (*terminator!=0 && *terminator!=' ') terminator++;
+		if (*terminator) {
+			zearg=terminator+1;
+			*terminator=0;
+			/* no space in args */
+			TxtReplace(zearg," ","",1);
+		}
+		if (!zeopcode[0]) {idx++;continue;}
+		crc=GetCRC(zeopcode);
+
+		/*************************************
+		* very simple and simplified parsing *
+		*************************************/
+		switch (crc) {
+			case CRC_RLA:
+			case CRC_RLCA:
+			case CRC_RRCA:
+			case CRC_RRA:
+			case CRC_NOP:
+			case CRC_CCF:
+			case CRC_DAA:
+			case CRC_SCF:
+			case CRC_CPL:
+			case CRC_EXX:
+			case CRC_EI:
+			case CRC_DI:tick+=1;break;
+
+			case CRC_IM:
+			case CRC_NEG:tick+=2;break;
+
+			case CRC_RST:
+			case CRC_RETN:
+			case CRC_RETI:
+			case CRC_CPDR:
+			case CRC_CPIR:
+			case CRC_CPD:
+			case CRC_CPI:tick+=4;break;
+
+			case CRC_RLD:
+			case CRC_RRD:
+			case CRC_LDD:
+			case CRC_LDI:
+			case CRC_OUTI:
+			case CRC_OUTD:
+			case CRC_LDIR:
+			case CRC_LDDR:
+			case CRC_INIR:
+			case CRC_INDR:
+			case CRC_OTIR:
+			case CRC_OTDR:
+			case CRC_IND:
+			case CRC_INI:tick+=5;break;
+
+			case CRC_EX:
+				if (zearg) {
+					if (strstr(zearg,"AF") || strstr(zearg,"DE")) tick+=1; else
+					if (strstr(zearg,"(SP)") && strstr(zearg,"HL")) tick+=6; else
+					if (strstr(zearg,"(SP)") && strstr(zearg,"IX")) tick+=7;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETNOP, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_PUSH:
+				if (zearg) {
+					if (strcmp(zearg,"IX")==0) tick+=5; else tick+=4;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETNOP, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_POP:
+				if (zearg) {
+					if (strcmp(zearg,"IX")==0) tick+=4; else tick+=3;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETNOP, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_SLA:
+			case CRC_SLL:
+			case CRC_SRA:
+			case CRC_SRL:
+			case CRC_RL:
+			case CRC_RLC:
+			case CRC_RR:
+			case CRC_RRC:
+				if (zearg) {
+					if (strstr(zearg,"(HL)")) tick+=4; else
+					if (strstr(zearg,"(IX")) tick+=7; else
+						tick+=2;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETNOP, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_OUT:
+			case CRC_IN:
+				if (zearg) {
+					if (strstr(zearg,"(C)")) tick+=4; else tick+=3;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETNOP, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_ADD:
+			     if (zearg) {
+					/* simplify deprecated notation */
+					TxtReplace(zearg,"A,","",0);
+					if (strcmp(zearg,"IX,BC")==0 || strcmp(zearg,"IX,DE")==0 || strcmp(zearg,"IX,IX")==0 || strcmp(zearg,"IX,SP")==0) tick+=4; else
+					if (strcmp(zearg,"HL,BC")==0 || strcmp(zearg,"HL,DE")==0 || strcmp(zearg,"HL,HL")==0 || strcmp(zearg,"HL,SP")==0) tick+=3; else
+					if (strstr(zearg,"(HL)") || strcmp(zearg,"XL")==0) tick+=2; else
+					if (strstr(zearg,"(IX")) tick+=5; else
+					if ((*zearg>='A' && *zearg<='E') || *zearg=='H' || *zearg=='L') tick+=1; else tick+=2;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETNOP, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			/* ADC/SBC/SUB/XOR/AND/OR */
+			case CRC_ADC:
+			case CRC_SBC:
+				if (zearg) {
+					/* simplify deprecated notation */
+					TxtReplace(zearg,"A,","",0);
+					if (strcmp(zearg,"HL,BC")==0 || strcmp(zearg,"HL,DE")==0 ||strcmp(zearg,"HL,HL")==0 ||strcmp(zearg,"HL,SP")==0) {tick+=4;break;}
+				}
+			case CRC_SUB:
+				/* simplify deprecated notation */
+				TxtReplace(zearg,"A,","",0);
+			case CRC_XOR:
+			case CRC_AND:
+			case CRC_OR:
+			case CRC_CP:
+			     if (zearg) {
+					if (strstr(zearg,"(HL)") || strcmp(zearg,"XL")==0) tick+=2; else
+					if (strstr(zearg,"(IX")) tick+=5; else
+					if ((*zearg>='A' && *zearg<='E') || *zearg=='H' || *zearg=='L') tick+=1; else tick+=2;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETNOP, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			/* BIT/RES/SET */
+			case CRC_BIT:
+				if (strstr(zearg,"(HL)")) tick+=3; else
+				if (strstr(zearg,"(IX")) tick+=6; else tick+=2;
+				break;
+			case CRC_RES:
+			case CRC_SET:
+				if (strstr(zearg,"(HL)")) tick+=4; else
+				if (strstr(zearg,"(IX")) tick+=7; else tick+=2;
+				break;
+			case CRC_DEC:
+			case CRC_INC:
+				if (strcmp(zearg,"XL")==0 || strcmp(zearg,"SP")==0 || strcmp(zearg,"BC")==0
+				     || strcmp(zearg,"DE")==0 || strcmp(zearg,"HL")==0)
+					     tick+=2;
+				else if (strcmp(zearg,"IX")==0 || strcmp(zearg,"(HL)")==0)
+						tick+=3;
+				else if (strncmp(zearg,"(IX",3)==0)
+						tick+=6;
+				else tick++;
+				break;
+			case CRC_JP:
+				// JP is supposed to loop!
+				if (zearg) {
+					if (strstr(zearg,"IX"))
+						tick+=2;
+					else if (strstr(zearg,"HL"))
+						tick+=1;
+					else tick+=3;
+				} else tick+=3;
+				break;
+			case CRC_DJNZ:
+				// DJNZ is supposed to loop!
+			case CRC_CALL:
+				// CALL is supposed to skip!
+			case CRC_JR:
+				// JR is supposed to loop!
+				tick+=3;
+				break;
+			case CRC_RET:
+				// conditionnal RET shorter because it's supposed to be the exit!
+				if (!zearg) tick+=3; else tick+=2;
+				break;
+
+			case CRC_LD:
+				/* big cake! */
+				if (zearg && strchr(zearg,',')) {
+					int crc1,crc2;
+
+					/* split args */
+					listarg=TxtSplitWithChar(zearg,',');
+					crc1=GetCRC(listarg[0]);
+					crc2=GetCRC(listarg[1]);
+
+					switch (crc1) {
+						case CRC_I:
+						case CRC_R:
+							switch (crc2) {
+								case CRC_A:
+									tick+=3;
+									break;
+								default:
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETNOP, see documentation\n",listarg[0],listarg[1]);
+							}
+							break;
+						case CRC_A:
+						case CRC_B:
+						case CRC_C:
+						case CRC_D:
+						case CRC_E:
+						case CRC_H:
+						case CRC_L:
+							switch (crc2) {
+								case CRC_A:
+								case CRC_B:
+								case CRC_C:
+								case CRC_D:
+								case CRC_E:
+								case CRC_H:
+								case CRC_L:
+									tick++;
+									break;
+								case CRC_I:
+								case CRC_R:
+									if (crc1==CRC_A) tick+=3; else
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETNOP, see documentation\n",listarg[0],listarg[1]);
+									break;
+								case CRC_MBC:
+								case CRC_MDE:
+									if (crc1!=CRC_A) {
+										MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETNOP, see documentation\n",listarg[0],listarg[1]);
+										break;
+									}
+								case CRC_XL:
+								case CRC_MHL:
+									tick+=2;
+									break;
+								default:
+									/* MIX + memory + value */
+									if (strncmp(listarg[1],"(IX",3)==0) {
+										tick+=5;
+									} else if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') {
+										/* memory */
+										if (crc1==CRC_A) {
+										tick+=4;
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETNOP, see documentation\n",listarg[0],listarg[1]);
+										}
+									} else {
+										/* numeric value as default */
+										tick+=2;
+									}
+							}
+							break;
+
+						case CRC_XL:
+							switch (crc2) {
+								case CRC_A:
+								case CRC_B:
+								case CRC_C:
+								case CRC_D:
+								case CRC_E:
+								case CRC_H:
+								case CRC_L:
+									tick+=2;
+									break;
+								case CRC_XL:
+									tick+=2;
+									break;
+								default:
+									/* value */
+									tick+=3;
+							}
+							break;
+
+						case CRC_BC:
+						case CRC_DE:
+							/* memory / value */
+							if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') tick+=6; else tick+=3;
+							break;
+						case CRC_HL:
+							/* memory / value */
+							if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') tick+=5; else tick+=3;
+							break;
+						case CRC_SP:
+							if (crc2==CRC_HL) {
+								tick+=2;
+							} else if (crc2==CRC_IX) {
+								/* IX */
+								tick+=3;
+							} else if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') {
+								/* memory */
+								tick+=6;
+							} else tick+=3;
+							break;
+						case CRC_IX:
+							/* memory / value */
+							if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') tick+=6; else tick+=4;
+							break;
+
+						case CRC_MBC:
+						case CRC_MDE:
+							if (crc2==CRC_A) {
+								tick+=2;
+							} else {
+								MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETNOP, see documentation\n",listarg[0],listarg[1]);
+							}
+							break;
+						case CRC_MHL:
+							switch (crc2) {
+								case CRC_A:
+								case CRC_B:
+								case CRC_C:
+								case CRC_D:
+								case CRC_E:
+								case CRC_H:
+								case CRC_L:
+									tick+=2;
+									break;
+								default:
+									tick+=3;
+									break;
+							}
+							break;
+						default:
+							if (strncmp(listarg[0],"(IX",3)==0) {
+								/* MIX */
+								switch (crc2) {
+									case CRC_A:
+									case CRC_B:
+									case CRC_C:
+									case CRC_D:
+									case CRC_E:
+									case CRC_H:
+									case CRC_L:tick+=5;break;
+									default:tick+=6;
+								}
+							} else if (listarg[0][0]=='(' && listarg[0][strlen(listarg[0])-1]==')') {
+								/* memory */
+								switch (crc2) {
+									case CRC_A:tick+=4;break;
+									case CRC_HL:tick+=5;break;
+									case CRC_BC:
+									case CRC_DE:
+									case CRC_SP:
+									case CRC_IX:tick+=6;break;
+									default:
+										MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETNOP, see documentation\n",listarg[0],listarg[1]);
+								}
+							} else {
+								MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETNOP, see documentation\n",listarg[0],listarg[1]);
+							}
+					}
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode LD for GETNOP, need 2 arguments [%s]\n",zearg);
+				}
+				break;
+
+			default: 
+				MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETNOP, see documentation about this directive\n",opcode[idx]);
+		}
+		idx++;
+	}
+	MemFree(opref);
+	if (opcode) MemFree(opcode);
+	return tick;
+}
+int __GETTICK(struct s_assenv *ae,char *oplist, int didx)
+{
+	#undef FUNC
+	#define FUNC "__GETTICK"
+
+	int idx=0,crc,tick=0;
+	char **opcode=NULL;
+	char *opref;
+
+	/* upper case */
+	while (oplist[idx]) {
+		oplist[idx]=toupper(oplist[idx]);
+		idx++;
+	}
+	/* duplicata */
+	opref=TxtStrDup(oplist);
+	/* clean-up */
+	TxtReplace(opref,"\t"," ",0);
+	TxtReplace(opref,"  "," ",1);
+	TxtReplace(opref,": ",":",1);
+	/* simplify extended registers to XL or IX */
+	TxtReplace(opref,"IY","IX",0);
+	TxtReplace(opref,"IXL","XL",0);
+	TxtReplace(opref,"IXH","XL",0);
+	TxtReplace(opref,"LX","XL",0);
+	TxtReplace(opref,"HX","XL",0);
+	TxtReplace(opref,"LY","XL",0);
+	TxtReplace(opref,"HY","XL",0);
+	TxtReplace(opref,"YL","XL",0);
+	TxtReplace(opref,"XH","XL",0);
+	TxtReplace(opref,"YH","XL",0);
+
+	/* count opcodes */
+	opcode=TxtSplitWithChar(opref,':');
+
+	idx=0;
+	while (opcode[idx]) {
+		char *zeopcode,*terminator,*zearg=NULL;
+		char **listarg;
+
+		zeopcode=opcode[idx];
+		/* trim */
+		while (*zeopcode==' ') zeopcode++;
+		terminator=zeopcode;
+		while (*terminator!=0 && *terminator!=' ') terminator++;
+		if (*terminator) {
+			zearg=terminator+1;
+			*terminator=0;
+			/* no space in args */
+			TxtReplace(zearg," ","",1);
+		}
+		if (!zeopcode[0]) {idx++;continue;}
+		crc=GetCRC(zeopcode);
+
+		/*************************************
+		* very simple and simplified parsing *
+		*************************************/
+		switch (crc) {
+			case CRC_RLA:
+			case CRC_RLCA:
+			case CRC_RRCA:
+			case CRC_RRA:
+			case CRC_NOP:
+			case CRC_CCF:
+			case CRC_DAA:
+			case CRC_SCF:
+			case CRC_CPL:
+			case CRC_EXX:
+			case CRC_EI:
+			case CRC_DI:tick+=4;break;
+
+			case CRC_IM:
+			case CRC_NEG:tick+=8;break;
+
+			case CRC_RST:tick+=11;break;
+
+			case CRC_RETN:
+			case CRC_RETI:tick+=14;break;
+
+			case CRC_CPIR:
+			case CRC_CPDR:
+			case CRC_CPD:
+			case CRC_CPI:
+			case CRC_OUTI:
+			case CRC_OUTD:
+			case CRC_LDD:
+			case CRC_LDI:
+			case CRC_LDIR:
+			case CRC_LDDR:
+			case CRC_INIR:
+			case CRC_INDR:
+			case CRC_OTIR:
+			case CRC_OTDR:
+			case CRC_IND:
+			case CRC_INI:tick+=16;break;
+
+			case CRC_RLD:
+			case CRC_RRD:tick+=18;break;
+
+			case CRC_EX:
+				if (zearg) {
+					if (strstr(zearg,"AF") || strstr(zearg,"DE")) tick+=4; else
+					if (strstr(zearg,"(SP)") && strstr(zearg,"HL")) tick+=19; else
+					if (strstr(zearg,"(SP)") && strstr(zearg,"IX")) tick+=23;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETTICK, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_PUSH:
+				if (zearg) {
+					if (strcmp(zearg,"IX")==0) tick+=15; else tick+=11;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETTICK, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_POP:
+				if (zearg) {
+					if (strcmp(zearg,"IX")==0) tick+=14; else tick+=10;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETTICK, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_SLA:
+			case CRC_SLL:
+			case CRC_SRA:
+			case CRC_SRL:
+			case CRC_RL:
+			case CRC_RLC:
+			case CRC_RR:
+			case CRC_RRC:
+				if (zearg) {
+					if (strstr(zearg,"(HL)")) tick+=15; else
+					if (strstr(zearg,"(IX")) tick+=23; else
+						tick+=8;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETTICK, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_OUT:
+				if (zearg) {
+					if (strstr(zearg,"(C),")) tick+=12; else tick+=11;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETTICK, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+			case CRC_IN:
+				if (zearg) {
+					if (strstr(zearg,"(C)")) tick+=12; else tick+=11;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETTICK, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_ADD:
+			     if (zearg) {
+					/* simplify deprecated notation */
+					TxtReplace(zearg,"A,","",0);
+					if (strcmp(zearg,"IX,BC")==0 || strcmp(zearg,"IX,DE")==0 || strcmp(zearg,"IX,IX")==0 || strcmp(zearg,"IX,SP")==0) tick+=15; else
+					if (strcmp(zearg,"HL,BC")==0 || strcmp(zearg,"HL,DE")==0 || strcmp(zearg,"HL,HL")==0 || strcmp(zearg,"HL,SP")==0) tick+=11; else
+					if (strstr(zearg,"(HL)")) tick+=7; else
+					if (strstr(zearg,"(IX")) tick+=19; else
+					if (strstr(zearg,"XL")) tick+=8; else
+					if ((*zearg>='A' && *zearg<='E') || *zearg=='H' || *zearg=='L') tick+=4; else tick+=7;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETTICK, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			/* ADC/SBC/SUB/XOR/AND/OR */
+			case CRC_ADC:
+			case CRC_SBC:
+				if (zearg) {
+					/* simplify deprecated notation */
+					TxtReplace(zearg,"A,","",0);
+					if (strcmp(zearg,"HL,BC")==0 || strcmp(zearg,"HL,DE")==0 ||strcmp(zearg,"HL,HL")==0 ||strcmp(zearg,"HL,SP")==0) {tick+=15;break;}
+				}
+			case CRC_SUB:
+			     if (zearg) {
+					/* simplify deprecated notation */
+					TxtReplace(zearg,"A,","",0);
+				}
+			case CRC_XOR:
+			case CRC_AND:
+			case CRC_OR:
+			case CRC_CP:
+			     if (zearg) {
+					if (strstr(zearg,"(HL)")) tick+=7; else
+					if (strstr(zearg,"(IX")) tick+=19; else
+					if (strstr(zearg,"XL")) tick+=8; else
+					if ((*zearg>='A' && *zearg<='E') || *zearg=='H' || *zearg=='L') tick+=4; else tick+=7;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETTICK, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			/* BIT/RES/SET */
+			case CRC_BIT:
+				if (strstr(zearg,"(HL)")) tick+=12; else
+				if (strstr(zearg,"(IX")) tick+=20; else tick+=8;
+				break;
+			case CRC_RES:
+			case CRC_SET:
+				if (strstr(zearg,"(HL)")) tick+=15; else
+				if (strstr(zearg,"(IX")) tick+=23; else tick+=8;
+				break;
+			case CRC_DEC:
+			case CRC_INC:
+				if (strcmp(zearg,"XL")==0) tick+=8;
+				else if (strcmp(zearg,"SP")==0 || strcmp(zearg,"BC")==0 || strcmp(zearg,"DE")==0 || strcmp(zearg,"HL")==0) tick+=6;
+				else if (strcmp(zearg,"IX")==0) tick+=10;
+				else if (strcmp(zearg,"(HL)")==0) tick+=11;
+				else if (strncmp(zearg,"(IX",3)==0) tick+=23;
+				else tick+=4;
+				break;
+			case CRC_JP:
+				// JP is supposed to loop!
+				if (zearg) {
+					if (strstr(zearg,"IX"))
+						tick+=8;
+					else if (strstr(zearg,"HL"))
+						tick+=4;
+					else tick+=10;
+				} else tick+=10;
+				break;
+			case CRC_DJNZ:
+				// DJNZ is supposed to loop!
+				tick+=13;
+				break;
+			case CRC_CALL:
+				// CALL is supposed to skip!
+				tick+=10;
+				break;
+			case CRC_JR:
+				// JR is supposed to loop!
+				tick+=12;
+				break;
+			case CRC_RET:
+				// conditionnal RET shorter because it's supposed to be the exit!
+				if (!zearg) tick+=10; else tick+=5;
+				break;
+
+			case CRC_LD:
+				/* big cake! */
+				if (zearg && strchr(zearg,',')) {
+					int crc1,crc2;
+
+					/* split args */
+					listarg=TxtSplitWithChar(zearg,',');
+					crc1=GetCRC(listarg[0]);
+					crc2=GetCRC(listarg[1]);
+
+					switch (crc1) {
+						case CRC_I:
+						case CRC_R:
+							switch (crc2) {
+								case CRC_A:
+									tick+=9;
+									break;
+								default:
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETTICK, see documentation\n",listarg[0],listarg[1]);
+							}
+							break;
+						case CRC_A:
+						case CRC_B:
+						case CRC_C:
+						case CRC_D:
+						case CRC_E:
+						case CRC_H:
+						case CRC_L:
+							switch (crc2) {
+								case CRC_A:
+								case CRC_B:
+								case CRC_C:
+								case CRC_D:
+								case CRC_E:
+								case CRC_H:
+								case CRC_L:
+									tick+=4;
+									break;
+								case CRC_I:
+								case CRC_R:
+									if (crc1==CRC_A) tick+=9; else
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETTICK, see documentation\n",listarg[0],listarg[1]);
+									break;
+								case CRC_MBC:
+								case CRC_MDE:
+									if (crc1!=CRC_A) {
+										MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETTICK, see documentation\n",listarg[0],listarg[1]);
+										break;
+									}
+								case CRC_MHL:
+									tick+=7;
+									break;
+								case CRC_XL:
+									tick+=8;
+									break;
+								default:
+									/* MIX + memory + value */
+									if (strncmp(listarg[1],"(IX",3)==0) {
+										tick+=19;
+									} else if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') {
+										/* memory */
+										if (crc1==CRC_A) {
+										tick+=13;
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETTICK, see documentation\n",listarg[0],listarg[1]);
+										}
+									} else {
+										/* numeric value as default */
+										tick+=7;
+									}
+							}
+							break;
+
+						case CRC_XL:
+							switch (crc2) {
+								case CRC_A:
+								case CRC_B:
+								case CRC_C:
+								case CRC_D:
+								case CRC_E:
+								case CRC_H:
+								case CRC_L:
+								case CRC_XL:
+									tick+=8;
+									break;
+								default:
+									/* value */
+									tick+=11;
+							}
+							break;
+
+						case CRC_BC:
+						case CRC_DE:
+							/* memory / value */
+							if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') tick+=20; else tick+=10;
+							break;
+						case CRC_HL:
+							/* memory / value */
+							if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') tick+=16; else tick+=10;
+							break;
+						case CRC_SP:
+							if (crc2==CRC_HL) {
+								tick+=6;
+							} else if (crc2==CRC_IX) {
+								/* IX */
+								tick+=10;
+							} else if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') {
+								/* memory */
+								tick+=20;
+							} else tick+=10;
+							break;
+						case CRC_IX:
+							/* memory / value */
+							if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') tick+=20; else tick+=14;
+							break;
+
+						case CRC_MBC:
+						case CRC_MDE:
+							if (crc2==CRC_A) {
+								tick+=7;
+							} else {
+								MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETTICK, see documentation\n",listarg[0],listarg[1]);
+							}
+							break;
+						case CRC_MHL:
+							switch (crc2) {
+								case CRC_A:
+								case CRC_B:
+								case CRC_C:
+								case CRC_D:
+								case CRC_E:
+								case CRC_H:
+								case CRC_L:
+									tick+=7;
+									break;
+								default:
+									tick+=10;
+									break;
+							}
+							break;
+						default:
+							if (strncmp(listarg[0],"(IX",3)==0) {
+								/* MIX */
+								switch (crc2) {
+									case CRC_A:
+									case CRC_B:
+									case CRC_C:
+									case CRC_D:
+									case CRC_E:
+									case CRC_H:
+									case CRC_L:tick+=19;break;
+									default:tick+=23;
+								}
+							} else if (listarg[0][0]=='(' && listarg[0][strlen(listarg[0])-1]==')') {
+								/* memory */
+								switch (crc2) {
+									case CRC_A:tick+=13;break;
+									case CRC_HL:tick+=16;break;
+									case CRC_BC:
+									case CRC_DE:
+									case CRC_SP:
+									case CRC_IX:tick+=20;break;
+									default:
+										MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETTICK, see documentation\n",listarg[0],listarg[1]);
+								}
+							} else {
+								MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETTICK, see documentation\n",listarg[0],listarg[1]);
+							}
+					}
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode LD for GETTICK, need 2 arguments [%s]\n",zearg);
+				}
+				break;
+
+			default: 
+				MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETTICK, see documentation about this directive\n",opcode[idx]);
+		}
+		idx++;
+	}
+	MemFree(opref);
+	if (opcode) MemFree(opcode);
+	return tick;
+}
+int __GETSIZE(struct s_assenv *ae,char *oplist, int didx)
+{
+	#undef FUNC
+	#define FUNC "__GETSIZE"
+
+	int idx=0,crc,osize=0;
+	char **opcode=NULL;
+	char *opref;
+
+	/* upper case */
+	while (oplist[idx]) {
+		oplist[idx]=toupper(oplist[idx]);
+		idx++;
+	}
+	/* duplicata */
+	opref=TxtStrDup(oplist);
+	/* clean-up */
+	TxtReplace(opref,"\t"," ",0);
+	TxtReplace(opref,"  "," ",1);
+	TxtReplace(opref,": ",":",1);
+	/* simplify extended registers to XL or IX */
+	TxtReplace(opref,"IY","IX",0);
+	TxtReplace(opref,"IXL","XL",0);
+	TxtReplace(opref,"IXH","XL",0);
+	TxtReplace(opref,"LX","XL",0);
+	TxtReplace(opref,"HX","XL",0);
+	TxtReplace(opref,"LY","XL",0);
+	TxtReplace(opref,"HY","XL",0);
+	TxtReplace(opref,"YL","XL",0);
+	TxtReplace(opref,"XH","XL",0);
+	TxtReplace(opref,"YH","XL",0);
+
+	/* count opcodes */
+	opcode=TxtSplitWithChar(opref,':');
+
+	idx=0;
+	while (opcode[idx]) {
+		char *zeopcode,*terminator,*zearg=NULL;
+		char **listarg;
+
+		zeopcode=opcode[idx];
+		/* trim */
+		while (*zeopcode==' ') zeopcode++;
+		terminator=zeopcode;
+		while (*terminator!=0 && *terminator!=' ') terminator++;
+		if (*terminator) {
+			zearg=terminator+1;
+			*terminator=0;
+			/* no space in args */
+			TxtReplace(zearg," ","",1);
+		}
+		if (!zeopcode[0]) {idx++;continue;}
+		crc=GetCRC(zeopcode);
+
+		/*************************************
+		* very simple and simplified parsing *
+		*************************************/
+		switch (crc) {
+			case CRC_HALT:
+			case CRC_RLA:
+			case CRC_RLCA:
+			case CRC_RRCA:
+			case CRC_RRA:
+			case CRC_NOP:
+			case CRC_CCF:
+			case CRC_DAA:
+			case CRC_SCF:
+			case CRC_CPL:
+			case CRC_EXX:
+			case CRC_EI:
+			case CRC_RST:
+			case CRC_RET:
+			case CRC_DI:osize+=1;break;
+
+			case CRC_OUT:
+			case CRC_IN:
+			case CRC_LDD:
+			case CRC_LDI:
+			case CRC_LDIR:
+			case CRC_LDDR:
+			case CRC_CPDR:
+			case CRC_CPIR:
+			case CRC_CPD:
+			case CRC_CPI:
+			case CRC_RETN:
+			case CRC_RETI:
+			case CRC_OUTI:
+			case CRC_OUTD:
+			case CRC_INIR:
+			case CRC_INDR:
+			case CRC_OTIR:
+			case CRC_OTDR:
+			case CRC_IND:
+			case CRC_INI:
+			case CRC_RLD:
+			case CRC_RRD:
+			case CRC_IM:
+			case CRC_DJNZ:
+			case CRC_JR:
+			case CRC_NEG:osize+=2;break;
+
+			case CRC_CALL:osize+=3;break;
+
+			case CRC_EX:
+				if (zearg) {
+					if (strstr(zearg,"AF") || strstr(zearg,"DE")) osize+=1; else
+					if (strstr(zearg,"(SP)") && strstr(zearg,"HL")) osize+=1; else
+					if (strstr(zearg,"(SP)") && strstr(zearg,"IX")) osize+=2;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETSIZE, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_PUSH:
+				if (zearg) {
+					if (strcmp(zearg,"IX")==0) osize+=2; else osize+=1;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETSIZE, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_POP:
+				if (zearg) {
+					if (strcmp(zearg,"IX")==0) osize+=2; else osize+=1;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETSIZE, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_SLA:
+			case CRC_SLL:
+			case CRC_SRA:
+			case CRC_SRL:
+			case CRC_RL:
+			case CRC_RLC:
+			case CRC_RR:
+			case CRC_RRC:
+				if (zearg) {
+					if (strstr(zearg,"(HL)")) osize+=2; else
+					if (strstr(zearg,"(IX")) osize+=4; else
+						osize+=2;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETSIZE, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+
+			case CRC_ADD:
+			     if (zearg) {
+					/* simplify deprecated notation */
+					TxtReplace(zearg,"A,","",0);
+					if (strcmp(zearg,"IX,")==0 || strcmp(zearg,"XL")==0) osize+=2; else
+					if (strstr(zearg,"(IX")) osize+=3; else
+					if (strstr(zearg,"HL") || (*zearg>='A' && *zearg<='E') || *zearg=='H' || *zearg=='L') osize+=1; else osize+=2;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETSIZE, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			/* ADC/SBC/SUB/XOR/AND/OR */
+			case CRC_ADC:
+			case CRC_SBC:
+				if (zearg) {
+					/* simplify deprecated notation */
+					TxtReplace(zearg,"A,","",0);
+					if (strcmp(zearg,"HL,BC")==0 || strcmp(zearg,"HL,DE")==0 || strcmp(zearg,"HL,HL")==0 || strcmp(zearg,"HL,SP")==0) {osize+=2;break;}
+				}
+			case CRC_SUB:
+				/* simplify deprecated notation */
+				TxtReplace(zearg,"A,","",0);
+			case CRC_XOR:
+			case CRC_AND:
+			case CRC_OR:
+			case CRC_CP:
+			     if (zearg) {
+					if (strstr(zearg,"(IX")) osize+=3; else
+					if (strcmp(zearg,"XL")==0) osize+=2; else
+					if (strcmp(zearg,"(HL)")==0 || (*zearg>='A' && *zearg<='E') || *zearg=='H' || *zearg=='L') osize+=1; else osize+=2;
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETSIZE, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			/* BIT/RES/SET */
+			case CRC_BIT:
+			case CRC_RES:
+			case CRC_SET:
+				if (strstr(zearg,"(IX")) osize+=4; else osize+=2;
+				break;
+			case CRC_DEC:
+			case CRC_INC:
+				if (strcmp(zearg,"(HL)")==0 || strcmp(zearg,"SP")==0 || strcmp(zearg,"BC")==0
+				     || strcmp(zearg,"DE")==0 || strcmp(zearg,"HL")==0)
+					     osize+=1;
+				else if (strcmp(zearg,"IX")==0 || strcmp(zearg,"XL")==0)
+						osize+=2;
+				else if (strncmp(zearg,"(IX",3)==0)
+						osize+=3;
+				else osize++;
+				break;
+			case CRC_JP:
+				// JP is supposed to loop!
+				if (zearg) {
+					if (strstr(zearg,"IX"))
+						osize+=2;
+					else if (strstr(zearg,"HL"))
+						osize+=1;
+					else osize+=3;
+				} else osize+=3;
+				break;
+
+			case CRC_LD:
+				/* big cake! */
+				if (zearg && strchr(zearg,',')) {
+					int crc1,crc2;
+
+					/* split args */
+					listarg=TxtSplitWithChar(zearg,',');
+					crc1=GetCRC(listarg[0]);
+					crc2=GetCRC(listarg[1]);
+
+					switch (crc1) {
+						case CRC_I:
+						case CRC_R:
+							switch (crc2) {
+								case CRC_A:
+									osize+=2;
+									break;
+								default:
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETSIZE, see documentation\n",listarg[0],listarg[1]);
+							}
+							break;
+						case CRC_A:
+						case CRC_B:
+						case CRC_C:
+						case CRC_D:
+						case CRC_E:
+						case CRC_H:
+						case CRC_L:
+							switch (crc2) {
+								// heading +1
+								case CRC_MBC:
+								case CRC_MDE:
+									if (crc1!=CRC_A) {
+										MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETSIZE, see documentation\n",listarg[0],listarg[1]);
+										break;
+									}
+								case CRC_A:
+								case CRC_B:
+								case CRC_C:
+								case CRC_D:
+								case CRC_E:
+								case CRC_H:
+								case CRC_L:
+								case CRC_MHL:
+									osize++;
+									break;
+								case CRC_I:
+								case CRC_R:
+									if (crc1==CRC_A) osize+=2; else
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETSIZE, see documentation\n",listarg[0],listarg[1]);
+									break;
+								case CRC_XL:
+									osize+=2;
+									break;
+								default:
+									/* MIX + memory + value */
+									if (strncmp(listarg[1],"(IX",3)==0) {
+										osize+=3;
+									} else if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') {
+										/* absolute memory address */
+										if (crc1==CRC_A) {
+											osize+=3;
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETSIZE, see documentation\n",listarg[0],listarg[1]);
+										}
+									} else {
+										/* numeric value as default */
+										osize+=2;
+									}
+							}
+							break;
+
+						case CRC_XL:
+							switch (crc2) {
+								case CRC_A:
+								case CRC_B:
+								case CRC_C:
+								case CRC_D:
+								case CRC_E:
+								case CRC_H:
+								case CRC_L://legal???
+								case CRC_XL:
+									osize+=2;
+									break;
+								default:
+									/* value */
+									osize+=3;
+							}
+							break;
+
+						case CRC_BC:
+						case CRC_DE:
+							/* memory / value */
+							if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') osize+=4; else osize+=3;
+							break;
+						case CRC_HL:
+							/* memory / value */
+							osize+=3;
+							break;
+						case CRC_SP:
+							if (crc2==CRC_HL) {
+								osize+=1;
+							} else if (crc2==CRC_IX) {
+								/* IX */
+								osize+=2;
+							} else if (listarg[1][0]=='(' && listarg[1][strlen(listarg[1])-1]==')') {
+								/* memory */
+								osize+=4;
+							} else osize+=3; /* value */
+							break;
+						case CRC_IX:
+							/* memory / value */
+							osize+=4;
+							break;
+
+						case CRC_MBC:
+						case CRC_MDE:
+							if (crc2==CRC_A) {
+								osize+=1;
+							} else {
+								MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETSIZE, see documentation\n",listarg[0],listarg[1]);
+							}
+							break;
+						case CRC_MHL:
+							switch (crc2) {
+								case CRC_A:
+								case CRC_B:
+								case CRC_C:
+								case CRC_D:
+								case CRC_E:
+								case CRC_H:
+								case CRC_L:
+									osize+=1;
+									break;
+								default:
+									osize+=2; /* value */
+									break;
+							}
+							break;
+						default:
+							if (strncmp(listarg[0],"(IX",3)==0) {
+								/* MIX */
+								switch (crc2) {
+									case CRC_A:
+									case CRC_B:
+									case CRC_C:
+									case CRC_D:
+									case CRC_E:
+									case CRC_H:
+									case CRC_L:osize+=3;break;
+									default:osize+=4; /* value */
+								}
+							} else if (listarg[0][0]=='(' && listarg[0][strlen(listarg[0])-1]==')') {
+								/* memory */
+								switch (crc2) {
+									case CRC_A:
+									case CRC_HL:osize+=3;break;
+									case CRC_BC:
+									case CRC_DE:
+									case CRC_SP:
+									case CRC_IX:osize+=4;break;
+									default:
+										MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETSIZE, see documentation\n",listarg[0],listarg[1]);
+								}
+							} else {
+								MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported LD %s,%s for GETSIZE, see documentation\n",listarg[0],listarg[1]);
+							}
+					}
+				} else {
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode LD for GETSIZE, need 2 arguments [%s]\n",zearg);
+				}
+				break;
+
+			default: 
+				MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETSIZE, see documentation about this directive\n",opcode[idx]);
+		}
+		idx++;
+	}
+	MemFree(opref);
+	if (opcode) MemFree(opcode);
+	return osize;
+}
+/*
+	default returned value of Duration is NOP
+	but BUILDZX usage change this to ticks!
+*/
+int __DURATION(struct s_assenv *ae,char *opcode, int didx)
+{
+	#undef FUNC
+	#define FUNC "__DURATION"
+
+	if (!ae->forcezx) return __GETNOP(ae,opcode,didx);
+	return __GETTICK(ae,opcode,didx);
+}
+int __FILESIZE(struct s_assenv *ae,char *zefile, int didx)
+{
+	#undef FUNC
+	#define FUNC "__DURATION"
+
+	FILE *f;
+	int zesize;
+
+	f=fopen(zefile,"rb");
+	if (!f) {
+		MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"cannot retrieve filesize of [%s] file\n",zefile);
+		return 0;
+	}
+	fseek(f,0,SEEK_END);
+	zesize=ftell(f);
+	fclose(f);
+	return zesize;
+}
+
+int __Soft2HardInk(struct s_assenv *ae,int soft, int didx) {
+	switch (soft) {
+		case 0:return 64+20;break;
+		case 1:return 64+4 ;break;
+		case 2:return 64+21 ;break;
+		case 3:return 64+28 ;break;
+		case 4:return 64+24 ;break;
+		case 5:return 64+29 ;break;
+		case 6:return 64+12 ;break;
+		case 7:return 64+5 ;break;
+		case 8:return 64+13 ;break;
+		case 9:return 64+22 ;break;
+		case 10:return 64+6 ;break;
+		case 11:return 64+23 ;break;
+		case 12:return 64+30 ;break;
+		case 13:return 64+0 ;break;
+		case 14:return 64+31 ;break;
+		case 15:return 64+14 ;break;
+		case 16:return 64+7 ;break;
+		case 17:return 64+15 ;break;
+		case 18:return 64+18 ;break;
+		case 19:return 64+2 ;break;
+		case 20:return 64+19 ;break;
+		case 21:return 64+26 ;break;
+		case 22:return 64+25 ;break;
+		case 23:return 64+27 ;break;
+		case 24:return 64+10 ;break;
+		case 25:return 64+3 ;break;
+		case 26:return 64+11 ;break;
+		default:
+			MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"SOFT2HARD_INK needs 0-26 color index");
+	}
+	return 0;
+}
+int __Hard2SoftInk(struct s_assenv *ae,int hard, int didx) {
+	hard&=31;
+	switch (hard) {
+		case 0:return 13;break;
+		case 1:return 13;break;
+		case 2:return 19;break;
+		case 3:return 25;break;
+		case 4:return 1;break;
+		case 5:return 7;break;
+		case 6:return 10;break;
+		case 7:return 16;break;
+		case 8:return 7;break;
+		case 9:return 25;break;
+		case 10:return 24;break;
+		case 11:return 26;break;
+		case 12:return 6;break;
+		case 13:return 8;break;
+		case 14:return 15;break;
+		case 15:return 17;break;
+		case 16:return 1;break;
+		case 17:return 19;break;
+		case 18:return 18;break;
+		case 19:return 20;break;
+		case 20:return 0;break;
+		case 21:return 2;break;
+		case 22:return 9;break;
+		case 23:return 11;break;
+		case 24:return 4;break;
+		case 25:return 22;break;
+		case 26:return 21;break;
+		case 27:return 23;break;
+		case 28:return 3;break;
+		case 29:return 5;break;
+		case 30:return 12;break;
+		case 31:return 14;break;
+		default:/*warning remover*/
+			MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"SOFT2HARD_INK warning remover");
+	}
+	return 0;
+}
+
 double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int ptr, int didx)
 {
 	#undef FUNC
@@ -3413,14 +5312,14 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 	/* backup alias replace */
 	char *zeexpression,*expr;
 	int original=1;
-	int ialias,startvar;
+	int ialias,startvar=0;
 	int newlen,lenw;
 	/* dictionnary */
 	struct s_expr_dico *curdic;
 	struct s_label *curlabel;
-	char *localname;
-	int minusptr,imkey,bank,page,idxmacro;
+	int minusptr,imkey,bank,page;
 	double curval;
+	int is_string=0;
 	/* negative value */
 	int allow_minus_as_sign=0;
 	/* extended replace in labels */
@@ -3434,16 +5333,6 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 		accu=NULL;maccu=0;
 		if (maxcomputestack) MemFree(computestack);
 		computestack=NULL;maxcomputestack=0;
-#if 0	
-		if (maxivar) MemFree(varbuffer);
-		if (maxtokenstack) MemFree(tokenstack);
-		if (maxoperatorstack) MemFree(operatorstack);
-		maxtokenstack=maxoperatorstack=0;
-		maxivar=1;
-		varbuffer=NULL;
-		tokenstack=NULL;
-		operatorstack=NULL;
-#endif
 		return 0.0;
 	}
 
@@ -3452,7 +5341,7 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 
 
 #if TRACE_COMPUTE_EXPRESSION
-	printf("expression=[%s]\n",zeexpression);
+	printf("expression=[%s]\n",original_zeexpression);
 #endif
 	zeexpression=original_zeexpression;
 	if (!zeexpression[0]) {
@@ -3487,9 +5376,13 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 					memcpy(zeexpression+idx,asciivalue,3);
 					idx+=2;
 			} else {
-				MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"Only single char may be quoted [%s]\n",TradExpression(zeexpression));
-				zeexpression[0]=0;
-				return 0;
+				//printf("Expression with => moar than one char in quotes\n");
+				//MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"Only single char may be quoted [%s]\n",TradExpression(zeexpression));
+				//zeexpression[0]=0;
+				//return 0;
+				idx++;
+				while (zeexpression[idx] && zeexpression[idx]!=c) idx++; // no escape code management
+
 			}
 		}
 		
@@ -3507,6 +5400,21 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 	***********************************************************/
 	while ((c=zeexpression[idx])!=0) {
 		switch (c) {
+			case '"':
+			case '\'':
+				//printf("COMPUTE => string detected!\n");
+				ivar=0;
+				idx++;
+				while (zeexpression[idx] && zeexpression[idx]!=c) {
+					ae->computectx->varbuffer[ivar++]=zeexpression[idx];
+					StateMachineResizeBuffer(&ae->computectx->varbuffer,ivar,&ae->computectx->maxivar);
+					idx++;
+				}
+				if (zeexpression[idx]) idx++; else MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"ComputeExpression [%s] quote bug!\n",TradExpression(zeexpression));
+				ae->computectx->varbuffer[ivar]=0;
+				is_string=1; // donc on ira jamais utiliser startvar derriere
+				break;
+
 			/* parenthesis */
 			case ')':
 				/* next to a closing parenthesis, a minus is an operator */
@@ -3693,13 +5601,13 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 				}
 				ae->computectx->varbuffer[ivar]=0;
 				if (!ivar) {
-					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"invalid char (%d=%c) expression [%s]\n",c,c>31?c:' ',TradExpression(zeexpression));
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"ComputeExpression invalid char (%d=%c) expression [%s]\n",c,c>31?c:' ',TradExpression(zeexpression));
 					if (!original) {
 						MemFree(zeexpression);
 					}
 					return 0;
 				} else if (curly) {
-					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"wrong curly brackets in expression [%s]\n",TradExpression(zeexpression));
+					MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"ComputeExpression wrong curly brackets in expression [%s]\n",TradExpression(zeexpression));
 					if (!original) {
 						MemFree(zeexpression);
 					}
@@ -3713,6 +5621,9 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 		************************************/
 		/* push operator or stack value */
 		if (!ivar) {
+#if TRACE_COMPUTE_EXPRESSION
+	printf("pushoperator [%c]\n",c);
+#endif
 			/************************************
 			          O P E R A T O R 
 			************************************/
@@ -3721,6 +5632,16 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 				MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"expression [%s] has unknown operator %c (%d)\n",TradExpression(zeexpression),c>31?c:'.',c);
 			}
 			/* stackelement.value isn't used */
+			stackelement.string=NULL;
+		} else if (is_string) {
+#if TRACE_COMPUTE_EXPRESSION
+	printf("pushstring [%s]\n",ae->computectx->varbuffer);
+#endif
+			stackelement.operator=E_COMPUTE_OPERATION_PUSH_DATASTC;
+			/* priority & value isn't used */
+			stackelement.string=TxtStrDup(ae->computectx->varbuffer);
+			allow_minus_as_sign=0;
+			ivar=is_string=0;
 		} else {
 			/************************************
 			              V A L U E
@@ -3733,9 +5654,9 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 			switch (ae->computectx->varbuffer[minusptr]) {
 				case '0':
 					/* 0x hexa value hack */
-					if (ae->computectx->varbuffer[minusptr+1]=='X' && ae->AutomateHexa[ae->computectx->varbuffer[minusptr+2]]) {
+					if (ae->computectx->varbuffer[minusptr+1]=='X' && ae->AutomateHexa[(int)ae->computectx->varbuffer[minusptr+2]&0xFF]) {
 						for (icheck=minusptr+3;ae->computectx->varbuffer[icheck];icheck++) {
-							if (ae->AutomateHexa[ae->computectx->varbuffer[icheck]]) continue;
+							if (ae->AutomateHexa[(int)ae->computectx->varbuffer[icheck]&0xFF]) continue;
 							MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"expression [%s] - %s is not a valid hex number\n",TradExpression(zeexpression),ae->computectx->varbuffer);
 							break;
 						}
@@ -3773,12 +5694,12 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 				case '9':
 					/* check number */
 					for (icheck=minusptr;ae->computectx->varbuffer[icheck];icheck++) {
-						if (ae->AutomateDigit[ae->computectx->varbuffer[icheck]]) continue;
+						if (ae->AutomateDigit[(int)ae->computectx->varbuffer[icheck]&0xFF]) continue;
 						/* Intel hexa & binary style */
 						switch (ae->computectx->varbuffer[strlen(ae->computectx->varbuffer)-1]) {
 							case 'H':
 								for (icheck=minusptr;ae->computectx->varbuffer[icheck+1];icheck++) {
-									if (ae->AutomateHexa[ae->computectx->varbuffer[icheck]]) continue;
+									if (ae->AutomateHexa[(int)ae->computectx->varbuffer[icheck]&0xFF]) continue;
 									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"expression [%s] - %s is not a valid hex number\n",TradExpression(zeexpression),ae->computectx->varbuffer);
 								}
 								curval=strtol(ae->computectx->varbuffer+minusptr,NULL,16);
@@ -3816,7 +5737,7 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 						MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"expression [%s] - %s is an empty hex number\n",TradExpression(zeexpression),ae->computectx->varbuffer);
 					}
 					for (icheck=minusptr+1;ae->computectx->varbuffer[icheck];icheck++) {
-						if (ae->AutomateHexa[ae->computectx->varbuffer[icheck]]) continue;
+						if (ae->AutomateHexa[(int)ae->computectx->varbuffer[icheck]&0xFF]) continue;
 						MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"expression [%s] - %s is not a valid hex number\n",TradExpression(zeexpression),ae->computectx->varbuffer);
 						break;
 					}
@@ -3825,9 +5746,9 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 				default:
 					if (1 || !curlyflag) {
 						/* $ hex value hack */
-						if (ae->computectx->varbuffer[minusptr+0]=='$' && ae->AutomateHexa[ae->computectx->varbuffer[minusptr+1]]) {
+						if (ae->computectx->varbuffer[minusptr+0]=='$' && ae->AutomateHexa[(int)ae->computectx->varbuffer[minusptr+1]&0xFF]) {
 							for (icheck=minusptr+2;ae->computectx->varbuffer[icheck];icheck++) {
-								if (ae->AutomateHexa[ae->computectx->varbuffer[icheck]]) continue;
+								if (ae->AutomateHexa[(int)ae->computectx->varbuffer[icheck]&0xFF]) continue;
 								MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"expression [%s] - %s is not a valid hex number\n",TradExpression(zeexpression),ae->computectx->varbuffer);
 								break;
 							}
@@ -3845,10 +5766,10 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 							break;
 						}
 						/* Intel hexa value hack */
-						if (ae->AutomateHexa[ae->computectx->varbuffer[minusptr+0]]) {
+						if (ae->AutomateHexa[(int)ae->computectx->varbuffer[minusptr+0]&0xFF]) {
 							if (ae->computectx->varbuffer[strlen(ae->computectx->varbuffer)-1]=='H') {
 								for (icheck=minusptr;ae->computectx->varbuffer[icheck+1];icheck++) {
-									if (!ae->AutomateHexa[ae->computectx->varbuffer[icheck]]) break;
+									if (!ae->AutomateHexa[(int)ae->computectx->varbuffer[icheck]&0xFF]) break;
 								}
 								if (!ae->computectx->varbuffer[icheck+1]) {
 									curval=strtol(ae->computectx->varbuffer+minusptr,NULL,16);
@@ -3893,7 +5814,7 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 							if (c=='(') {
 								/* push function as operator! */
 								stackelement.operator=math_keyword[imkey].operation;
-								//stackelement.priority=0;
+								stackelement.string=NULL;
 								/************************************************
 								      C R E A T E    E X T R A     T O K E N
 								************************************************/
@@ -3982,6 +5903,8 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 								}
 							} else {
 								MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"expression [%s] - %s is an unknown prefix!\n",TradExpression(zeexpression),ae->computectx->varbuffer);
+								bank=0; // on pourrait sauter le tag pour eviter la merde a suivre
+								page=0;
 							}
 							/* limited label translation while processing crunched blocks
 							   ae->curlz == current crunched block processed
@@ -3991,10 +5914,68 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,int
 							*/
 							if (page!=3) {
 
-#if TRACE_COMPUTE_EXPRESSION
-printf("search label [%s]\n",ae->computectx->varbuffer+minusptr+bank);
+
+
+if (didx>0 && didx<ae->ie) {
+	if (ae->expression[didx].module) {
+		char *dblvarbuffer;
+#if TRACE_LABEL || TRACE_COMPUTE_EXPRESSION
+		printf("search label [%s] in an expression / module=[%s]\n",ae->computectx->varbuffer+minusptr+bank,ae->expression[didx].module);
 #endif
-								curlabel=SearchLabel(ae,ae->computectx->varbuffer+minusptr+bank,crc);
+		dblvarbuffer=MemMalloc(strlen(ae->computectx->varbuffer)+strlen(ae->expression[didx].module)+2);
+
+		strcpy(dblvarbuffer,ae->expression[didx].module);
+		strcat(dblvarbuffer,ae->module_separator);
+		strcat(dblvarbuffer,ae->computectx->varbuffer+minusptr+bank);
+
+		/* always try to find label from current module */	
+		curlabel=SearchLabel(ae,dblvarbuffer,GetCRC(dblvarbuffer));
+		MemFree(dblvarbuffer);
+	} else {
+#if TRACE_LABEL || TRACE_COMPUTE_EXPRESSION
+		printf("search label [%s] in an expression without module\n",ae->computectx->varbuffer+minusptr+bank);
+#endif
+		curlabel=NULL;
+	}
+
+	/* pas trouvé on cherche LEGACY */
+	if (!curlabel) {
+		curlabel=SearchLabel(ae,ae->computectx->varbuffer+minusptr+bank,crc);
+#if TRACE_LABEL || TRACE_COMPUTE_EXPRESSION
+		if (curlabel) printf("label LEGACY trouve! ptr=%d\n",curlabel->ptr); else printf("label non trouve!\n");
+#endif
+	}
+#if TRACE_LABEL || TRACE_COMPUTE_EXPRESSION
+	else printf("label trouve via ajout du MODULE\n");
+#endif
+
+} else {
+#if TRACE_LABEL || TRACE_COMPUTE_EXPRESSION
+	printf("search label [%s] outside an expression taking current module!\n",ae->computectx->varbuffer+minusptr+bank);
+#endif
+	if (ae->module) {
+		char *dblvarbuffer;
+		dblvarbuffer=MemMalloc(strlen(ae->computectx->varbuffer)+strlen(ae->module)+2);
+		strcpy(dblvarbuffer,ae->module);
+		strcat(dblvarbuffer,ae->module_separator);
+		strcat(dblvarbuffer,ae->computectx->varbuffer+minusptr+bank);
+
+		/* on essaie toujours de trouver le label du module courant */	
+		curlabel=SearchLabel(ae,dblvarbuffer,GetCRC(dblvarbuffer));
+		/* pas trouvé on cherche LEGACY */
+		if (!curlabel) curlabel=SearchLabel(ae,ae->computectx->varbuffer+minusptr+bank,crc);
+#if TRACE_LABEL || TRACE_COMPUTE_EXPRESSION
+		else printf("label trouve via ajout du MODULE\n");
+#endif
+
+		MemFree(dblvarbuffer);
+	} else {
+		curlabel=SearchLabel(ae,ae->computectx->varbuffer+minusptr+bank,crc);
+	}
+}
+
+
+
 								if (curlabel) {
 									if (ae->stage<2) {
 										if (curlabel->lz==-1) {
@@ -4033,8 +6014,8 @@ printf("page=%d | ptr=%X ibank=%d\n",page,curlabel->ptr,curlabel->ibank);
 												}
 											}
 										} else {
-											/* label MUST be in the crunched block */
-											if (curlabel->iorgzone==ae->expression[didx].iorgzone && curlabel->ibank==ae->expression[didx].ibank && curlabel->lz<=ae->expression[didx].lz) {
+											/* label MUST be intermediate OR in the crunched block */
+											if (ae->lzsection[curlabel->lz].lzversion==0 || (curlabel->iorgzone==ae->expression[didx].iorgzone && curlabel->ibank==ae->expression[didx].ibank && curlabel->lz<=ae->expression[didx].lz)) {
 												if (!bank) {
 													curval=curlabel->ptr;
 												} else {
@@ -4063,7 +6044,7 @@ printf("page=%d | ptr=%X ibank=%d\n",page,curlabel->ptr,curlabel->ibank);
 																}
 																break;
 															case 0:curval=curlabel->ibank;break;
-															default:MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"INTERNAL ERROR (unknown paging)\n",GetExpFile(ae,didx),GetExpLine(ae,didx));FreeAssenv(ae);exit(-664);
+															default:MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"INTERNAL ERROR (unknown paging)\n");FreeAssenv(ae);exit(-664);
 														}
 													}
 												}
@@ -4151,19 +6132,22 @@ printf("stage 2 | page=%d | ptr=%X ibank=%d\n",page,curlabel->ptr,curlabel->iban
 											validx=atoi(ae->computectx->varbuffer+reverse_idx);
 											structlabel=TxtStrDup(ae->computectx->varbuffer+minusptr);
 											structlabel[reverse_idx-minusptr]=0;
-#ifdef TRACE_STRUCT
+#if TRACE_STRUCT
 			printf("EVOL 119 -> looking for struct %s IDX=%d\n",structlabel,validx);
 #endif
 											/* unoptimized search in structures aliases */
 											crc=GetCRC(structlabel);
 											for (i=0;i<ae->irasmstructalias;i++) {
 												if (ae->rasmstructalias[i].crc==crc && strcmp(ae->rasmstructalias[i].name,structlabel)==0) {
-#ifdef TRACE_STRUCT
+#if TRACE_STRUCT
 							printf("EVOL 119 -> found! ptr=%d size=%d\n",ae->rasmstructalias[i].ptr,ae->rasmstructalias[i].size);
 #endif
 													curval=ae->rasmstructalias[i].size*validx+ae->rasmstructalias[i].ptr;
 													if (validx>=ae->rasmstructalias[i].nbelem) {
-														if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: index out of array size!\n",GetExpFile(ae,didx),GetExpLine(ae,didx));
+														if (!ae->nowarning) {
+															rasm_printf(ae,KWARNING"[%s:%d] Warning: index out of array size!\n",GetExpFile(ae,didx),GetExpLine(ae,didx));
+															if (ae->erronwarn) MaxError(ae);
+														}
 													}
 													break;
 												}
@@ -4195,12 +6179,17 @@ printf("stage 2 | page=%d | ptr=%X ibank=%d\n",page,curlabel->ptr,curlabel->iban
 												if (IsRegister(ae->computectx->varbuffer+minusptr)) {
 													MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"cannot use register %s in this context\n",TradExpression(zeexpression));
 												} else {
-													MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"expression [%s] keyword [%s] not found in variables, labels or aliases\n",TradExpression(zeexpression),ae->computectx->varbuffer+minusptr);
-													if (ae->extended_error) {
-														char *lookstr;
-														lookstr=StringLooksLike(ae,ae->computectx->varbuffer+minusptr);
-														if (lookstr) {
-															rasm_printf(ae,KERROR" did you mean [%s] ?\n",lookstr);
+													if (IsDirective(ae->computectx->varbuffer+minusptr)) {
+														MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"cannot use directive %s in this context\n",TradExpression(zeexpression));
+													} else {
+
+														MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"expression [%s] keyword [%s] not found in variables, labels or aliases\n",TradExpression(zeexpression),ae->computectx->varbuffer+minusptr);
+														if (ae->extended_error) {
+															char *lookstr;
+															lookstr=StringLooksLike(ae,ae->computectx->varbuffer+minusptr);
+															if (lookstr) {
+																rasm_printf(ae,KERROR" did you mean [%s] ?\n",lookstr);
+															}
 														}
 													}
 												}
@@ -4218,6 +6207,7 @@ printf("stage 2 | page=%d | ptr=%X ibank=%d\n",page,curlabel->ptr,curlabel->iban
 			stackelement.operator=E_COMPUTE_OPERATION_PUSH_DATASTC;
 			stackelement.value=curval;
 			/* priority isn't used */
+			stackelement.string=NULL;
 			
 			allow_minus_as_sign=0;
 			ivar=0;
@@ -4234,7 +6224,7 @@ printf("stage 2 | page=%d | ptr=%X ibank=%d\n",page,curlabel->ptr,curlabel->iban
 #if DEBUG_STACK
 	for (itoken=0;itoken<nbtokenstack;itoken++) {
 		switch (ae->computectx->tokenstack[itoken].operator) {
-			case E_COMPUTE_OPERATION_PUSH_DATASTC:printf("%lf ",ae->computectx->tokenstack[itoken].value);break;
+			case E_COMPUTE_OPERATION_PUSH_DATASTC:printf("%lf %s",ae->computectx->tokenstack[itoken].value,ae->computectx->tokenstack[itoken].string?ae->computectx->tokenstack[itoken].string:"(null)");break;
 			case E_COMPUTE_OPERATION_OPEN:printf("(");break;
 			case E_COMPUTE_OPERATION_CLOSE:printf(")");break;
 			case E_COMPUTE_OPERATION_ADD:printf("+ ");break;
@@ -4280,6 +6270,13 @@ printf("stage 2 | page=%d | ptr=%X ibank=%d\n",page,curlabel->ptr,curlabel->iban
 			case E_COMPUTE_OPERATION_SET_R:printf("set_r ");break;
 			case E_COMPUTE_OPERATION_SET_V:printf("set_v ");break;
 			case E_COMPUTE_OPERATION_SET_B:printf("set_b ");break;
+			case E_COMPUTE_OPERATION_SOFT2HARD:printf("soft2hard ");break;
+			case E_COMPUTE_OPERATION_HARD2SOFT:printf("hard2soft ");break;
+			case E_COMPUTE_OPERATION_GETNOP:printf("getnop ");break;
+			case E_COMPUTE_OPERATION_GETTICK:printf("gettick ");break;
+			case E_COMPUTE_OPERATION_DURATION:printf("duration ");break;
+			case E_COMPUTE_OPERATION_FILESIZE:printf("filesize ");break;
+			case E_COMPUTE_OPERATION_GETSIZE:printf("getsize ");break;
 			default:printf("bug\n");break;
 		}
 		
@@ -4291,14 +6288,14 @@ printf("stage 2 | page=%d | ptr=%X ibank=%d\n",page,curlabel->ptr,curlabel->iban
 		switch (ae->computectx->tokenstack[itoken].operator) {
 			case E_COMPUTE_OPERATION_PUSH_DATASTC:
 #if DEBUG_STACK
-printf("data\n");
+printf("data string=%X\n",ae->computectx->tokenstack[itoken].string);
 #endif
 				ObjectArrayAddDynamicValueConcat((void **)&computestack,&nbcomputestack,&maxcomputestack,&ae->computectx->tokenstack[itoken],sizeof(stackelement));
 				break;
 			case E_COMPUTE_OPERATION_OPEN:
 				ObjectArrayAddDynamicValueConcat((void **)&ae->computectx->operatorstack,&nboperatorstack,&ae->computectx->maxoperatorstack,&ae->computectx->tokenstack[itoken],sizeof(stackelement));
 #if DEBUG_STACK
-printf("ajout (\n");
+printf("ajout ( string=%X\n",ae->computectx->tokenstack[itoken].string);
 #endif
 				break;
 			case E_COMPUTE_OPERATION_CLOSE:
@@ -4313,7 +6310,7 @@ printf("close\n");
 						ObjectArrayAddDynamicValueConcat((void **)&computestack,&nbcomputestack,&maxcomputestack,&ae->computectx->operatorstack[o2],sizeof(stackelement));
 						nboperatorstack--;
 #if DEBUG_STACK
-printf("op--\n");
+printf("op-- string=%X\n",ae->computectx->operatorstack[o2].string);
 #endif
 						o2--;
 					} else {
@@ -4339,7 +6336,7 @@ printf("discard )\n");
 					ObjectArrayAddDynamicValueConcat((void **)&computestack,&nbcomputestack,&maxcomputestack,&ae->computectx->operatorstack[o2],sizeof(stackelement));
 					nboperatorstack--;
 #if DEBUG_STACK
-printf("pop function\n");
+printf("pop function string=%X\n",ae->computectx->operatorstack[o2].string);
 #endif
 				}
 				break;
@@ -4362,13 +6359,13 @@ printf("pop function\n");
 			case E_COMPUTE_OPERATION_NOTEQUAL:
 			case E_COMPUTE_OPERATION_LOWEREQ:
 			case E_COMPUTE_OPERATION_GREATEREQ:
-#if DEBUG_STACK
-printf("operator\n");
-#endif
 				o2=nboperatorstack-1;
 				while (o2>=0 && ae->computectx->operatorstack[o2].operator!=E_COMPUTE_OPERATION_OPEN) {
 					if (ae->computectx->tokenstack[itoken].priority>=ae->computectx->operatorstack[o2].priority || ae->computectx->operatorstack[o2].operator>=E_COMPUTE_OPERATION_SIN) {
 						ObjectArrayAddDynamicValueConcat((void **)&computestack,&nbcomputestack,&maxcomputestack,&ae->computectx->operatorstack[o2],sizeof(stackelement));
+#if DEBUG_STACK
+printf("operator string=%X\n",ae->computectx->operatorstack[o2].string);
+#endif
 						nboperatorstack--;
 						o2--;
 					} else {
@@ -4401,6 +6398,13 @@ printf("operator\n");
 			case E_COMPUTE_OPERATION_SET_R:
 			case E_COMPUTE_OPERATION_SET_V:
 			case E_COMPUTE_OPERATION_SET_B:
+			case E_COMPUTE_OPERATION_SOFT2HARD:
+			case E_COMPUTE_OPERATION_HARD2SOFT:
+			case E_COMPUTE_OPERATION_GETNOP:
+			case E_COMPUTE_OPERATION_GETTICK:
+			case E_COMPUTE_OPERATION_DURATION:
+			case E_COMPUTE_OPERATION_FILESIZE:
+			case E_COMPUTE_OPERATION_GETSIZE:
 #if DEBUG_STACK
 printf("ajout de la fonction\n");
 #endif
@@ -4412,6 +6416,9 @@ printf("ajout de la fonction\n");
 	/* pop remaining operators */
 	while (nboperatorstack>0) {
 		ObjectArrayAddDynamicValueConcat((void **)&computestack,&nbcomputestack,&maxcomputestack,&ae->computectx->operatorstack[--nboperatorstack],sizeof(stackelement));
+#if DEBUG_STACK
+printf("final POP string=%X\n",ae->computectx->operatorstack[nboperatorstack+1].string);
+#endif
 	}
 	
 	/********************************************
@@ -4430,7 +6437,13 @@ printf("ajout de la fonction\n");
 						maccu=16+paccu;
 						accu=MemRealloc(accu,sizeof(double)*maccu);
 					}
-					accu[paccu]=computestack[i].value;paccu++;
+					if (computestack[i].string) {
+						/* string hack */
+						accu[paccu]=i+0.1;
+					} else {
+						accu[paccu]=computestack[i].value;
+					}
+					paccu++;
 					break;
 				case E_COMPUTE_OPERATION_OPEN:
 				case E_COMPUTE_OPERATION_CLOSE:/* cannot happend */ break;
@@ -4445,7 +6458,8 @@ printf("ajout de la fonction\n");
 				case E_COMPUTE_OPERATION_SHL:if (paccu>1) accu[paccu-2]=((int)accu[paccu-2])<<((int)accu[paccu-1]);
 								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
 									if (!ae->nowarning) {
-										rasm_printf(ae,KWARNING"Warning - shifting %d is architecture dependant, result forced to ZERO\n",(int)accu[paccu-1]);
+										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
+										if (ae->erronwarn) MaxError(ae);
 									}
 									accu[paccu-2]=0;
 								}
@@ -4453,7 +6467,8 @@ printf("ajout de la fonction\n");
 				case E_COMPUTE_OPERATION_SHR:if (paccu>1) accu[paccu-2]=((int)accu[paccu-2])>>((int)accu[paccu-1]);
 								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
 									if (!ae->nowarning) {
-										rasm_printf(ae,KWARNING"Warning - shifting %d is architecture dependant, result forced to ZERO\n",(int)accu[paccu-1]);
+										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
+										if (ae->erronwarn) MaxError(ae);
 									}
 									accu[paccu-2]=0;
 								}
@@ -4483,7 +6498,17 @@ printf("ajout de la fonction\n");
 				case E_COMPUTE_OPERATION_LOW:if (paccu>0) accu[paccu-1]=((int)accu[paccu-1])&0xFF;break;
 				case E_COMPUTE_OPERATION_HIGH:if (paccu>0) accu[paccu-1]=(((int)accu[paccu-1])&0xFF00)>>8;break;
 				case E_COMPUTE_OPERATION_PSG:if (paccu>0) accu[paccu-1]=ae->psgfine[((int)accu[paccu-1])&0xFF];break;
-				case E_COMPUTE_OPERATION_RND:if (paccu>0) accu[paccu-1]=rand()%((int)accu[paccu-1]);break;
+				case E_COMPUTE_OPERATION_RND:if (paccu>0) {
+								     int zemod;
+								     zemod=(int)floor(accu[paccu-1]+0.5);
+								     if (zemod>0) {
+									     accu[paccu-1]=FastRand()%zemod;
+								     } else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"RND function needs a value greater than zero to perform a random value\n");
+								        accu[paccu-1]=0;
+								     }
+							     }
+							     break;
 				case E_COMPUTE_OPERATION_FRAC:if (paccu>0) accu[paccu-1]=((int)(accu[paccu-1]-(int)accu[paccu-1]));break;
 				case E_COMPUTE_OPERATION_CEIL:if (paccu>0) accu[paccu-1]=(int)ceil(accu[paccu-1])&workinterval;break;
 				case E_COMPUTE_OPERATION_GET_R:if (paccu>0) accu[paccu-1]=((((int)accu[paccu-1])&0xF0)>>4);break;
@@ -4492,7 +6517,109 @@ printf("ajout de la fonction\n");
 				case E_COMPUTE_OPERATION_SET_R:if (paccu>0) accu[paccu-1]=MinMaxInt(accu[paccu-1],0,15)<<4;break;
 				case E_COMPUTE_OPERATION_SET_V:if (paccu>0) accu[paccu-1]=MinMaxInt(accu[paccu-1],0,15)<<8;break;
 				case E_COMPUTE_OPERATION_SET_B:if (paccu>0) accu[paccu-1]=MinMaxInt(accu[paccu-1],0,15);break;
-				default:MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"invalid computing state! (%d)\n",GetExpFile(ae,didx),GetExpLine(ae,didx),computestack[i].operator);paccu=0;
+				case E_COMPUTE_OPERATION_SOFT2HARD:if (paccu>0) accu[paccu-1]=__Soft2HardInk(ae,accu[paccu-1],didx);break;
+				case E_COMPUTE_OPERATION_HARD2SOFT:if (paccu>0) accu[paccu-1]=__Hard2SoftInk(ae,accu[paccu-1],didx);break;
+				/* functions with strings */
+				case E_COMPUTE_OPERATION_GETNOP:if (paccu>0) {
+								      int integeridx;
+								      integeridx=floor(accu[paccu-1]);
+
+								      if (integeridx>=0 && integeridx<nbcomputestack && computestack[integeridx].string) {
+									      accu[paccu-1]=__GETNOP(ae,computestack[integeridx].string,didx);
+									      MemFree(computestack[integeridx].string);
+									      computestack[integeridx].string=NULL;
+								      } else {
+									      if (integeridx>=0 && integeridx<nbcomputestack) {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETNOP function needs a proper string\n");
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETNOP internal error (wrong string index)\n");
+										}
+									}
+								} else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETNOP is empty\n");
+								}
+							       break;
+							       /* CC GETNOP */
+				case E_COMPUTE_OPERATION_GETTICK:if (paccu>0) {
+								      int integeridx;
+								      integeridx=floor(accu[paccu-1]);
+
+								      if (integeridx>=0 && integeridx<nbcomputestack && computestack[integeridx].string) {
+									      accu[paccu-1]=__GETTICK(ae,computestack[integeridx].string,didx);
+									      MemFree(computestack[integeridx].string);
+									      computestack[integeridx].string=NULL;
+								      } else {
+									      if (integeridx>=0 && integeridx<nbcomputestack) {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETTICK function needs a proper string\n");
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETTICK internal error (wrong string index)\n");
+										}
+									}
+								} else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETTICK is empty\n");
+								}
+							       break;
+							       /* CC GETNOP */
+				case E_COMPUTE_OPERATION_DURATION:if (paccu>0) {
+								      int integeridx;
+								      integeridx=floor(accu[paccu-1]);
+
+								      if (integeridx>=0 && integeridx<nbcomputestack && computestack[integeridx].string) {
+									      accu[paccu-1]=__DURATION(ae,computestack[integeridx].string,didx);
+									      MemFree(computestack[integeridx].string);
+									      computestack[integeridx].string=NULL;
+								      } else {
+									      if (integeridx>=0 && integeridx<nbcomputestack) {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"DURATION function needs a proper string\n");
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"DURATION internal error (wrong string index)\n");
+										}
+									}
+								} else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"DURATION is empty\n");
+								}
+							       break;
+				case E_COMPUTE_OPERATION_FILESIZE:if (paccu>0) {
+								      int integeridx;
+								      integeridx=floor(accu[paccu-1]);
+
+								      if (integeridx>=0 && integeridx<nbcomputestack && computestack[integeridx].string) {
+									      accu[paccu-1]=__FILESIZE(ae,computestack[integeridx].string,didx);
+									      MemFree(computestack[integeridx].string);
+									      computestack[integeridx].string=NULL;
+								      } else {
+									      if (integeridx>=0 && integeridx<nbcomputestack) {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"FILESIZE function needs a proper string\n");
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"FILESIZE internal error (wrong string index)\n");
+										}
+									}
+								} else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"DURATION is empty\n");
+								}
+							       break;
+							       /* CC GETNOP */
+				case E_COMPUTE_OPERATION_GETSIZE:if (paccu>0) {
+								      int integeridx;
+								      integeridx=floor(accu[paccu-1]);
+
+								      if (integeridx>=0 && integeridx<nbcomputestack && computestack[integeridx].string) {
+									      accu[paccu-1]=__GETSIZE(ae,computestack[integeridx].string,didx);
+									      MemFree(computestack[integeridx].string);
+									      computestack[integeridx].string=NULL;
+								      } else {
+									      if (integeridx>=0 && integeridx<nbcomputestack) {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETSIZE function needs a proper string\n");
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETSIZE internal error (wrong string index)\n");
+										}
+									}
+								} else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETTICK is empty\n");
+								}
+							       break;
+							       /* CC GETNOP */
+				default:MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"invalid computing state! (%d)\n",computestack[i].operator);paccu=0;
 			}
 			if (!paccu) {
 				if (zeexpression[0]=='&') {
@@ -4510,7 +6637,7 @@ printf("ajout de la fonction\n");
 			int kk;
 			for (kk=0;kk<paccu;kk++) printf("stack[%d]=%lf\n",kk,accu[kk]);
 			if (computestack[i].operator==E_COMPUTE_OPERATION_PUSH_DATASTC) {
-				printf("pacc=%d push %.1lf\n",paccu,computestack[i].value);
+				printf("pacc=%d push %.1lf or %s\n",paccu,computestack[i].value,computestack[i].string?computestack[i].string:"null");
 			} else {
 				printf("pacc=%d operation %s p=%d\n",paccu,computestack[i].operator==E_COMPUTE_OPERATION_MUL?"*":
 								computestack[i].operator==E_COMPUTE_OPERATION_ADD?"+":
@@ -4528,6 +6655,7 @@ printf("ajout de la fonction\n");
 								computestack[i].operator==E_COMPUTE_OPERATION_GREATEREQ?">=":
 								computestack[i].operator==E_COMPUTE_OPERATION_OPEN?"(":
 								computestack[i].operator==E_COMPUTE_OPERATION_CLOSE?")":
+								computestack[i].operator==E_COMPUTE_OPERATION_GETNOP?"getnpo":
 								"<autre>",computestack[i].priority);
 			}
 #endif
@@ -4537,7 +6665,13 @@ printf("ajout de la fonction\n");
 						maccu=16+paccu;
 						accu=MemRealloc(accu,sizeof(double)*maccu);
 					}
-					accu[paccu]=computestack[i].value;paccu++;
+					if (computestack[i].string) {
+						/* string hack */
+						accu[paccu]=i+0.1;
+					} else {
+						accu[paccu]=computestack[i].value;
+					}
+					paccu++;
 					break;
 				case E_COMPUTE_OPERATION_OPEN:
 				case E_COMPUTE_OPERATION_CLOSE: /* cannot happend */ break;
@@ -4553,7 +6687,8 @@ printf("ajout de la fonction\n");
 				case E_COMPUTE_OPERATION_SHL:if (paccu>1) accu[paccu-2]=((int)floor(accu[paccu-2]+0.5))<<((int)floor(accu[paccu-1]+0.5));
 								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
 									if (!ae->nowarning) {
-										rasm_printf(ae,KWARNING"Warning - shifting %d is architecture dependant, result forced to ZERO\n",(int)accu[paccu-1]);
+										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
+										if (ae->erronwarn) MaxError(ae);
 									}
 									accu[paccu-2]=0;
 								}
@@ -4561,7 +6696,8 @@ printf("ajout de la fonction\n");
 				case E_COMPUTE_OPERATION_SHR:if (paccu>1) accu[paccu-2]=((int)floor(accu[paccu-2]+0.5))>>((int)floor(accu[paccu-1]+0.5));
 								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
 									if (!ae->nowarning) {
-										rasm_printf(ae,KWARNING"Warning - shifting %d is architecture dependant, result forced to ZERO\n",(int)accu[paccu-1]);
+										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
+										if (ae->erronwarn) MaxError(ae);
 									}
 									accu[paccu-2]=0;
 								}
@@ -4591,7 +6727,17 @@ printf("ajout de la fonction\n");
 				case E_COMPUTE_OPERATION_LOW:if (paccu>0) accu[paccu-1]=((int)floor(accu[paccu-1]+0.5))&0xFF;break;
 				case E_COMPUTE_OPERATION_HIGH:if (paccu>0) accu[paccu-1]=(((int)floor(accu[paccu-1]+0.5))&0xFF00)>>8;break;
 				case E_COMPUTE_OPERATION_PSG:if (paccu>0) accu[paccu-1]=ae->psgfine[((int)floor(accu[paccu-1]+0.5))&0xFF];break;
-				case E_COMPUTE_OPERATION_RND:if (paccu>0) accu[paccu-1]=rand()%((int)accu[paccu-1]);break;
+				case E_COMPUTE_OPERATION_RND:if (paccu>0) {
+								     int zemod;
+								     zemod=(int)floor(accu[paccu-1]+0.5);
+								     if (zemod>0) {
+									     accu[paccu-1]=FastRand()%zemod;
+								     } else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"RND function needs a value greater than zero to perform a random value\n");
+								        accu[paccu-1]=0;
+								     }
+							     }
+							     break;
 				case E_COMPUTE_OPERATION_FRAC:if (paccu>0) accu[paccu-1]=modf(accu[paccu-1],&dummint);break;
 				case E_COMPUTE_OPERATION_CEIL:if (paccu>0) accu[paccu-1]=ceil(accu[paccu-1]);break;
 				case E_COMPUTE_OPERATION_GET_R:if (paccu>0) accu[paccu-1]=((((int)accu[paccu-1])&0xF0)>>4);break;
@@ -4600,7 +6746,109 @@ printf("ajout de la fonction\n");
 				case E_COMPUTE_OPERATION_SET_R:if (paccu>0) accu[paccu-1]=MinMaxInt(accu[paccu-1],0,15)<<4;break;
 				case E_COMPUTE_OPERATION_SET_V:if (paccu>0) accu[paccu-1]=MinMaxInt(accu[paccu-1],0,15)<<8;break;
 				case E_COMPUTE_OPERATION_SET_B:if (paccu>0) accu[paccu-1]=MinMaxInt(accu[paccu-1],0,15);break;
-				default:MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"invalid computing state! (%d)\n",GetExpFile(ae,didx),GetExpLine(ae,didx),computestack[i].operator);paccu=0;
+				case E_COMPUTE_OPERATION_SOFT2HARD:if (paccu>0) accu[paccu-1]=__Soft2HardInk(ae,accu[paccu-1],didx);break;
+				case E_COMPUTE_OPERATION_HARD2SOFT:if (paccu>0) accu[paccu-1]=__Hard2SoftInk(ae,accu[paccu-1],didx);break;
+				/* functions with strings */
+				case E_COMPUTE_OPERATION_GETNOP:if (paccu>0) {
+								      int integeridx;
+								      integeridx=floor(accu[paccu-1]);
+
+								      if (integeridx>=0 && integeridx<nbcomputestack && computestack[integeridx].string) {
+									      accu[paccu-1]=__GETNOP(ae,computestack[integeridx].string,didx);
+									      MemFree(computestack[integeridx].string);
+									      computestack[integeridx].string=NULL;
+								      } else {
+									      if (integeridx>=0 && integeridx<nbcomputestack) {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETNOP function needs a proper string\n");
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETNOP internal error (wrong string index)\n");
+										}
+									}
+								} else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETNOP is empty\n");
+								}
+							       break;
+							       /* CC GETNOP */
+				case E_COMPUTE_OPERATION_GETTICK:if (paccu>0) {
+								      int integeridx;
+								      integeridx=floor(accu[paccu-1]);
+
+								      if (integeridx>=0 && integeridx<nbcomputestack && computestack[integeridx].string) {
+									      accu[paccu-1]=__GETTICK(ae,computestack[integeridx].string,didx);
+									      MemFree(computestack[integeridx].string);
+									      computestack[integeridx].string=NULL;
+								      } else {
+									      if (integeridx>=0 && integeridx<nbcomputestack) {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETTICK function needs a proper string\n");
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETTICK internal error (wrong string index)\n");
+										}
+									}
+								} else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETTICK is empty\n");
+								}
+							       break;
+							       /* CC GETNOP */
+				case E_COMPUTE_OPERATION_DURATION:if (paccu>0) {
+								      int integeridx;
+								      integeridx=floor(accu[paccu-1]);
+
+								      if (integeridx>=0 && integeridx<nbcomputestack && computestack[integeridx].string) {
+									      accu[paccu-1]=__DURATION(ae,computestack[integeridx].string,didx);
+									      MemFree(computestack[integeridx].string);
+									      computestack[integeridx].string=NULL;
+								      } else {
+									      if (integeridx>=0 && integeridx<nbcomputestack) {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"DURATION function needs a proper string\n");
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"DURATION internal error (wrong string index)\n");
+										}
+									}
+								} else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"DURATION is empty\n");
+								}
+							       break;
+				case E_COMPUTE_OPERATION_FILESIZE:if (paccu>0) {
+								      int integeridx;
+								      integeridx=floor(accu[paccu-1]);
+
+								      if (integeridx>=0 && integeridx<nbcomputestack && computestack[integeridx].string) {
+									      accu[paccu-1]=__FILESIZE(ae,computestack[integeridx].string,didx);
+									      MemFree(computestack[integeridx].string);
+									      computestack[integeridx].string=NULL;
+								      } else {
+									      if (integeridx>=0 && integeridx<nbcomputestack) {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"FILESIZE function needs a proper string\n");
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"FILESIZE internal error (wrong string index)\n");
+										}
+									}
+								} else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"DURATION is empty\n");
+								}
+							       break;
+							       /* CC GETNOP */
+				case E_COMPUTE_OPERATION_GETSIZE:if (paccu>0) {
+								      int integeridx;
+								      integeridx=floor(accu[paccu-1]);
+
+								      if (integeridx>=0 && integeridx<nbcomputestack && computestack[integeridx].string) {
+									      accu[paccu-1]=__GETSIZE(ae,computestack[integeridx].string,didx);
+									      MemFree(computestack[integeridx].string);
+									      computestack[integeridx].string=NULL;
+								      } else {
+									      if (integeridx>=0 && integeridx<nbcomputestack) {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETSIZE function needs a proper string\n");
+										} else {
+											MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETSIZE internal error (wrong string index)\n");
+										}
+									}
+								} else {
+									MakeError(ae,GetExpFile(ae,didx),GetExpLine(ae,didx),"GETTICK is empty\n");
+								}
+							       break;
+							       /* CC GETNOP */
+				default:MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"invalid computing state! (%d)\n",computestack[i].operator);paccu=0;
 			}
 			if (!paccu) {
 				if (zeexpression[0]=='&') {
@@ -4633,7 +6881,7 @@ int RoundComputeExpressionCore(struct s_assenv *ae,char *zeexpression,int ptr,in
 	return floor(ComputeExpressionCore(ae,zeexpression,ptr,didx)+ae->rough);
 }
 
-void ExpressionSetDicoVar(struct s_assenv *ae,char *name, double v)
+void ExpressionSetDicoVar(struct s_assenv *ae,char *name, double v, int var_external)
 {
 	#undef FUNC
 	#define FUNC "ExpressionSetDicoVar"
@@ -4644,6 +6892,7 @@ void ExpressionSetDicoVar(struct s_assenv *ae,char *name, double v)
 	curdic.v=v;
 	curdic.iw=ae->idx;
 	curdic.autorise_export=ae->autorise_export;
+	curdic.external=var_external;
 	//ObjectArrayAddDynamicValueConcat((void**)&ae->dico,&ae->idic,&ae->mdic,&curdic,sizeof(curdic));
 	if (SearchLabel(ae,curdic.name,curdic.crc)) {
 		MakeError(ae,GetCurrentFile(ae),GetExpLine(ae,0),"cannot create variable [%s] as there is already a label with the same name\n",name);
@@ -4658,12 +6907,12 @@ double ComputeExpression(struct s_assenv *ae,char *expr, int ptr, int didx, int 
 	#undef FUNC
 	#define FUNC "ComputeExpression"
 
-	char *ptr_exp,*ptr_exp2,backupeval;
-	int crc,idic,idx=0,ialias,touched,hasformula=0;
-	double v,vl;
+	char *ptr_exp,*ptr_exp2;
+	int crc,idx=0,ialias,touched;
+	double v;
 	struct s_alias curalias;
 	struct s_expr_dico *curdic;
-	char *minibuffer;
+
 
 	while (!ae->AutomateExpressionDecision[((int)expr[idx])&0xFF]) idx++;
 
@@ -4688,7 +6937,6 @@ printf("WARNING! alias is local! [%s]\n",expr);
 				/* local label creation does not handle formula in tags */
 				curalias.alias=TranslateTag(ae,TxtStrDup(expr),&touched,0,E_TAGOPTION_NONE);
 				curalias.alias=MakeLocalLabel(ae,curalias.alias,NULL);
-				hasformula=1;
 			} else if (strchr(expr,'{')) {
 #if TRACE_COMPUTE_EXPRESSION
 printf("WARNING! alias has tag! [%s]\n",expr);
@@ -4698,11 +6946,13 @@ printf("WARNING! alias has tag! [%s]\n",expr);
 #if TRACE_COMPUTE_EXPRESSION
 printf("MakeAlias (2) EXPR=[%s EQU %s]\n",expr,ptr_exp2);
 #endif
-				hasformula=1;
 			} else {
 				curalias.alias=TxtStrDup(expr);
 			}
 			curalias.crc=GetCRC(curalias.alias);
+			curalias.ptr=ae->codeadr;
+			curalias.lz=ae->ilz;
+
 			if ((ialias=SearchAlias(ae,curalias.crc,curalias.alias))>=0) {
 				MakeError(ae,GetCurrentFile(ae),GetExpLine(ae,0),"Duplicate alias [%s]\n",expr);
 				MemFree(curalias.alias);
@@ -4716,7 +6966,7 @@ printf("MakeAlias (2) EXPR=[%s EQU %s]\n",expr,ptr_exp2);
 printf("MakeAlias (3) EXPR=[%s EQU %s]\n",expr,ptr_exp2);
 printf("alias translation [%s] -> ",curalias.translation);fflush(stdout);
 #endif
-				ExpressionFastTranslate(ae,&curalias.translation,2); // FAST type 2
+				ExpressionFastTranslate(ae,&curalias.translation,2); // FAST type 2 replace at least $ value
 #if TRACE_COMPUTE_EXPRESSION
 printf("%s\n",curalias.translation);
 #endif
@@ -4787,7 +7037,7 @@ printf("***********\n");
 						curdic=SearchDico(ae,expr,crc);
 						if (curdic) {
 							switch (operatorassignment) {
-								default:printf("warning remover\n");
+								default:printf("warning remover\n");break;
 								case 0:curdic->v=v;break;
 								case '+':curdic->v+=v;ptr_exp[-1]='+';break;
 								case '-':curdic->v-=v;ptr_exp[-1]='-';break;
@@ -4802,6 +7052,7 @@ printf("***********\n");
 									 if (v>31 || v<-31) {
 										if (!ae->nowarning) {
                                                                 			rasm_printf(ae,KWARNING"Warning - shifting %d is architecture dependant, result forced to ZERO\n",(int)v);
+															if (ae->erronwarn) MaxError(ae);
 										}
 										curdic->v=0;
 									 }
@@ -4810,6 +7061,7 @@ printf("***********\n");
 									 if (v>31 || v<-31) {
 										if (!ae->nowarning) {
                                                                 			rasm_printf(ae,KWARNING"Warning - shifting %d is architecture dependant, result forced to ZERO\n",(int)v);
+															if (ae->erronwarn) MaxError(ae);
 										}
 										curdic->v=0;
 									 }
@@ -4821,7 +7073,7 @@ printf("***********\n");
 									MakeError(ae,GetCurrentFile(ae),GetExpLine(ae,0),"Cannot do an operator assignment on non existing variable [%s]\n",expr);
 									return 0;
 								case 0: /* assign a new variable */
-									ExpressionSetDicoVar(ae,expr,v);
+									ExpressionSetDicoVar(ae,expr,v,0);
 									break;
 							}
 						}
@@ -4849,6 +7101,10 @@ int RoundComputeExpression(struct s_assenv *ae,char *expr, int ptr, int didx, in
 	ExpressionFastTranslate
 	
 	purpose: translate all known symbols in an expression (especially variables acting like counters)
+
+0:
+1:
+2: (equ declaration)
 */
 void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullreplace)
 {
@@ -4858,9 +7114,9 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullrepla
 	struct s_label *curlabel;
 	struct s_expr_dico *curdic;
 	static char *varbuffer=NULL;
-	static int ivar=0,maxivar=1;
+	static int ivar,maxivar=1;
 	char curval[256]={0};
-	int c,lenw=0,idx=0,crc,startvar,newlen,ialias,found_replace,yves,dek,reidx,lenbuf,rlen,tagoffset;
+	int c,lenw=0,idx=0,crc,startvar=0,newlen,ialias,found_replace,yves,dek,reidx,lenbuf,rlen,tagoffset;
 	double v;
 	char tmpuchar[16];
 	char *expr,*locallabel;
@@ -4878,6 +7134,8 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullrepla
 	/* be sure to have at least some bytes allocated */
 	StateMachineResizeBuffer(&varbuffer,128,&maxivar);
 	expr=*ptr_expr;
+
+	ivar=0;
 
 //printf("fast [%s]\n",expr);
 
@@ -4899,7 +7157,7 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullrepla
 	/* is there ascii char? */
 	while ((c=expr[idx])!=0) {
 		if (c=='\'' || c=='"') {
-			/* echappement */
+			/* one char escape code */
 			if (expr[idx+1]=='\\') {
 				if (expr[idx+2] && expr[idx+3]==c) {
 					/* no charset conversion for escaped chars */
@@ -4923,13 +7181,16 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullrepla
 					return;
 				}
 			} else if (expr[idx+1] && expr[idx+2]==c) {
-					sprintf(tmpuchar,"#%02X",ae->charset[(int)expr[idx+1]]);
+					sprintf(tmpuchar,"#%02X",ae->charset[((unsigned int)expr[idx+1])&0xFF]);
 					memcpy(expr+idx,tmpuchar,3);
 					idx+=2;
 			} else {
-				MakeError(ae,GetCurrentFile(ae),GetExpLine(ae,0),"expression [%s] - Only single char may be quoted\n",expr);
-				expr[0]=0;
-				return;
+				//printf("FAST => moar than one quoted char\n");
+				//MakeError(ae,GetCurrentFile(ae),GetExpLine(ae,0),"expression [%s] - Only single char may be quoted\n",expr);
+				//expr[0]=0;
+				//return;
+				idx++;
+				while (expr[idx] && expr[idx]!=c) idx++;
 			}
 		}
 		idx++;
@@ -4938,6 +7199,15 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullrepla
 	idx=reidx;
 	while ((c=expr[idx])!=0) {
 		switch (c) {
+			/* string in expression */
+			case '"':
+			case '\'':
+				//printf("FAST => skip string [%s]\n",expr);
+				idx++;
+				while (expr[idx] && expr[idx]!=c) idx++;
+				if (expr[idx]) idx++;
+				ivar=0;
+				break;
 			/* operator / parenthesis */
 			case '!':
 			case '=':
@@ -5002,7 +7272,6 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullrepla
 			if (curlyflag) {
 				char *minivarbuffer;
 				int touched;
-//printf("ExpressionFastTranslate curly\n");
 				minivarbuffer=TranslateTag(ae,TxtStrDup(varbuffer), &touched,0,E_TAGOPTION_NONE|(fullreplace?0:E_TAGOPTION_PRESERVE));
 				StateMachineResizeBuffer(&varbuffer,strlen(minivarbuffer)+1,&maxivar);
 				strcpy(varbuffer,minivarbuffer);
@@ -5025,31 +7294,35 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullrepla
 				/******* ivar must be updated in case of label or alias following ***********/
 				ivar=newlen;
 			}
-			
+
 			/* recherche dans dictionnaire et remplacement */
 			crc=GetCRC(varbuffer);
 			found_replace=0;
 			/* pour les affectations ou les tests conditionnels on ne remplace pas le dico (pour le Push oui par contre!) */
 			if (fullreplace) {
+//printf("ExpressionFastTranslate (full) => varbuffer=[%s] lz=%d\n",varbuffer,ae->lz);
 				if (varbuffer[0]=='$' && !varbuffer[1]) {
-					#ifdef OS_WIN
-					snprintf(curval,sizeof(curval)-1,"%d",ae->codeadr);
-					newlen=strlen(curval);
-					#else
-					newlen=snprintf(curval,sizeof(curval)-1,"%d",ae->codeadr);
-					#endif
-					lenw=strlen(expr);
-					if (newlen>ivar) {
-						/* realloc bigger */
-						expr=*ptr_expr=MemRealloc(expr,lenw+newlen-ivar+1);
+					if (ae->lz==-1) {
+						#ifdef OS_WIN
+						snprintf(curval,sizeof(curval)-1,"%d",ae->codeadr);
+						newlen=strlen(curval);
+						#else
+						newlen=snprintf(curval,sizeof(curval)-1,"%d",ae->codeadr);
+						#endif
+						lenw=strlen(expr);
+						if (newlen>ivar) {
+							/* realloc bigger */
+							expr=*ptr_expr=MemRealloc(expr,lenw+newlen-ivar+1);
+						}
+						if (newlen!=ivar ) {
+							MemMove(expr+startvar+newlen,expr+startvar+ivar,lenw-startvar-ivar+1);
+							found_replace=1;
+						}
+						strncpy(expr+startvar,curval,newlen); /* copy without zero terminator */
+						idx=startvar+newlen;
+						ivar=0;
 					}
-					if (newlen!=ivar ) {
-						MemMove(expr+startvar+newlen,expr+startvar+ivar,lenw-startvar-ivar+1);
-						found_replace=1;
-					}
-					strncpy(expr+startvar,curval,newlen); /* copy without zero terminator */
-					idx=startvar+newlen;
-					ivar=0;
+					/* qu'on le remplace ou pas on passe a la suite */
 					found_replace=1;
 				} else {
 					curdic=SearchDico(ae,varbuffer,crc);
@@ -5079,7 +7352,7 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullrepla
 					}
 				}
 			}
-			/* on cherche aussi dans les labels existants */
+			/* on cherche aussi dans les labels existants => priorité aux modules!!! */   // modulmodif => pas utile?
 			if (!found_replace) {
 				curlabel=SearchLabel(ae,varbuffer,crc);
 				if (curlabel) {
@@ -5141,7 +7414,7 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullrepla
 				}
 			}
 			if (!found_replace) {
-				//printf("fasttranslate test local label\n");
+	//printf("fasttranslate test local label\n");
 				/* non trouve c'est peut-etre un label local - mais pas de l'octal */
 				if (varbuffer[0]=='@' && (varbuffer[1]<'0' || varbuffer[1]>'9')) {
 					char *zepoint;
@@ -5198,36 +7471,59 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, int fullrepla
 						tagoffset=0;
 						MakeError(ae,GetCurrentFile(ae),GetExpLine(ae,0),"Unknown prefix tag\n");
 					}
-					
-					if (varbuffer[tagoffset]=='@') {
+				
+					if (varbuffer[tagoffset]=='.') {
+						int lenadd;
+						startvar+=tagoffset;
+						lenbuf=strlen(varbuffer+tagoffset);
+						locallabel=MakeLocalLabel(ae,varbuffer+tagoffset,NULL);
+						/*** le grand remplacement meriterait une modif pour DEK dans MakeLocalLabel ***/
+						rlen=strlen(expr+startvar+lenbuf)+1;
+						lenadd=strlen(locallabel)-strlen(varbuffer+tagoffset);
+						expr=*ptr_expr=MemRealloc(expr,strlen(expr)+lenadd+1);
+
+//printf("expr[%s] move to %d from %d len=%d\n",expr,startvar+lenadd,startvar,rlen+lenbuf);
+						MemMove(expr+startvar+lenadd,expr+startvar,rlen+lenbuf);
+						strncpy(expr+startvar,locallabel,lenadd);
+
+						MemFree(locallabel);
+						found_replace=1;
+						idx+=lenadd;
+					} else	if (varbuffer[tagoffset]=='@') {
 						char *zepoint;
 						startvar+=tagoffset;
 						lenbuf=strlen(varbuffer+tagoffset);
 //printf("MakeLocalLabel(ae,varbuffer,&dek); (3)\n");
 						locallabel=MakeLocalLabel(ae,varbuffer+tagoffset,&dek);
+//printf("local [%s] =>",locallabel);
 						/*** le grand remplacement ***/
 						rlen=strlen(expr+startvar+lenbuf)+1;
 						expr=*ptr_expr=MemRealloc(expr,strlen(expr)+dek+1);
 						/* move end of expression in order to insert local ID */
-						zepoint=strchr(varbuffer,'.');
+						zepoint=strchr(varbuffer+tagoffset,'.'); // +tagoffset
 						if (zepoint) {
 							/* far proximity access */
 							int suffixlen,dotpos;
 							dotpos=(zepoint-varbuffer);
 							suffixlen=lenbuf-dotpos;
-
+		//printf("prox [%s] => ",expr);
 							MemMove(expr+startvar+dotpos+dek,expr+startvar+dotpos,rlen+suffixlen);
 							strncpy(expr+startvar+dotpos,locallabel,dek);
 						} else {
 							/* legacy */
+		//printf("legacy [%s] => ",expr);
 							MemMove(expr+startvar+lenbuf+dek,expr+startvar+lenbuf,rlen);
 							strncpy(expr+startvar+lenbuf,locallabel,dek);
 						}
 						idx+=dek;
 						MemFree(locallabel);
 						found_replace=1;
+	//printf("exprout=[%s]\n",expr);
 					} else if (varbuffer[tagoffset]=='$') {
 						int tagvalue=-1;
+						/*
+						 * There is no {SLOT}$ support...
+						 */
 						if (strcmp(varbuffer,"{BANK}$")==0) {
 							if (ae->forcecpr) {
 								if (ae->activebank<32) {
@@ -5375,11 +7671,14 @@ void PushExpression(struct s_assenv *ae,int iw,enum e_expression zetype)
 		curexp.ibank=ae->activebank;
 		curexp.iorgzone=ae->io-1;
 		curexp.lz=ae->lz;
+		/* need the module to know where we are */
+		if (ae->module) curexp.module=TxtStrDup(ae->module); else curexp.module=NULL;
 		/* on traduit de suite les variables du dictionnaire pour les boucles et increments
-			SAUF si c'est une affectation */
+			SAUF si c'est une affectation 
+		*/
 		if (!ae->wl[iw].e) {
 			switch (zetype) {
-				case E_EXPRESSION_V16C:
+				case E_EXPRESSION_J16C:
  					/* check non register usage */
 					switch (GetCRC(ae->wl[iw].w)) {
 						case CRC_IX:
@@ -5391,6 +7690,7 @@ void PushExpression(struct s_assenv *ae,int iw,enum e_expression zetype)
 					}
 				case E_EXPRESSION_J8:
 				case E_EXPRESSION_V8:
+				case E_EXPRESSION_J16:
 				case E_EXPRESSION_V16:
 				case E_EXPRESSION_IM:startptr=-1;
 							break;
@@ -5409,6 +7709,36 @@ void PushExpression(struct s_assenv *ae,int iw,enum e_expression zetype)
 			/* hack pourri pour gérer le $ */
 			ae->codeadr+=startptr;
 			/* ok mais les labels locaux des macros? */
+
+			/* if external declared then fill some informations */
+			if (ae->nexternal) {
+				switch (zetype) {
+					case E_EXPRESSION_0V8:
+					case E_EXPRESSION_V8:
+					case E_EXPRESSION_IV81:
+					case E_EXPRESSION_IV8:
+					case E_EXPRESSION_3V8:
+						ae->external_mapping_size=1;
+						break;
+					case E_EXPRESSION_J16C:
+					case E_EXPRESSION_J16:
+					case E_EXPRESSION_V16:
+					case E_EXPRESSION_0V16:
+					case E_EXPRESSION_IV16:
+						ae->external_mapping_size=2;
+						break;
+					case E_EXPRESSION_0V32:
+						ae->external_mapping_size=4;
+						break;
+					case E_EXPRESSION_0VR:
+					case E_EXPRESSION_0VRMike:
+						ae->external_mapping_size=5;
+						break;
+					default:
+						ae->external_mapping_size=0;
+						break;
+				}
+			}
 			if (ae->ir || ae->iw || ae->imacro) {
 				curexp.reference=TxtStrDup(ae->wl[iw].w);
 				ExpressionFastTranslate(ae,&curexp.reference,1);
@@ -5425,7 +7755,9 @@ void PushExpression(struct s_assenv *ae,int iw,enum e_expression zetype)
 			case E_EXPRESSION_0V16:curexp.ptr=ae->codeadr;ae->outputadr+=2;ae->codeadr+=2;break;
 			case E_EXPRESSION_0V32:curexp.ptr=ae->codeadr;ae->outputadr+=4;ae->codeadr+=4;break;
 			case E_EXPRESSION_0VR:curexp.ptr=ae->codeadr;ae->outputadr+=5;ae->codeadr+=5;break;
-			case E_EXPRESSION_V16C:
+			case E_EXPRESSION_0VRMike:curexp.ptr=ae->codeadr;ae->outputadr+=5;ae->codeadr+=5;break;
+			case E_EXPRESSION_J16C:
+			case E_EXPRESSION_J16:
 			case E_EXPRESSION_V16:curexp.ptr=ae->codeadr-1;ae->outputadr+=2;ae->codeadr+=2;break;
 			case E_EXPRESSION_IV81:curexp.ptr=ae->codeadr-2;ae->outputadr++;ae->codeadr++;break;
 			case E_EXPRESSION_IV8:curexp.ptr=ae->codeadr-2;ae->outputadr++;ae->codeadr++;break;
@@ -5456,7 +7788,9 @@ void PushExpression(struct s_assenv *ae,int iw,enum e_expression zetype)
 			case E_EXPRESSION_0V16:ae->outputadr+=2;ae->codeadr+=2;break;
 			case E_EXPRESSION_0V32:ae->outputadr+=4;ae->codeadr+=4;break;
 			case E_EXPRESSION_0VR:ae->outputadr+=5;ae->codeadr+=5;break;
-			case E_EXPRESSION_V16C:
+			case E_EXPRESSION_0VRMike:ae->outputadr+=5;ae->codeadr+=5;break;
+			case E_EXPRESSION_J16C:
+			case E_EXPRESSION_J16:
 			case E_EXPRESSION_V16:ae->outputadr+=2;ae->codeadr+=2;break;
 			case E_EXPRESSION_IV81:ae->outputadr++;ae->codeadr++;break;
 			case E_EXPRESSION_IV8:ae->outputadr++;ae->codeadr++;break;
@@ -5471,7 +7805,7 @@ void PushExpression(struct s_assenv *ae,int iw,enum e_expression zetype)
 		}
 		if (ae->outputadr<=ae->maxptr) {
 		} else {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"NOCODE output exceed limit %d\n",GetCurrentFile(ae),ae->wl[ae->idx].l,ae->maxptr);
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"NOCODE output exceed limit %d\n",ae->maxptr);
 			FreeAssenv(ae);exit(3);
 		}
 	}
@@ -5545,20 +7879,33 @@ int EDSK_getdirid(struct s_edsk_wrapper *curwrap) {
 	}
 	return -1;
 }
-char *MakeAMSDOS_name(struct s_assenv *ae, char *filename)
+char *MakeAMSDOS_name(struct s_assenv *ae, char *reference_filename)
 {
 	#undef FUNC
 	#define FUNC "MakeAMSDOS_name"
 
 	static char amsdos_name[12];
+	char *filename,*jo;
 	int i,ia;
 	char *pp;
+
+	/* remove path */
+	filename=reference_filename;
+	while ((jo=strchr(filename,'/'))!=NULL) filename=jo+1;
+	while ((jo=strchr(filename,'\\'))!=NULL) filename=jo+1;
+
 	/* warning */
 	if (strlen(filename)>12) {
-		if (!ae->nowarning) rasm_printf(ae,KWARNING"Warning - filename [%s] too long for AMSDOS, will be truncated\n",filename);
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"Warning - filename [%s] too long for AMSDOS, will be truncated\n",filename);
+			if (ae->erronwarn) MaxError(ae);
+		}
 	} else if ((pp=strchr(filename,'.'))!=NULL) {
 		if (pp-filename>8) {
-			if (!ae->nowarning) rasm_printf(ae,KWARNING"Warning - filename [%s] too long for AMSDOS, will be truncated\n",filename);
+			if (!ae->nowarning) {
+				rasm_printf(ae,KWARNING"Warning - filename [%s] too long for AMSDOS, will be truncated\n",filename);
+			if (ae->erronwarn) MaxError(ae);
+			}
 		}
 	}
 	/* copy filename */
@@ -5618,6 +7965,7 @@ void EDSK_load(struct s_assenv *ae,struct s_edsk_wrapper *curwrap, char *edskfil
 		}
 		if (face>=sidenumber) {
 			rasm_printf(ae,KWARNING"[%s] Warning - DSK has no face %d - DSK updated\n",edskfilename,face);
+			if (ae->erronwarn) MaxError(ae);
 			return;
 		}
 
@@ -5699,6 +8047,7 @@ void EDSK_load(struct s_assenv *ae,struct s_edsk_wrapper *curwrap, char *edskfil
 		}
 		if (face>=sidenumber) {
 			rasm_printf(ae,KWARNING"[%s] EDSK has no face %d - DSK updated\n",edskfilename,face);
+			if (ae->erronwarn) MaxError(ae);
 			return;
 		}
 
@@ -5761,6 +8110,7 @@ void EDSK_load(struct s_assenv *ae,struct s_edsk_wrapper *curwrap, char *edskfil
 				}
 				if (track_sectorsize!=2) {
 					rasm_printf(ae,KWARNING"track %02d has invalid sector size but sectors are OK\n",t);
+			if (ae->erronwarn) MaxError(ae);
 				}
 #if TRACE_EDSK
 	printf("\n");
@@ -6073,6 +8423,7 @@ void EDSK_write_file(struct s_assenv *ae,struct s_edsk_wrapper *faceA,struct s_e
 	struct s_edsk_wrapper emptyface={0};
 	unsigned char header[256]={0};
 	unsigned char trackblock[256]={0};
+	unsigned char headertag[25];
 	int idblock,blockoffset;
 	int i,t;
 	
@@ -6083,7 +8434,8 @@ void EDSK_write_file(struct s_assenv *ae,struct s_edsk_wrapper *faceA,struct s_e
 	EDSK_build_amsdos_directory(faceB);
 	/* écriture header */
 	strcpy((char *)header,"EXTENDED CPC DSK File\r\nDisk-Info\r\n");
-	strcpy((char *)header+0x22,RASM_SNAP_VERSION);
+	sprintf(headertag,"%-9.9s",RASM_SNAP_VERSION);
+	strcpy((char *)header+0x22,headertag);
 	header[0x30]=40;
 	if (!faceA) {
 		faceA=&emptyface;
@@ -6218,8 +8570,8 @@ void EDSK_write(struct s_assenv *ae)
 	#define FUNC "EDSK_write"
 
 	struct s_edsk_wrapper *faceA,*faceB;
-	char *edskfilename;
 	int i,j;
+
 	
 	/* on passe en revue toutes les structs */
 	for (i=0;i<ae->nbedskwrapper;i++) {
@@ -6245,6 +8597,134 @@ void EDSK_write(struct s_assenv *ae)
 		EDSK_write_file(ae,faceA,faceB);
 	}
 }
+
+/* CDT output code / courtesy of CNG */
+void update11(unsigned char *head,int n,int is1st,int islast,int l, int fileload)
+{
+        head[0x10]=n;
+        head[0x11]=islast?-1:0;
+        head[0x13]=l;
+        head[0x14]=l>>8;
+        head[0x15]=fileload;
+        head[0x16]=fileload>>8;
+        head[0x17]=is1st?-1:0;
+}
+#define fputcc(x,y) { fputc((x),y); fputc((x)>>8,y); }
+#define fputccc(x,y) { fputc((x),y); fputc((x)>>8,y); fputc((x)>>16,y); }
+void record11(char *filename,unsigned char *t,int first,int l,int p, int flag_bb, int flag_b)
+{
+	FILE *fo;
+	#ifdef OS_WIN
+	fo=FileOpen(filename,"w");
+	#else
+	fo=FileOpen(filename,"a+");
+	#endif
+
+	/* almost legacy */
+        fputc(0x11,fo);
+        fputcc(flag_bb,fo);
+        fputcc(flag_b,fo);
+        fputcc(flag_b,fo);
+        fputcc(flag_b,fo);
+        fputcc(flag_bb,fo);
+        //fputcc(flag_o,fo);
+        fputcc(4096,fo); // 4K block
+        fputc(8,fo);
+        fputcc(p,fo);
+        p=1+(((l+255)/256)*258)+4; //flag_z;
+        fputccc(p,fo);
+        fputc(first,fo);
+        p=0;
+        while (l>0)
+        {
+		int crc16=0xFFFF;
+                fwrite(t+p,1,256,fo);
+                first=256;
+		while (first--) {
+			// early CRC-16-CCITT as used by Amstrad
+                        int xor8=(t[p++]<<8)+1;
+                        while (xor8&0xFF)
+                        {
+                                if ((xor8^crc16)&0x8000)
+                                        crc16=((crc16^0x0810)<<1)+1;
+                                else
+                                        crc16<<=1;
+                                xor8<<=1;
+                        }
+                }
+                crc16=~crc16;
+                fputc(crc16>>8,fo); // HI FIRST,
+                fputc(crc16,fo); // AND LO NEXT!
+                l-=256;
+        }
+        l=4; //flag_z;
+        while (l--)
+                fputc(255,fo);
+}
+
+void __output_CDT(struct s_assenv *ae, char *tapefilename,char *filename,char *mydata,int size, int offset, int run)
+{
+	unsigned char *AmsdosHeader;
+	unsigned char head[256];
+	char TZX_header[14];
+	int wrksize,fileload,nbblock=0;
+	unsigned char body[65536+128];
+	int flag_h=2560, flag_p=10240, flag_bb, flag_b=1000,i,j,k;
+
+	FileRemoveIfExists(tapefilename); // pas de append pour le moment
+
+	memcpy(TZX_header,"ZXTape!\032\001\000\040\000\012",13);
+	FileWriteBinary(tapefilename,(char *)TZX_header,13);
+
+	AmsdosHeader=MakeAMSDOSHeader(run,offset,offset+size,MakeAMSDOS_name(ae,filename));
+	memcpy(body,AmsdosHeader,128);
+	wrksize=size;
+
+	memset(head,0,16);
+	strcpy(head,MakeAMSDOS_name(ae,filename));
+	head[0x12]=body[0x12];
+	head[0x18]=body[0x40];
+	head[0x19]=body[0x41];
+	head[0x1A]=body[0x1A];
+	head[0x1B]=body[0x1B];
+	fileload=body[0x15]+body[0x16]*256;
+	flag_b=(3500000/3+flag_b/2)/flag_b;
+	flag_bb=flag_b*2;
+	memcpy(body,mydata,size);
+
+	if (wrksize>0x800) {
+		update11(head,j=1,1,0,0x800,fileload); // FIRST BLOCK
+		record11(tapefilename,head,44,28,16,flag_bb,flag_b);
+		record11(tapefilename,body,22,0x800,flag_h,flag_bb,flag_b);
+		k=wrksize-0x800;
+		i=0x800;
+		nbblock=1;
+		while (k>0x800) {
+			fileload+=0x800;
+			update11(head,++j,0,0,0x800,fileload); // MID BLOCK
+			record11(tapefilename,head,44,28,16,flag_bb,flag_b);
+			record11(tapefilename,body+i,22,0x800,flag_h,flag_bb,flag_b);
+			k-=0x800;
+			i+=0x800;
+			nbblock++;
+		}
+		nbblock++;
+		fileload+=0x800;
+		update11(head,++j,0,1,k,fileload); // LAST BLOCK
+		record11(tapefilename,head,44,28,16,flag_bb,flag_b);
+		record11(tapefilename,body+i,22,k,flag_p,flag_bb,flag_b);
+	} else {
+		update11(head,1,1,1,wrksize,fileload); // SINGLE BLOCK
+		record11(tapefilename,head,44,28,16,flag_bb,flag_b);
+		record11(tapefilename,body,22,wrksize,flag_p,flag_bb,flag_b);
+		nbblock=1;
+	}
+	FileWriteBinaryClose(tapefilename);
+	rasm_printf(ae,KIO"Write tape file %s (%d block%s) run=#%04X\n",tapefilename,nbblock,nbblock>1?"s":"",run);
+}
+
+
+
 void PopAllSave(struct s_assenv *ae)
 {
 	#undef FUNC
@@ -6258,11 +8738,13 @@ void PopAllSave(struct s_assenv *ae)
 	
 	for (is=0;is<ae->nbsave;is++) {
 		/* avoid quotes */
-		filename=ae->wl[ae->save[is].iw].w;
-		filename[strlen(filename)-1]=0;
-		filename=TxtStrDup(filename+1);
-		/* translate tags! */
-		filename=TranslateTag(ae,filename,&touched,1,E_TAGOPTION_REMOVESPACE);
+		if (!ae->save[is].iw) filename=ae->save[is].filename; else {
+			filename=ae->wl[ae->save[is].iw].w;
+			filename[strlen(filename)-1]=0;
+			filename=TxtStrDup(filename+1);
+			/* crappy POST translate tags! => deprecated!
+			filename=TranslateTag(ae,filename,&touched,1,E_TAGOPTION_REMOVESPACE); */
+		}
 
 #if TRACE_EDSK
 	printf("woff=[%s](%d) wsize=[%s](%d)\n",ae->wl[ae->save[is].ioffset].w,ae->save[is].ioffset,ae->wl[ae->save[is].isize].w,ae->save[is].isize);
@@ -6286,14 +8768,17 @@ void PopAllSave(struct s_assenv *ae)
 
 		if (size<1 || size>65536) {
 			MakeError(ae,NULL,0,"cannot save [%s] as the size is invalid!\n",filename);
+			MemFree(filename);
 			continue;
 		}
 		if (offset<0 || offset>65535) {
 			MakeError(ae,NULL,0,"cannot save [%s] as the offset is invalid!\n",filename);
+			MemFree(filename);
 			continue;
 		}
 		if (offset+size>65536) {
 			MakeError(ae,NULL,0,"cannot save [%s] as the offset+size will be out of bounds!\n",filename);
+			MemFree(filename);
 			continue;
 		}
 		/* DSK management */
@@ -6304,66 +8789,22 @@ void PopAllSave(struct s_assenv *ae)
 				dskfilename[strlen(dskfilename)-1]=0;
 				if (!EDSK_addfile(ae,dskfilename+1,ae->save[is].face,filename,ae->mem[ae->save[is].ibank]+offset,size,offset,run)) {
 					erreur++;
-					break;
+					//break;
 				}
 				MemFree(dskfilename);
 			}
 		} else if (ae->save[is].tape) {
-			char TZX_header[10];
-			unsigned char IDval[2];
-			int wrksize,nbblock;
+			char *tapefilename;
 
-			/* output file on filesystem */
-			FileRemoveIfExists(filename);
-
-			strcpy(TZX_header,"ZXTape!");
-			TZX_header[7]=0x1A;
-			TZX_header[8]=1;
-			TZX_header[9]=20;
-			FileWriteBinary(filename,(char *)TZX_header,10);
-
-			IDval[0]=0x20;
-			FileWriteBinary(filename,(char *)IDval,1);
-			IDval[0]=0x03;
-			IDval[1]=0x03;
-			FileWriteBinary(filename,(char *)IDval,2); // first silence
-
-			IDval[0]=0x10;
-			FileWriteBinary(filename,(char *)IDval,1);
-			IDval[0]=0x03;
-			IDval[1]=0x03;
-			FileWriteBinary(filename,(char *)IDval,2); // little silence
-			if (size+128<=2048) wrksize=size+128; else wrksize=2048;
-			IDval[0]=(wrksize+128) & 0xFF;
-			IDval[1]=((wrksize+128)>>8) & 0xFF;
-			FileWriteBinary(filename,(char *)IDval,2); // block len
-			nbblock=1;
-			AmsdosHeader=MakeAMSDOSHeader(run,offset,offset+size,MakeAMSDOS_name(ae,filename));
-			FileWriteBinary(filename,(char *)AmsdosHeader,128);
-			if (size<=2048-128) {
-				FileWriteBinary(filename,(char*)ae->mem[ae->save[is].ibank]+offset,size);
+			if (ae->save[is].iwdskname>0) {
+				tapefilename=ae->wl[ae->save[is].iwdskname].w;
+				tapefilename[strlen(tapefilename)-1]=0;
+				tapefilename=TxtStrDup(tapefilename+1);
 			} else {
-				FileWriteBinary(filename,(char*)ae->mem[ae->save[is].ibank]+offset,2048-128);
-				size=size-2048+128;
-				while (size>0) {
-					nbblock++;
-					/* additionnal block */
-					IDval[0]=0x10;
-					FileWriteBinary(filename,(char *)IDval,1);
-					IDval[0]=0x04;
-					IDval[1]=0x04;
-					FileWriteBinary(filename,(char *)IDval,2); // silence 1s delay
-					if (size<=2048) wrksize=size; else wrksize=2048;
-					IDval[0]=(wrksize+128) & 0xFF;
-					IDval[1]=((wrksize+128)>>8) & 0xFF;
-					FileWriteBinary(filename,(char *)IDval,2); // block len
-					FileWriteBinary(filename,(char*)ae->mem[ae->save[is].ibank]+offset,wrksize);
-					/* adjust */
-					size=size-2048;
-				}
+				tapefilename=TxtStrDup("rasmoutput.cdt");
 			}
-			FileWriteBinaryClose(filename);
-			rasm_printf(ae,KIO"Write tape file %s (%d block%s)\n",filename,nbblock,nbblock>1?"s":"");
+
+			__output_CDT(ae,tapefilename,filename,(char*)ae->mem[ae->save[is].ibank]+offset,size,offset,run);
 		} else {
 			/* output file on filesystem */
 			rasm_printf(ae,KIO"Write binary file %s (%d byte%s)\n",filename,size,size>1?"s":"");
@@ -6371,6 +8812,10 @@ void PopAllSave(struct s_assenv *ae)
 			if (ae->save[is].amsdos) {
 				AmsdosHeader=MakeAMSDOSHeader(run,offset,offset+size,MakeAMSDOS_name(ae,filename));
 				FileWriteBinary(filename,(char *)AmsdosHeader,128);
+			} else if (ae->save[is].hobeta) {
+				// HOBETA header is 17 bytes long so i reuse Amsdos buffer and name cleaning
+				AmsdosHeader=MakeHobetaHeader(offset,offset+size,MakeAMSDOS_name(ae,filename));
+				FileWriteBinary(filename,(char *)AmsdosHeader,17);
 			}		
 			FileWriteBinary(filename,(char*)ae->mem[ae->save[is].ibank]+offset,size);
 			FileWriteBinaryClose(filename);
@@ -6397,7 +8842,7 @@ void PopAllExpression(struct s_assenv *ae, int crunched_zone)
 	static int first=1;
 	double v;
 	long r;
-	int i;
+	int i,mapflag=0;
 	unsigned char *mem;
 	char *expr;
 	
@@ -6422,10 +8867,11 @@ void PopAllExpression(struct s_assenv *ae, int crunched_zone)
 	}
 	
 	for (i=first;i<ae->ie;i++) {
-		/* first compute only crunched expression (0,1,2,3,...) then (-1) at the end */
+		/* first compute only crunched expression (0,1,2,3,...) then intermediates and (-1) at the end */
 		if (crunched_zone>=0) {
-			/* calcul des expressions en zone crunch */
+			/* jump over previous crunched or non-crunched zones */
 			if (ae->expression[i].lz<crunched_zone) continue;
+			/* OPTIM: keep index and stop when we are after the current crunched zone */
 			if (ae->expression[i].lz>crunched_zone) {
 				first=i;
 				break;
@@ -6441,8 +8887,31 @@ void PopAllExpression(struct s_assenv *ae, int crunched_zone)
 		} else {
 			expr=ae->wl[ae->expression[i].iw].w;
 		}
+
+#if TRACE_POPEXPR
+	printf("PopAll (%d) expr=[%s] ptr=%X outputadr=%X\n",crunched_zone,expr,ae->expression[i].ptr,ae->expression[i].wptr);
+#endif
+		if (ae->nexternal) {
+			int iex,jex;
+			mapflag=0;
+			for (iex=0;iex<ae->nexternal;iex++) {
+				for (jex=0;jex<ae->external[iex].nmapping;jex++) {
+					if (ae->expression[i].wptr==ae->external[iex].mapping[jex].ptr) {
+#if TRACE_POPEXPR
+						printf("MAPPING [%s] adr=%d size=%d\n",ae->external[iex].name,ae->expression[i].wptr,ae->external[iex].mapping[jex].size);
+#endif
+						mapflag=1;
+						break;
+					}
+				}
+			}
+		}
 		v=ComputeExpressionCore(ae,expr,ae->expression[i].ptr,i);
 		r=(long)floor(v+ae->rough);
+#if TRACE_POPEXPR
+		printf("resultat du compute=>%ld (%lf + rough=%lf)\n",r,v,ae->rough);
+#endif
+
 		switch (ae->expression[i].zetype) {
 			case E_EXPRESSION_J8:
 				r=r-ae->expression[i].ptr-2;
@@ -6459,16 +8928,33 @@ void PopAllExpression(struct s_assenv *ae, int crunched_zone)
 			case E_EXPRESSION_3V8:
 			case E_EXPRESSION_V8:
 				if (r>255 || r<-128) {
-					if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: truncating value #%X to #%X\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l,r,r&0xFF);
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: truncating value #%X to #%X\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l,r,r&0xFF);
+						if (ae->erronwarn) MaxError(ae);
+					}
 				}
 				mem[ae->expression[i].wptr]=(unsigned char)r;
 				break;
+			case E_EXPRESSION_J16:
+			case E_EXPRESSION_J16C:
+				/* buildobj */
+				if (ae->buildobj && !mapflag) {
+					struct s_external_mapping relocation;
+					//printf("RELOCATION %04X\n",ae->expression[i].wptr);
+					relocation.iorgzone=ae->expression[i].ibank; // bank hack
+					relocation.ptr=ae->expression[i].wptr;
+					relocation.size=2;
+					relocation.value=r&0xFFFF;
+					ObjectArrayAddDynamicValueConcat((void**)&ae->relocation,&ae->nrelocation,&ae->mrelocation,&relocation,sizeof(relocation));
+				}
 			case E_EXPRESSION_IV16:
 			case E_EXPRESSION_V16:
-			case E_EXPRESSION_V16C:
 			case E_EXPRESSION_0V16:
 				if (r>65535 || r<-32768) {
-					if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: truncating value #%X to #%X\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l,r,r&0xFFFF);
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: truncating value #%X to #%X\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l,r,r&0xFFFF);
+						if (ae->erronwarn) MaxError(ae);
+					}
 				}
 				mem[ae->expression[i].wptr]=(unsigned char)r&0xFF;
 				mem[ae->expression[i].wptr+1]=(unsigned char)((r&0xFF00)>>8);
@@ -6476,7 +8962,10 @@ void PopAllExpression(struct s_assenv *ae, int crunched_zone)
 			case E_EXPRESSION_0V32:
 				/* meaningless in 32 bits architecture... */
 				if (v>4294967295 || v<-2147483648) {
-					if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: truncating value\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l);
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: truncating value\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l);
+						if (ae->erronwarn) MaxError(ae);
+					}
 				}
 				mem[ae->expression[i].wptr]=(unsigned char)r&0xFF;
 				mem[ae->expression[i].wptr+1]=(unsigned char)((r>>8)&0xFF);
@@ -6486,6 +8975,10 @@ void PopAllExpression(struct s_assenv *ae, int crunched_zone)
 			case E_EXPRESSION_0VR:
 				/* convert v double value to Amstrad REAL */
 				memcpy(&mem[ae->expression[i].wptr],__internal_MakeAmsdosREAL(ae,v,i),5);
+				break;
+			case E_EXPRESSION_0VRMike:
+				/* convert v double value to Microsoft 40bits REAL */
+				memcpy(&mem[ae->expression[i].wptr],__internal_MakeRosoftREAL(ae,v,i),5);
 				break;
 			case E_EXPRESSION_IM:
 				switch (r) {
@@ -6514,20 +9007,29 @@ void PopAllExpression(struct s_assenv *ae, int crunched_zone)
 				break;
 			case E_EXPRESSION_RUN:
 				if (r<0 || r>65535) {
-					if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: run adress truncated from %X to %X\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l,r,r&0xFFFF);
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: run address truncated from %X to %X\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l,r,r&0xFFFF);
+						if (ae->erronwarn) MaxError(ae);
+					}
 				}
 				ae->snapshot.registers.LPC=r&0xFF;
 				ae->snapshot.registers.HPC=(r>>8)&0xFF;
 				break;			
 			case E_EXPRESSION_ZXRUN:
 				if (r<0 || r>65535) {
-					if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: run adress truncated from %X to %X\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l,r,r&0xFFFF);
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: run address truncated from %X to %X\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l,r,r&0xFFFF);
+						if (ae->erronwarn) MaxError(ae);
+					}
 				}
 				ae->zxsnapshot.run=r&0xFFFF;
 				break;			
 			case E_EXPRESSION_ZXSTACK:
 				if (r<0 || r>65535) {
-					if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: stack adress truncated from %X to %X\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l,r,r&0xFFFF);
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: stack address truncated from %X to %X\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l,r,r&0xFFFF);
+						if (ae->erronwarn) MaxError(ae);
+					}
 				}
 				ae->zxsnapshot.stack=r&0xFFFF;
 				break;
@@ -6539,7 +9041,7 @@ void PopAllExpression(struct s_assenv *ae, int crunched_zone)
 				}
 				break;
 			default:
-				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - unknown expression type\n",GetExpFile(ae,i),ae->wl[ae->expression[i].iw].l);
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - unknown expression type\n");
 				FreeAssenv(ae);exit(-8);
 		}	
 	}
@@ -6581,6 +9083,7 @@ void PushLabelLight(struct s_assenv *ae, struct s_label *curlabel) {
 		MemFree(curlabel->name);
 	} else {
 		curlabel->backidx=ae->il;
+		curlabel->autorise_export=ae->autorise_export&(!ae->getstruct);
 		ObjectArrayAddDynamicValueConcat((void **)&ae->label,&ae->il,&ae->ml,curlabel,sizeof(struct s_label));
 		InsertLabelToTree(ae,curlabel);
 	}				
@@ -6591,21 +9094,20 @@ void PushLabel(struct s_assenv *ae)
 	#define FUNC "PushLabel"
 	
 	struct s_label curlabel={0},*searched_label;
-	char *curlabelname;
 	int i;
 	/* label with counters */
-	struct s_expr_dico *curdic;
-	char curval[32];
-	char *varbuffer,*expr;
-	char *starttag,*endtag,*tagcheck;
-	int taglen,tagidx,lenw,tagcount=0;
-	int crc,newlen,touched;
+	char *varbuffer;
+	int tagcount=0;
+	int touched;
 
-	if (ae->AutomateValidLabelFirst[ae->wl[ae->idx].w[0]]) {
+#if TRACE_LABEL
+	printf("check label [%s]\n",ae->wl[ae->idx].w);
+#endif
+	if (ae->AutomateValidLabelFirst[(int)ae->wl[ae->idx].w[0]&0xFF]) {
 		for (i=1;ae->wl[ae->idx].w[i];i++) {
 			if (ae->wl[ae->idx].w[i]=='{') tagcount++; else if (ae->wl[ae->idx].w[i]=='}') tagcount--;
 			if (!tagcount) {
-				if (!ae->AutomateValidLabel[ae->wl[ae->idx].w[i]]) {
+				if (!ae->AutomateValidLabel[(int)ae->wl[ae->idx].w[i]&0xFF]) {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Invalid char in label declaration (%c)\n",ae->wl[ae->idx].w[i]);
 					return;
 				}
@@ -6659,26 +9161,34 @@ void PushLabel(struct s_assenv *ae)
 
 	/*******************************************************
 	   v a r i a b l e s     i n    l a b e l    n a m e
+
+	           -- varbuffer is always allocated --
 	*******************************************************/
-	varbuffer=TranslateTag(ae,TxtStrDup(ae->wl[ae->idx].w),&touched,1,E_TAGOPTION_NONE);
-	
+	varbuffer=TranslateTag(ae,TxtStrDup(ae->wl[ae->idx].w),&touched,1,E_TAGOPTION_NONE); // on se moque du touched ici => varbuffer toujours "new"
+#if TRACE_LABEL
+	printf("label after translation [%s]\n",varbuffer);
+#endif
 	/**************************************************
 	   s t r u c t u r e     d e c l a r a t i o n
 	**************************************************/
 	if (ae->getstruct) {
 		struct s_rasmstructfield rasmstructfield={0};
+#if TRACE_LABEL
+	printf("label used for structs! [%s]\n",varbuffer);
+#endif
 		if (varbuffer[0]=='@') {
 			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Please no local label in a struct [%s]\n",ae->wl[ae->idx].w);
+			MemFree(varbuffer);
 			return;
 		}
 		/* copy label+offset in the structure */
-		rasmstructfield.name=TxtStrDup(varbuffer);
+		rasmstructfield.name=varbuffer;
 		rasmstructfield.offset=ae->codeadr;
 		ObjectArrayAddDynamicValueConcat((void **)&ae->rasmstruct[ae->irasmstruct-1].rasmstructfield,
 				&ae->rasmstruct[ae->irasmstruct-1].irasmstructfield,&ae->rasmstruct[ae->irasmstruct-1].mrasmstructfield,
 				&rasmstructfield,sizeof(rasmstructfield));
 		/* label is structname+field */
-		curlabelname=curlabel.name=MemMalloc(strlen(ae->rasmstruct[ae->irasmstruct-1].name)+strlen(varbuffer)+2);
+		curlabel.name=MemMalloc(strlen(ae->rasmstruct[ae->irasmstruct-1].name)+strlen(varbuffer)+2);
 		sprintf(curlabel.name,"%s.%s",ae->rasmstruct[ae->irasmstruct-1].name,varbuffer);
 		curlabel.iw=-1;
 		/* legacy */
@@ -6693,9 +9203,12 @@ void PushLabel(struct s_assenv *ae)
 		**************************************************/
 		/* labels locaux */
 		if (varbuffer[0]=='@' && (ae->ir || ae->iw || ae->imacro)) {
+#if TRACE_LABEL
+	printf("PUSH LOCAL\n");
+#endif
 			curlabel.iw=-1;
 			curlabel.local=1;
-			curlabelname=curlabel.name=MakeLocalLabel(ae,varbuffer,NULL);
+			curlabel.name=MakeLocalLabel(ae,varbuffer,NULL);  MemFree(varbuffer);
 			curlabel.crc=GetCRC(curlabel.name);
 
 			/* local labels ALSO set new reference */
@@ -6703,11 +9216,15 @@ void PushLabel(struct s_assenv *ae)
 //printf("push LOCAL is freeing lastgloballabel\n");
 				MemFree(ae->lastgloballabel);
 			}
-			ae->lastgloballabel=TxtStrDup(curlabelname);
-//printf("push LOCAL as reference for proximity label -> [%s]\n",ae->lastgloballabel);
+			ae->lastgloballabel=TxtStrDup(curlabel.name);
 			ae->lastgloballabellen=strlen(ae->lastgloballabel);
 			ae->lastglobalalloc=1;
+//printf("push LOCAL as reference [%d] for proximity label -> [%s]\n",im, ae->lastgloballabel);
+
 		} else {
+#if TRACE_LABEL
+	printf("PUSH GLOBAL or PROXIMITY\n");
+#endif
 			switch (varbuffer[0]) {
 				case '.':
 					if (ae->dams) {
@@ -6715,68 +9232,76 @@ void PushLabel(struct s_assenv *ae)
 						i=0;
 						do {
 							varbuffer[i]=varbuffer[i+1];
-							ae->wl[ae->idx].w[i]=ae->wl[ae->idx].w[i+1];
 							i++;
 						} while (varbuffer[i]!=0);
-						if (!touched) {
-							curlabel.iw=ae->idx;
-						} else {
-							curlabel.iw=-1;
-							curlabel.name=varbuffer;
-						}
-						curlabel.crc=GetCRC(varbuffer);
-						curlabelname=varbuffer;
+
+						curlabel.iw=-1;
+						curlabel.name=varbuffer;
+						curlabel.crc=GetCRC(curlabel.name);
 					} else {
 						/* proximity labels */
 						if (ae->lastgloballabel) {
-							curlabelname=MemMalloc(strlen(varbuffer)+1+ae->lastgloballabellen);
-							sprintf(curlabelname,"%s%s",ae->lastgloballabel,varbuffer);
+							curlabel.name=MemMalloc(strlen(varbuffer)+1+ae->lastgloballabellen);
+							sprintf(curlabel.name,"%s%s",ae->lastgloballabel,varbuffer);
 							MemFree(varbuffer);
-							touched=1; // cause realloc!
 							curlabel.iw=-1;
-							curlabel.name=varbuffer=curlabelname;
-							curlabel.crc=GetCRC(varbuffer);
-//printf("push proximity label that may be exported [%s]->[%s]\n",ae->wl[ae->idx].w,varbuffer);
+							curlabel.crc=GetCRC(curlabel.name);
+#if TRACE_LABEL
+printf("PUSH PROXIMITY label that may be exported [%s]->[%s]\n",ae->wl[ae->idx].w,curlabel.name);
+#endif
 						} else {
-							/* MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"cannot create proximity label [%s] as there is no previous global label\n",varbuffer);
-							return; */
+#if TRACE_LABEL
+printf("PUSH Orphan PROXIMITY label that cannot be exported [%s]->[%s]\n",ae->wl[ae->idx].w,curlabel.name);
+#endif
 
-							// not optimal but!
-							curlabelname=TxtStrDup(varbuffer);
-							MemFree(varbuffer);
-							touched=1; // cause realloc!
 							curlabel.iw=-1;
-							curlabel.name=varbuffer=curlabelname;
+							curlabel.name=varbuffer;
 							curlabel.crc=GetCRC(varbuffer);
 						}
 					}
 					break;
 				default:
-					if (!touched) {
-						curlabel.iw=ae->idx;
-					} else {
-						curlabel.iw=-1;
-						curlabel.name=varbuffer;
-					}
+#if TRACE_LABEL
+	printf("PUSH => GLOBAL [%s]\n",varbuffer);
+#endif
+					curlabel.iw=-1;
+					curlabel.name=varbuffer; 
 					curlabel.crc=GetCRC(varbuffer);
-					curlabelname=varbuffer;
+
 					/* global labels set new reference */
 					if (ae->lastglobalalloc) MemFree(ae->lastgloballabel);
-					ae->lastgloballabel=ae->wl[ae->idx].w;
-					ae->lastsuperglobal=ae->wl[ae->idx].w;
-					ae->lastgloballabellen=strlen(ae->wl[ae->idx].w);
-					ae->lastglobalalloc=0;
-//printf("SET global label [%s] l=%d\n",ae->lastgloballabel,ae->lastgloballabellen);
+					ae->lastgloballabel=TxtStrDup(curlabel.name);
+					ae->lastgloballabellen=strlen(curlabel.name);
+					ae->lastglobalalloc=1;
 					break;
 			}
 
+
+			/* this stage varbuffer maybe already freed or used */
+			if (curlabel.name[0]!='@' && ae->module && ae->modulen) {
+				char *newlabelname;
+
+				newlabelname=MemMalloc(strlen(curlabel.name)+ae->modulen+2);
+				strcpy(newlabelname,ae->module);
+				strcat(newlabelname,ae->module_separator);
+				strcat(newlabelname,curlabel.name);
+				MemFree(curlabel.name);
+				curlabel.name=newlabelname;
+				curlabel.crc=GetCRC(curlabel.name);
+				//curlabel.iw=-1; => deja mis depuis longtemps
+			}
+#if TRACE_LABEL
+	if (curlabel.name[0]!='@') printf("PUSH => ADD MODULE [%s] => [%s]\n",ae->module?ae->module:"(null)",curlabel.name);
+	else printf("PUSH => NO MODULE for local label\n");
+#endif
+
 			/* contrôle dico uniquement avec des labels non locaux */
-			if (SearchDico(ae,curlabelname,curlabel.crc)) {
-				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"cannot create label [%s] as there is already a variable with the same name\n",curlabelname);
+			if (SearchDico(ae,curlabel.name,curlabel.crc)) {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"cannot create label [%s] as there is already a variable with the same name\n",curlabel.name);
 				return;
 			}
-			if(SearchAlias(ae,curlabel.crc,curlabelname)!=-1) {
-				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"cannot create label [%s] as there is already an alias with the same name\n",curlabelname);
+			if(SearchAlias(ae,curlabel.crc,curlabel.name)!=-1) {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"cannot create label [%s] as there is already an alias with the same name\n",curlabel.name);
 				return;
 			}
 		}
@@ -6786,20 +9311,19 @@ void PushLabel(struct s_assenv *ae)
 		curlabel.lz=ae->lz;
 	}
 
-	if ((searched_label=SearchLabel(ae,curlabelname,curlabel.crc))!=NULL) {
-		MakeError(ae,GetCurrentFile(ae),GetExpLine(ae,0),"Duplicate label [%s] - previously defined in [%s:%d]\n",curlabelname,ae->filename[searched_label->fileidx],searched_label->fileline);
-		if (curlabel.iw==-1) MemFree(curlabelname);
+	if ((searched_label=SearchLabel(ae,curlabel.name,curlabel.crc))!=NULL) {
+		MakeError(ae,GetCurrentFile(ae),GetExpLine(ae,0),"Duplicate label [%s] - previously defined in [%s:%d]\n",curlabel.name,ae->filename[searched_label->fileidx],searched_label->fileline);
+		MemFree(curlabel.name);
 	} else {
-//printf("PushLabel(%s) name=%s crc=%X\n",curlabelname,curlabel.name?curlabel.name:"null",curlabel.crc);
+//printf("PushLabel(%s) name=%s crc=%X lz=%d\n",curlabel.name,curlabel.name?curlabel.name:"null",curlabel.crc,curlabel.lz);
 		curlabel.fileidx=ae->wl[ae->idx].ifile;
 		curlabel.fileline=ae->wl[ae->idx].l;
-		curlabel.autorise_export=ae->autorise_export;
+		curlabel.autorise_export=ae->autorise_export&(!ae->getstruct);
 		curlabel.backidx=ae->il;
 		ObjectArrayAddDynamicValueConcat((void **)&ae->label,&ae->il,&ae->ml,&curlabel,sizeof(curlabel));
 		InsertLabelToTree(ae,&curlabel);
 	}
 
-	if (!touched) MemFree(varbuffer);
 }
 
 
@@ -6808,12 +9332,14 @@ unsigned char *EncodeSnapshotRLE(unsigned char *memin, int *lenout) {
 	#define FUNC "EncodeSnapshotRLE"
 	
 	int i,cpt,idx=0;
-	unsigned char *memout=NULL;
+	unsigned char *memout;
 	
-	memout=MemMalloc(65540);
+	memout=MemMalloc(65536*2);
 	
 	for (i=0;i<65536;) {
-		for (cpt=1;cpt<255;cpt++) if (memin[i]!=memin[i+cpt]) break;
+
+		for (cpt=1;cpt<255 && i+cpt<65536;cpt++) if (memin[i]!=memin[i+cpt]) break;
+
 		if (cpt>=3 || memin[i]==0xE5) {
 			memout[idx++]=0xE5;
 			memout[idx++]=cpt;
@@ -6824,10 +9350,12 @@ unsigned char *EncodeSnapshotRLE(unsigned char *memin, int *lenout) {
 		}
 	}
 	if (lenout) *lenout=idx;
-	if (idx<65536) return memout;
-	
-	MemFree(memout);
-	return NULL;
+        if (idx<65536) return memout;
+        
+        MemFree(memout);
+	*lenout=65536; // means cannot pack
+        return NULL;
+
 }
 
 
@@ -6840,14 +9368,14 @@ void _IN(struct s_assenv *ae) {
 		if (strcmp(ae->wl[ae->idx+2].w,"(C)")==0) {
 			switch (GetCRC(ae->wl[ae->idx+1].w)) {
 				case CRC_0:
-				case CRC_F:___output(ae,0xED);___output(ae,0x70);ae->nop+=4;break;
-				case CRC_A:___output(ae,0xED);___output(ae,0x78);ae->nop+=3;break;
-				case CRC_B:___output(ae,0xED);___output(ae,0x40);ae->nop+=4;break;
-				case CRC_C:___output(ae,0xED);___output(ae,0x48);ae->nop+=4;break;
-				case CRC_D:___output(ae,0xED);___output(ae,0x50);ae->nop+=4;break;
-				case CRC_E:___output(ae,0xED);___output(ae,0x58);ae->nop+=4;break;
-				case CRC_H:___output(ae,0xED);___output(ae,0x60);ae->nop+=4;break;
-				case CRC_L:___output(ae,0xED);___output(ae,0x68);ae->nop+=4;break;
+				case CRC_F:___output(ae,0xED);___output(ae,0x70);ae->nop+=4;ae->tick+=12;break;
+				case CRC_A:___output(ae,0xED);___output(ae,0x78);ae->nop+=4;ae->tick+=12;break;
+				case CRC_B:___output(ae,0xED);___output(ae,0x40);ae->nop+=4;ae->tick+=12;break;
+				case CRC_C:___output(ae,0xED);___output(ae,0x48);ae->nop+=4;ae->tick+=12;break;
+				case CRC_D:___output(ae,0xED);___output(ae,0x50);ae->nop+=4;ae->tick+=12;break;
+				case CRC_E:___output(ae,0xED);___output(ae,0x58);ae->nop+=4;ae->tick+=12;break;
+				case CRC_H:___output(ae,0xED);___output(ae,0x60);ae->nop+=4;ae->tick+=12;break;
+				case CRC_L:___output(ae,0xED);___output(ae,0x68);ae->nop+=4;ae->tick+=12;break;
 				default:
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is IN [0,F,A,B,C,D,E,H,L],(C)\n");
 			}
@@ -6855,6 +9383,7 @@ void _IN(struct s_assenv *ae) {
 			___output(ae,0xDB);
 			PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
 			ae->nop+=3;
+			ae->tick+=11;
 		} else {
 			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"IN [0,F,A,B,C,D,E,H,L],(C) or IN A,(n) only\n");
 		}
@@ -6868,14 +9397,14 @@ void _OUT(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t && !ae->wl[ae->idx+1].t && ae->wl[ae->idx+2].t==1) {
 		if (strcmp(ae->wl[ae->idx+1].w,"(C)")==0) {
 			switch (GetCRC(ae->wl[ae->idx+2].w)) {
-				case CRC_0:___output(ae,0xED);___output(ae,0x71);ae->nop+=4;break;
-				case CRC_A:___output(ae,0xED);___output(ae,0x79);ae->nop+=4;break;
-				case CRC_B:___output(ae,0xED);___output(ae,0x41);ae->nop+=4;break;
-				case CRC_C:___output(ae,0xED);___output(ae,0x49);ae->nop+=4;break;
-				case CRC_D:___output(ae,0xED);___output(ae,0x51);ae->nop+=4;break;
-				case CRC_E:___output(ae,0xED);___output(ae,0x59);ae->nop+=4;break;
-				case CRC_H:___output(ae,0xED);___output(ae,0x61);ae->nop+=4;break;
-				case CRC_L:___output(ae,0xED);___output(ae,0x69);ae->nop+=4;break;
+				case CRC_0:___output(ae,0xED);___output(ae,0x71);ae->nop+=4;ae->tick+=12;break;
+				case CRC_A:___output(ae,0xED);___output(ae,0x79);ae->nop+=4;ae->tick+=12;break;
+				case CRC_B:___output(ae,0xED);___output(ae,0x41);ae->nop+=4;ae->tick+=12;break;
+				case CRC_C:___output(ae,0xED);___output(ae,0x49);ae->nop+=4;ae->tick+=12;break;
+				case CRC_D:___output(ae,0xED);___output(ae,0x51);ae->nop+=4;ae->tick+=12;break;
+				case CRC_E:___output(ae,0xED);___output(ae,0x59);ae->nop+=4;ae->tick+=12;break;
+				case CRC_H:___output(ae,0xED);___output(ae,0x61);ae->nop+=4;ae->tick+=12;break;
+				case CRC_L:___output(ae,0xED);___output(ae,0x69);ae->nop+=4;ae->tick+=12;break;
 				default:
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is OUT (C),[0,A,B,C,D,E,H,L]\n");
 			}
@@ -6883,6 +9412,7 @@ void _OUT(struct s_assenv *ae) {
 			___output(ae,0xD3);
 			PushExpression(ae,ae->idx+1,E_EXPRESSION_V8);
 			ae->nop+=3;
+			ae->tick+=11;
 		} else {
 			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"OUT (C),[0,A,B,C,D,E,H,L] or OUT (n),A only\n");
 		}
@@ -6897,45 +9427,45 @@ void _EX(struct s_assenv *ae) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
 			case CRC_HL:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_DE:___output(ae,0xEB);ae->nop+=1;break;
-					case CRC_MSP:___output(ae,0xE3);ae->nop+=6;break;
+					case CRC_DE:___output(ae,0xEB);ae->nop+=1;ae->tick+=4;break;
+					case CRC_MSP:___output(ae,0xE3);ae->nop+=6;ae->tick+=19;break;
 					default:
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is EX HL,[(SP),DE]\n");
 				}
 				break;
 			case CRC_AF:
 				if (strcmp(ae->wl[ae->idx+2].w,"AF'")==0) {
-					___output(ae,0x08);ae->nop+=1;
+					___output(ae,0x08);ae->nop+=1;ae->tick+=4;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is EX AF,AF'\n");
 				}
 				break;
 			case CRC_MSP:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_HL:___output(ae,0xE3);ae->nop+=6;break;
-					case CRC_IX:___output(ae,0xDD);___output(ae,0xE3);ae->nop+=7;break;
-					case CRC_IY:___output(ae,0xFD);___output(ae,0xE3);ae->nop+=7;break;
+					case CRC_HL:___output(ae,0xE3);ae->nop+=6;ae->tick+=19;break;
+					case CRC_IX:___output(ae,0xDD);___output(ae,0xE3);ae->nop+=7;ae->tick+=23;break;
+					case CRC_IY:___output(ae,0xFD);___output(ae,0xE3);ae->nop+=7;ae->tick+=23;break;
 					default:
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is EX (SP),[HL,IX,IY]\n");
 				}
 				break;
 			case CRC_DE:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_HL:___output(ae,0xEB);ae->nop+=1;break;
+					case CRC_HL:___output(ae,0xEB);ae->nop+=1;ae->tick+=4;break;
 					default:
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is EX DE,HL\n");
 				}
 				break;
 			case CRC_IX:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_MSP:___output(ae,0xDD);___output(ae,0xE3);ae->nop+=7;break;
+					case CRC_MSP:___output(ae,0xDD);___output(ae,0xE3);ae->nop+=7;ae->tick+=23;break;
 					default:
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is EX IX,(SP)\n");
 				}
 				break;
 			case CRC_IY:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_MSP:___output(ae,0xFD);___output(ae,0xE3);ae->nop+=7;break;
+					case CRC_MSP:___output(ae,0xFD);___output(ae,0xE3);ae->nop+=7;ae->tick+=23;break;
 					default:
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is EX IY,(SP)\n");
 				}
@@ -6945,7 +9475,7 @@ void _EX(struct s_assenv *ae) {
 		}
 		ae->idx+=2;
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Use EX reg16,reg16\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Use EX reg16,[DE|(SP)]\n");
 	}
 }
 
@@ -6954,18 +9484,18 @@ void _SBC(struct s_assenv *ae) {
 		if (!ae->wl[ae->idx+1].t) ae->idx++;
 		/* do implicit A */
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_A:___output(ae,0x9F);ae->nop+=1;break;
-			case CRC_MHL:___output(ae,0x9E);ae->nop+=2;break;
-			case CRC_B:___output(ae,0x98);ae->nop+=1;break;
-			case CRC_C:___output(ae,0x99);ae->nop+=1;break;
-			case CRC_D:___output(ae,0x9A);ae->nop+=1;break;
-			case CRC_E:___output(ae,0x9B);ae->nop+=1;break;
-			case CRC_H:___output(ae,0x9C);ae->nop+=1;break;
-			case CRC_L:___output(ae,0x9D);ae->nop+=1;break;
-			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x9C);ae->nop+=2;break;
-			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x9D);ae->nop+=2;break;
-			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x9C);ae->nop+=2;break;
-			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x9D);ae->nop+=2;break;
+			case CRC_A:___output(ae,0x9F);ae->nop+=1;ae->tick+=4;break;
+			case CRC_MHL:___output(ae,0x9E);ae->nop+=2;ae->tick+=7;break;
+			case CRC_B:___output(ae,0x98);ae->nop+=1;ae->tick+=4;break;
+			case CRC_C:___output(ae,0x99);ae->nop+=1;ae->tick+=4;break;
+			case CRC_D:___output(ae,0x9A);ae->nop+=1;ae->tick+=4;break;
+			case CRC_E:___output(ae,0x9B);ae->nop+=1;ae->tick+=4;break;
+			case CRC_H:___output(ae,0x9C);ae->nop+=1;ae->tick+=4;break;
+			case CRC_L:___output(ae,0x9D);ae->nop+=1;ae->tick+=4;break;
+			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x9C);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x9D);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x9C);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x9D);ae->nop+=2;ae->tick+=8;break;
 			case CRC_IX:case CRC_IY:
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Use SBC with A,B,C,D,E,H,L,XH,XL,YH,YL,(HL),(IX),(IY)\n");
 				ae->idx++;
@@ -6974,15 +9504,15 @@ void _SBC(struct s_assenv *ae) {
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0x9E);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=3;
+					ae->nop+=5;ae->tick+=19;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0x9E);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=3;
+					ae->nop+=5;ae->tick+=19;
 				} else {
 					___output(ae,0xDE);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_V8);
-					ae->nop+=2;
+					ae->nop+=2;ae->tick+=7;
 				}
 		}
 		ae->idx++;
@@ -6990,10 +9520,10 @@ void _SBC(struct s_assenv *ae) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
 			case CRC_HL:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_BC:___output(ae,0xED);___output(ae,0x42);ae->nop+=4;break;
-					case CRC_DE:___output(ae,0xED);___output(ae,0x52);ae->nop+=4;break;
-					case CRC_HL:___output(ae,0xED);___output(ae,0x62);ae->nop+=4;break;
-					case CRC_SP:___output(ae,0xED);___output(ae,0x72);ae->nop+=4;break;
+					case CRC_BC:___output(ae,0xED);___output(ae,0x42);ae->nop+=4;ae->tick+=15;break;
+					case CRC_DE:___output(ae,0xED);___output(ae,0x52);ae->nop+=4;ae->tick+=15;break;
+					case CRC_HL:___output(ae,0xED);___output(ae,0x62);ae->nop+=4;ae->tick+=15;break;
+					case CRC_SP:___output(ae,0xED);___output(ae,0x72);ae->nop+=4;ae->tick+=15;break;
 					default:
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SBC HL,[BC,DE,HL,SP]\n");
 				}
@@ -7012,18 +9542,18 @@ void _ADC(struct s_assenv *ae) {
 		if (!ae->wl[ae->idx+1].t) ae->idx++;
 		/* also implicit A */
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_A:___output(ae,0x8F);ae->nop+=1;break;
-			case CRC_MHL:___output(ae,0x8E);ae->nop+=2;break;
-			case CRC_B:___output(ae,0x88);ae->nop+=1;break;
-			case CRC_C:___output(ae,0x89);ae->nop+=1;break;
-			case CRC_D:___output(ae,0x8A);ae->nop+=1;break;
-			case CRC_E:___output(ae,0x8B);ae->nop+=1;break;
-			case CRC_H:___output(ae,0x8C);ae->nop+=1;break;
-			case CRC_L:___output(ae,0x8D);ae->nop+=1;break;
-			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x8C);ae->nop+=2;break;
-			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x8D);ae->nop+=2;break;
-			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x8C);ae->nop+=2;break;
-			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x8D);ae->nop+=2;break;
+			case CRC_A:___output(ae,0x8F);ae->nop+=1;ae->tick+=4;break;
+			case CRC_MHL:___output(ae,0x8E);ae->nop+=2;ae->tick+=7;break;
+			case CRC_B:___output(ae,0x88);ae->nop+=1;ae->tick+=4;break;
+			case CRC_C:___output(ae,0x89);ae->nop+=1;ae->tick+=4;break;
+			case CRC_D:___output(ae,0x8A);ae->nop+=1;ae->tick+=4;break;
+			case CRC_E:___output(ae,0x8B);ae->nop+=1;ae->tick+=4;break;
+			case CRC_H:___output(ae,0x8C);ae->nop+=1;ae->tick+=4;break;
+			case CRC_L:___output(ae,0x8D);ae->nop+=1;ae->tick+=4;break;
+			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x8C);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x8D);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x8C);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x8D);ae->nop+=2;ae->tick+=8;break;
 			case CRC_IX:case CRC_IY:
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Use ADC with A,B,C,D,E,H,L,XH,XL,YH,YL,(HL),(IX),(IY)\n");
 				ae->idx++;
@@ -7032,15 +9562,15 @@ void _ADC(struct s_assenv *ae) {
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0x8E);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=3;
+					ae->nop+=5;ae->tick+=19;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0x8E);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=3;
+					ae->nop+=5;ae->tick+=19;
 				} else {
 					___output(ae,0xCE);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_V8);
-					ae->nop+=2;
+					ae->nop+=2;ae->tick+=7;
 				}
 		}
 		ae->idx++;
@@ -7048,10 +9578,10 @@ void _ADC(struct s_assenv *ae) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
 			case CRC_HL:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_BC:___output(ae,0xED);___output(ae,0x4A);ae->nop+=4;break;
-					case CRC_DE:___output(ae,0xED);___output(ae,0x5A);ae->nop+=4;break;
-					case CRC_HL:___output(ae,0xED);___output(ae,0x6A);ae->nop+=4;break;
-					case CRC_SP:___output(ae,0xED);___output(ae,0x7A);ae->nop+=4;break;
+					case CRC_BC:___output(ae,0xED);___output(ae,0x4A);ae->nop+=4;ae->tick+=15;break;
+					case CRC_DE:___output(ae,0xED);___output(ae,0x5A);ae->nop+=4;ae->tick+=15;break;
+					case CRC_HL:___output(ae,0xED);___output(ae,0x6A);ae->nop+=4;ae->tick+=15;break;
+					case CRC_SP:___output(ae,0xED);___output(ae,0x7A);ae->nop+=4;ae->tick+=15;break;
 					default:
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is ADC HL,[BC,DE,HL,SP]\n");
 				}
@@ -7070,18 +9600,18 @@ void _ADD(struct s_assenv *ae) {
 		if (!ae->wl[ae->idx+1].t) ae->idx++;
 		/* also implicit A */
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_A:___output(ae,0x87);ae->nop+=1;break;
-			case CRC_MHL:___output(ae,0x86);ae->nop+=2;break;
-			case CRC_B:___output(ae,0x80);ae->nop+=1;break;
-			case CRC_C:___output(ae,0x81);ae->nop+=1;break;
-			case CRC_D:___output(ae,0x82);ae->nop+=1;break;
-			case CRC_E:___output(ae,0x83);ae->nop+=1;break;
-			case CRC_H:___output(ae,0x84);ae->nop+=1;break;
-			case CRC_L:___output(ae,0x85);ae->nop+=1;break;
-			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x84);ae->nop+=2;break;
-			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x85);ae->nop+=2;break;
-			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x84);ae->nop+=2;break;
-			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x85);ae->nop+=2;break;
+			case CRC_A:___output(ae,0x87);ae->nop+=1;ae->tick+=4;break;
+			case CRC_MHL:___output(ae,0x86);ae->nop+=2;ae->tick+=7;break;
+			case CRC_B:___output(ae,0x80);ae->nop+=1;ae->tick+=4;break;
+			case CRC_C:___output(ae,0x81);ae->nop+=1;ae->tick+=4;break;
+			case CRC_D:___output(ae,0x82);ae->nop+=1;ae->tick+=4;break;
+			case CRC_E:___output(ae,0x83);ae->nop+=1;ae->tick+=4;break;
+			case CRC_H:___output(ae,0x84);ae->nop+=1;ae->tick+=4;break;
+			case CRC_L:___output(ae,0x85);ae->nop+=1;ae->tick+=4;break;
+			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x84);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x85);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x84);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x85);ae->nop+=2;ae->tick+=8;break;
 			case CRC_IX:case CRC_IY:
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Use ADD with A,B,C,D,E,H,L,XH,XL,YH,YL,(HL),(IX),(IY)\n");
 				ae->idx++;
@@ -7090,15 +9620,15 @@ void _ADD(struct s_assenv *ae) {
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0x86);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0x86);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else {
 					___output(ae,0xC6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_V8);
-					ae->nop+=2;
+					ae->nop+=2;ae->tick+=7;
 				}
 		}
 		ae->idx++;
@@ -7106,30 +9636,30 @@ void _ADD(struct s_assenv *ae) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
 			case CRC_HL:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_BC:___output(ae,0x09);ae->nop+=3;break;
-					case CRC_DE:___output(ae,0x19);ae->nop+=3;break;
-					case CRC_HL:___output(ae,0x29);ae->nop+=3;break;
-					case CRC_SP:___output(ae,0x39);ae->nop+=3;break;
+					case CRC_BC:___output(ae,0x09);ae->nop+=3;ae->tick+=11;break;
+					case CRC_DE:___output(ae,0x19);ae->nop+=3;ae->tick+=11;break;
+					case CRC_HL:___output(ae,0x29);ae->nop+=3;ae->tick+=11;break;
+					case CRC_SP:___output(ae,0x39);ae->nop+=3;ae->tick+=11;break;
 					default:
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is ADD HL,[BC,DE,HL,SP]\n");
 				}
 				break;
 			case CRC_IX:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_BC:___output(ae,0xDD);___output(ae,0x09);ae->nop+=4;break;
-					case CRC_DE:___output(ae,0xDD);___output(ae,0x19);ae->nop+=4;break;
-					case CRC_IX:___output(ae,0xDD);___output(ae,0x29);ae->nop+=4;break;
-					case CRC_SP:___output(ae,0xDD);___output(ae,0x39);ae->nop+=4;break;
+					case CRC_BC:___output(ae,0xDD);___output(ae,0x09);ae->nop+=4;ae->tick+=15;break;
+					case CRC_DE:___output(ae,0xDD);___output(ae,0x19);ae->nop+=4;ae->tick+=15;break;
+					case CRC_IX:___output(ae,0xDD);___output(ae,0x29);ae->nop+=4;ae->tick+=15;break;
+					case CRC_SP:___output(ae,0xDD);___output(ae,0x39);ae->nop+=4;ae->tick+=15;break;
 					default:
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is ADD IX,[BC,DE,IX,SP]\n");
 				}
 				break;
 			case CRC_IY:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_BC:___output(ae,0xFD);___output(ae,0x09);ae->nop+=4;break;
-					case CRC_DE:___output(ae,0xFD);___output(ae,0x19);ae->nop+=4;break;
-					case CRC_IY:___output(ae,0xFD);___output(ae,0x29);ae->nop+=4;break;
-					case CRC_SP:___output(ae,0xFD);___output(ae,0x39);ae->nop+=4;break;
+					case CRC_BC:___output(ae,0xFD);___output(ae,0x09);ae->nop+=4;ae->tick+=15;break;
+					case CRC_DE:___output(ae,0xFD);___output(ae,0x19);ae->nop+=4;ae->tick+=15;break;
+					case CRC_IY:___output(ae,0xFD);___output(ae,0x29);ae->nop+=4;ae->tick+=15;break;
+					case CRC_SP:___output(ae,0xFD);___output(ae,0x39);ae->nop+=4;ae->tick+=15;break;
 					default:
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is ADD IY,[BC,DE,IY,SP]\n");
 				}
@@ -7148,31 +9678,31 @@ void _CP(struct s_assenv *ae) {
 		if (!ae->wl[ae->idx+1].t) ae->idx++;
 		/* also implicit A */
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_A:___output(ae,0xBF);ae->nop+=1;break;
-			case CRC_MHL:___output(ae,0xBE);ae->nop+=2;break;
-			case CRC_B:___output(ae,0xB8);ae->nop+=1;break;
-			case CRC_C:___output(ae,0xB9);ae->nop+=1;break;
-			case CRC_D:___output(ae,0xBA);ae->nop+=1;break;
-			case CRC_E:___output(ae,0xBB);ae->nop+=1;break;
-			case CRC_H:___output(ae,0xBC);ae->nop+=1;break;
-			case CRC_L:___output(ae,0xBD);ae->nop+=1;break;
-			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0xBC);ae->nop+=2;break;
-			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0xBD);ae->nop+=2;break;
-			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0xBC);ae->nop+=2;break;
-			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0xBD);ae->nop+=2;break;
+			case CRC_A:___output(ae,0xBF);ae->nop+=1;ae->tick+=4;break;
+			case CRC_MHL:___output(ae,0xBE);ae->nop+=2;ae->tick+=7;break;
+			case CRC_B:___output(ae,0xB8);ae->nop+=1;ae->tick+=4;break;
+			case CRC_C:___output(ae,0xB9);ae->nop+=1;ae->tick+=4;break;
+			case CRC_D:___output(ae,0xBA);ae->nop+=1;ae->tick+=4;break;
+			case CRC_E:___output(ae,0xBB);ae->nop+=1;ae->tick+=4;break;
+			case CRC_H:___output(ae,0xBC);ae->nop+=1;ae->tick+=4;break;
+			case CRC_L:___output(ae,0xBD);ae->nop+=1;ae->tick+=4;break;
+			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0xBC);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0xBD);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0xBC);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0xBD);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0xBE);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0xBE);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else {
 					___output(ae,0xFE);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_V8);
-					ae->nop+=2;
+					ae->nop+=2;ae->tick+=7;
 				}
 		}
 		ae->idx++;
@@ -7184,21 +9714,21 @@ void _CP(struct s_assenv *ae) {
 void _RET(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_NZ:___output(ae,0xC0);ae->nop+=2;break;
-			case CRC_Z:___output(ae,0xC8);ae->nop+=2;break;
-			case CRC_C:___output(ae,0xD8);ae->nop+=2;break;
-			case CRC_NC:___output(ae,0xD0);ae->nop+=2;break;
-			case CRC_PE:___output(ae,0xE8);ae->nop+=2;break;
-			case CRC_PO:___output(ae,0xE0);ae->nop+=2;break;
-			case CRC_P:___output(ae,0xF0);ae->nop+=2;break;
-			case CRC_M:___output(ae,0xF8);ae->nop+=2;break;
+			case CRC_NZ:___output(ae,0xC0);ae->nop+=2;ae->tick+=5;break;
+			case CRC_Z:___output(ae,0xC8);ae->nop+=2;ae->tick+=5;break;
+			case CRC_C:___output(ae,0xD8);ae->nop+=2;ae->tick+=5;break;
+			case CRC_NC:___output(ae,0xD0);ae->nop+=2;ae->tick+=5;break;
+			case CRC_PE:___output(ae,0xE8);ae->nop+=2;ae->tick+=5;break;
+			case CRC_PO:___output(ae,0xE0);ae->nop+=2;ae->tick+=5;break;
+			case CRC_P:___output(ae,0xF0);ae->nop+=2;ae->tick+=5;break;
+			case CRC_M:___output(ae,0xF8);ae->nop+=2;ae->tick+=5;break;
 			default:
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Available flags for RET are C,NC,Z,NZ,PE,PO,P,M\n");
 		}
 		ae->idx++;
 	} else if (ae->wl[ae->idx].t==1) {
 		___output(ae,0xC9);
-		ae->nop+=3;
+		ae->nop+=3;ae->tick+=10;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Invalid RET syntax\n");
 	}
@@ -7207,24 +9737,24 @@ void _RET(struct s_assenv *ae) {
 void _CALL(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==0 && ae->wl[ae->idx+2].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_C:___output(ae,0xDC);ae->nop+=3;break;
-			case CRC_Z:___output(ae,0xCC);ae->nop+=3;break;
-			case CRC_NZ:___output(ae,0xC4);ae->nop+=3;break;
-			case CRC_NC:___output(ae,0xD4);ae->nop+=3;break;
-			case CRC_PE:___output(ae,0xEC);ae->nop+=3;break;
-			case CRC_PO:___output(ae,0xE4);ae->nop+=3;break;
-			case CRC_P:___output(ae,0xF4);ae->nop+=3;break;
-			case CRC_M:___output(ae,0xFC);ae->nop+=3;break;
+			case CRC_C:___output(ae,0xDC);ae->nop+=3;ae->tick+=10;break;
+			case CRC_Z:___output(ae,0xCC);ae->nop+=3;ae->tick+=10;break;
+			case CRC_NZ:___output(ae,0xC4);ae->nop+=3;ae->tick+=10;break;
+			case CRC_NC:___output(ae,0xD4);ae->nop+=3;ae->tick+=10;break;
+			case CRC_PE:___output(ae,0xEC);ae->nop+=3;ae->tick+=10;break;
+			case CRC_PO:___output(ae,0xE4);ae->nop+=3;ae->tick+=10;break;
+			case CRC_P:___output(ae,0xF4);ae->nop+=3;ae->tick+=10;break;
+			case CRC_M:___output(ae,0xFC);ae->nop+=3;ae->tick+=10;break;
 			default:
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Available flags for CALL are C,NC,Z,NZ,PE,PO,P,M\n");
 		}
-		PushExpression(ae,ae->idx+2,E_EXPRESSION_V16C);
+		PushExpression(ae,ae->idx+2,E_EXPRESSION_J16C);
 		ae->idx+=2;
 	} else if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
 		___output(ae,0xCD);
-		PushExpression(ae,ae->idx+1,E_EXPRESSION_V16C);
+		PushExpression(ae,ae->idx+1,E_EXPRESSION_J16C);
 		ae->idx++;
-		ae->nop+=5;
+		ae->nop+=5;ae->tick+=17;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Invalid CALL syntax\n");
 	}
@@ -7233,10 +9763,10 @@ void _CALL(struct s_assenv *ae) {
 void _JR(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==0 && ae->wl[ae->idx+2].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_NZ:___output(ae,0x20);ae->nop+=2;break;
-			case CRC_C:___output(ae,0x38);ae->nop+=2;break;
-			case CRC_Z:___output(ae,0x28);ae->nop+=2;break;
-			case CRC_NC:___output(ae,0x30);ae->nop+=2;break;
+			case CRC_NZ:___output(ae,0x20);ae->nop+=2;ae->tick+=7;break;
+			case CRC_C:___output(ae,0x38);ae->nop+=2;ae->tick+=7;break;
+			case CRC_Z:___output(ae,0x28);ae->nop+=2;ae->tick+=7;break;
+			case CRC_NC:___output(ae,0x30);ae->nop+=2;ae->tick+=7;break;
 			default:
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Available flags for JR are C,NC,Z,NZ\n");
 		}
@@ -7246,7 +9776,7 @@ void _JR(struct s_assenv *ae) {
 		___output(ae,0x18);
 		PushExpression(ae,ae->idx+1,E_EXPRESSION_J8);
 		ae->idx++;
-		ae->nop+=3;
+		ae->nop+=3;ae->tick+=12;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Invalid JR syntax\n");
 	}
@@ -7255,31 +9785,37 @@ void _JR(struct s_assenv *ae) {
 void _JP(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==0 && ae->wl[ae->idx+2].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_C:___output(ae,0xDA);ae->nop+=3;break;
-			case CRC_Z:___output(ae,0xCA);ae->nop+=3;break;
-			case CRC_NZ:___output(ae,0xC2);ae->nop+=3;break;
-			case CRC_NC:___output(ae,0xD2);ae->nop+=3;break;
-			case CRC_PE:___output(ae,0xEA);ae->nop+=3;break;
-			case CRC_PO:___output(ae,0xE2);ae->nop+=3;break;
-			case CRC_P:___output(ae,0xF2);ae->nop+=3;break;
-			case CRC_M:___output(ae,0xFA);ae->nop+=3;break;
+			case CRC_C:___output(ae,0xDA);ae->nop+=3;ae->tick+=10;break;
+			case CRC_Z:___output(ae,0xCA);ae->nop+=3;ae->tick+=10;break;
+			case CRC_NZ:___output(ae,0xC2);ae->nop+=3;ae->tick+=10;break;
+			case CRC_NC:___output(ae,0xD2);ae->nop+=3;ae->tick+=10;break;
+			case CRC_PE:___output(ae,0xEA);ae->nop+=3;ae->tick+=10;break;
+			case CRC_PO:___output(ae,0xE2);ae->nop+=3;ae->tick+=10;break;
+			case CRC_P:___output(ae,0xF2);ae->nop+=3;ae->tick+=10;break;
+			case CRC_M:___output(ae,0xFA);ae->nop+=3;ae->tick+=10;break;
 			default:
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Available flags for JP are C,NC,Z,NZ,PE,PO,P,M\n");
 		}
 		if (!strcmp(ae->wl[ae->idx+2].w,"(IX)") || !strcmp(ae->wl[ae->idx+2].w,"(IY)")) {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"conditionnal JP cannot use register adressing\n");
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"conditionnal JP cannot use register addressing\n");
 		} else {
-			PushExpression(ae,ae->idx+2,E_EXPRESSION_V16);
+			PushExpression(ae,ae->idx+2,E_EXPRESSION_J16);
 		}
 		ae->idx+=2;
 	} else if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_HL:case CRC_MHL:___output(ae,0xE9);ae->nop+=1;break;
-			case CRC_IX:case CRC_MIX:___output(ae,0xDD);___output(ae,0xE9);ae->nop+=2;break;
-			case CRC_IY:case CRC_MIY:___output(ae,0xFD);___output(ae,0xE9);ae->nop+=2;break;
+			case CRC_HL:case CRC_MHL:___output(ae,0xE9);ae->nop+=1;ae->tick+=4;break;
+			case CRC_IX:case CRC_MIX:___output(ae,0xDD);___output(ae,0xE9);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IY:case CRC_MIY:___output(ae,0xFD);___output(ae,0xE9);ae->nop+=2;ae->tick+=8;break;
 			default:
-				___output(ae,0xC3);
-				PushExpression(ae,ae->idx+1,E_EXPRESSION_V16);
+				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0 || strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
+					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"JP (IX) or JP (IY) only\n");
+				} else {
+					___output(ae,0xC3);
+					PushExpression(ae,ae->idx+1,E_EXPRESSION_J16);
+					ae->tick+=10;
+					ae->nop+=3;
+				}
 		}
 		ae->idx++;
 	} else {
@@ -7292,33 +9828,33 @@ void _DEC(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
 		do {
 			switch (GetCRC(ae->wl[ae->idx+1].w)) {
-				case CRC_A:___output(ae,0x3D);ae->nop+=1;break;
-				case CRC_B:___output(ae,0x05);ae->nop+=1;break;
-				case CRC_C:___output(ae,0x0D);ae->nop+=1;break;
-				case CRC_D:___output(ae,0x15);ae->nop+=1;break;
-				case CRC_E:___output(ae,0x1D);ae->nop+=1;break;
-				case CRC_H:___output(ae,0x25);ae->nop+=1;break;
-				case CRC_L:___output(ae,0x2D);ae->nop+=1;break;
-				case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x25);ae->nop+=2;break;
-				case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x2D);ae->nop+=2;break;
-				case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x25);ae->nop+=2;break;
-				case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x2D);ae->nop+=2;break;
-				case CRC_BC:___output(ae,0x0B);ae->nop+=2;break;
-				case CRC_DE:___output(ae,0x1B);ae->nop+=2;break;
-				case CRC_HL:___output(ae,0x2B);ae->nop+=2;break;
-				case CRC_IX:___output(ae,0xDD);___output(ae,0x2B);ae->nop+=3;break;
-				case CRC_IY:___output(ae,0xFD);___output(ae,0x2B);ae->nop+=3;break;
-				case CRC_SP:___output(ae,0x3B);ae->nop+=2;break;
-				case CRC_MHL:___output(ae,0x35);ae->nop+=3;break;
+				case CRC_A:___output(ae,0x3D);ae->nop+=1;ae->tick+=4;break;
+				case CRC_B:___output(ae,0x05);ae->nop+=1;ae->tick+=4;break;
+				case CRC_C:___output(ae,0x0D);ae->nop+=1;ae->tick+=4;break;
+				case CRC_D:___output(ae,0x15);ae->nop+=1;ae->tick+=4;break;
+				case CRC_E:___output(ae,0x1D);ae->nop+=1;ae->tick+=4;break;
+				case CRC_H:___output(ae,0x25);ae->nop+=1;ae->tick+=4;break;
+				case CRC_L:___output(ae,0x2D);ae->nop+=1;ae->tick+=4;break;
+				case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x25);ae->nop+=2;ae->tick+=8;break;
+				case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x2D);ae->nop+=2;ae->tick+=8;break;
+				case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x25);ae->nop+=2;ae->tick+=8;break;
+				case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x2D);ae->nop+=2;ae->tick+=8;break;
+				case CRC_BC:___output(ae,0x0B);ae->nop+=2;ae->tick+=6;break;
+				case CRC_DE:___output(ae,0x1B);ae->nop+=2;ae->tick+=6;break;
+				case CRC_HL:___output(ae,0x2B);ae->nop+=2;ae->tick+=6;break;
+				case CRC_IX:___output(ae,0xDD);___output(ae,0x2B);ae->nop+=3;ae->tick+=10;break;
+				case CRC_IY:___output(ae,0xFD);___output(ae,0x2B);ae->nop+=3;ae->tick+=10;break;
+				case CRC_SP:___output(ae,0x3B);ae->nop+=2;ae->tick+=6;break;
+				case CRC_MHL:___output(ae,0x35);ae->nop+=3;ae->tick+=11;break;
 				default:
 					if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0x35);
 						PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-						ae->nop+=6;
+						ae->nop+=6;ae->tick+=23;
 					} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0x35);
 						PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-						ae->nop+=6;
+						ae->nop+=6;ae->tick+=23;
 					} else {
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Use DEC with A,B,C,D,E,H,L,XH,XL,YH,YL,BC,DE,HL,SP,(HL),(IX),(IY)\n");
 					}
@@ -7333,33 +9869,33 @@ void _INC(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
 		do {
 			switch (GetCRC(ae->wl[ae->idx+1].w)) {
-				case CRC_A:___output(ae,0x3C);ae->nop+=1;break;
-				case CRC_B:___output(ae,0x04);ae->nop+=1;break;
-				case CRC_C:___output(ae,0x0C);ae->nop+=1;break;
-				case CRC_D:___output(ae,0x14);ae->nop+=1;break;
-				case CRC_E:___output(ae,0x1C);ae->nop+=1;break;
-				case CRC_H:___output(ae,0x24);ae->nop+=1;break;
-				case CRC_L:___output(ae,0x2C);ae->nop+=1;break;
-				case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x24);ae->nop+=2;break;
-				case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x2C);ae->nop+=2;break;
-				case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x24);ae->nop+=2;break;
-				case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x2C);ae->nop+=2;break;
-				case CRC_BC:___output(ae,0x03);ae->nop+=2;break;
-				case CRC_DE:___output(ae,0x13);ae->nop+=2;break;
-				case CRC_HL:___output(ae,0x23);ae->nop+=2;break;
-				case CRC_IX:___output(ae,0xDD);___output(ae,0x23);ae->nop+=3;break;
-				case CRC_IY:___output(ae,0xFD);___output(ae,0x23);ae->nop+=3;break;
-				case CRC_SP:___output(ae,0x33);ae->nop+=2;break;
-				case CRC_MHL:___output(ae,0x34);ae->nop+=3;break;
+				case CRC_A:___output(ae,0x3C);ae->nop+=1;ae->tick+=4;break;
+				case CRC_B:___output(ae,0x04);ae->nop+=1;ae->tick+=4;break;
+				case CRC_C:___output(ae,0x0C);ae->nop+=1;ae->tick+=4;break;
+				case CRC_D:___output(ae,0x14);ae->nop+=1;ae->tick+=4;break;
+				case CRC_E:___output(ae,0x1C);ae->nop+=1;ae->tick+=4;break;
+				case CRC_H:___output(ae,0x24);ae->nop+=1;ae->tick+=4;break;
+				case CRC_L:___output(ae,0x2C);ae->nop+=1;ae->tick+=4;break;
+				case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x24);ae->nop+=2;ae->tick+=8;break;
+				case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x2C);ae->nop+=2;ae->tick+=8;break;
+				case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x24);ae->nop+=2;ae->tick+=8;break;
+				case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x2C);ae->nop+=2;ae->tick+=8;break;
+				case CRC_BC:___output(ae,0x03);ae->nop+=2;ae->tick+=6;break;
+				case CRC_DE:___output(ae,0x13);ae->nop+=2;ae->tick+=6;break;
+				case CRC_HL:___output(ae,0x23);ae->nop+=2;ae->tick+=6;break;
+				case CRC_IX:___output(ae,0xDD);___output(ae,0x23);ae->nop+=3;ae->tick+=10;break;
+				case CRC_IY:___output(ae,0xFD);___output(ae,0x23);ae->nop+=3;ae->tick+=10;break;
+				case CRC_SP:___output(ae,0x33);ae->nop+=2;ae->tick+=6;break;
+				case CRC_MHL:___output(ae,0x34);ae->nop+=3;ae->tick+=11;break;
 				default:
 					if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0x34);
 						PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-						ae->nop+=6;
+						ae->nop+=6;ae->tick+=23;
 					} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0x34);
 						PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-						ae->nop+=6;
+						ae->nop+=6;ae->tick+=23;
 					} else {
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Use INC with A,B,C,D,E,H,L,XH,XL,YH,YL,BC,DE,HL,SP,(HL),(IX),(IY)\n");
 					}
@@ -7380,18 +9916,18 @@ void _SUB(struct s_assenv *ae) {
 	if ((!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1)  || ((!ae->wl[ae->idx].t && !ae->wl[ae->idx+1].t && ae->wl[ae->idx+2].t==1) && strcmp(ae->wl[ae->idx+1].w,"A")==0)) {
 		if (!ae->wl[ae->idx+1].t) ae->idx++;
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_A:___output(ae,OPCODE+7);ae->nop+=1;break;
-			case CRC_MHL:___output(ae,OPCODE+6);ae->nop+=2;break;
-			case CRC_B:___output(ae,OPCODE);ae->nop+=1;break;
-			case CRC_C:___output(ae,OPCODE+1);ae->nop+=1;break;
-			case CRC_D:___output(ae,OPCODE+2);ae->nop+=1;break;
-			case CRC_E:___output(ae,OPCODE+3);ae->nop+=1;break;
-			case CRC_H:___output(ae,OPCODE+4);ae->nop+=1;break;
-			case CRC_L:___output(ae,OPCODE+5);ae->nop+=1;break;
-			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,OPCODE+4);ae->nop+=2;break;
-			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,OPCODE+5);ae->nop+=2;break;
-			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,OPCODE+4);ae->nop+=2;break;
-			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,OPCODE+5);ae->nop+=2;break;
+			case CRC_A:___output(ae,OPCODE+7);ae->nop+=1;ae->tick+=4;break;
+			case CRC_MHL:___output(ae,OPCODE+6);ae->nop+=2;ae->tick+=7;break;
+			case CRC_B:___output(ae,OPCODE);ae->nop+=1;ae->tick+=4;break;
+			case CRC_C:___output(ae,OPCODE+1);ae->nop+=1;ae->tick+=4;break;
+			case CRC_D:___output(ae,OPCODE+2);ae->nop+=1;ae->tick+=4;break;
+			case CRC_E:___output(ae,OPCODE+3);ae->nop+=1;ae->tick+=4;break;
+			case CRC_H:___output(ae,OPCODE+4);ae->nop+=1;ae->tick+=4;break;
+			case CRC_L:___output(ae,OPCODE+5);ae->nop+=1;ae->tick+=4;break;
+			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,OPCODE+4);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,OPCODE+5);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,OPCODE+4);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,OPCODE+5);ae->nop+=2;ae->tick+=8;break;
 			case CRC_IX:case CRC_IY:
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Use SUB with A,B,C,D,E,H,L,XH,XL,YH,YL,(HL),(IX),(IY)\n");
 				ae->idx++;
@@ -7400,15 +9936,15 @@ void _SUB(struct s_assenv *ae) {
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,OPCODE+6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,OPCODE+6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else {
 					___output(ae,0xD6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_V8);
-					ae->nop+=2;
+					ae->nop+=2;ae->tick+=7;
 				}
 		}
 		ae->idx++;
@@ -7424,31 +9960,31 @@ void _AND(struct s_assenv *ae) {
 	
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_A:___output(ae,OPCODE+7);ae->nop+=1;break;
-			case CRC_MHL:___output(ae,OPCODE+6);ae->nop+=2;break;
-			case CRC_B:___output(ae,OPCODE);ae->nop+=1;break;
-			case CRC_C:___output(ae,OPCODE+1);ae->nop+=1;break;
-			case CRC_D:___output(ae,OPCODE+2);ae->nop+=1;break;
-			case CRC_E:___output(ae,OPCODE+3);ae->nop+=1;break;
-			case CRC_H:___output(ae,OPCODE+4);ae->nop+=1;break;
-			case CRC_L:___output(ae,OPCODE+5);ae->nop+=1;break;
-			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,OPCODE+4);ae->nop+=2;break;
-			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,OPCODE+5);ae->nop+=2;break;
-			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,OPCODE+4);ae->nop+=2;break;
-			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,OPCODE+5);ae->nop+=2;break;
+			case CRC_A:___output(ae,OPCODE+7);ae->nop+=1;ae->tick+=4;break;
+			case CRC_MHL:___output(ae,OPCODE+6);ae->nop+=2;ae->tick+=7;break;
+			case CRC_B:___output(ae,OPCODE);ae->nop+=1;ae->tick+=4;break;
+			case CRC_C:___output(ae,OPCODE+1);ae->nop+=1;ae->tick+=4;break;
+			case CRC_D:___output(ae,OPCODE+2);ae->nop+=1;ae->tick+=4;break;
+			case CRC_E:___output(ae,OPCODE+3);ae->nop+=1;ae->tick+=4;break;
+			case CRC_H:___output(ae,OPCODE+4);ae->nop+=1;ae->tick+=4;break;
+			case CRC_L:___output(ae,OPCODE+5);ae->nop+=1;ae->tick+=4;break;
+			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,OPCODE+4);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,OPCODE+5);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,OPCODE+4);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,OPCODE+5);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,OPCODE+6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,OPCODE+6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else {
 					___output(ae,0xE6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_V8);
-					ae->nop+=2;
+					ae->nop+=2;ae->tick+=7;
 				}
 		}
 		ae->idx++;
@@ -7464,31 +10000,31 @@ void _OR(struct s_assenv *ae) {
 	
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_A:___output(ae,OPCODE+7);ae->nop+=1;break;
-			case CRC_MHL:___output(ae,OPCODE+6);ae->nop+=2;break;
-			case CRC_B:___output(ae,OPCODE);ae->nop+=1;break;
-			case CRC_C:___output(ae,OPCODE+1);ae->nop+=1;break;
-			case CRC_D:___output(ae,OPCODE+2);ae->nop+=1;break;
-			case CRC_E:___output(ae,OPCODE+3);ae->nop+=1;break;
-			case CRC_H:___output(ae,OPCODE+4);ae->nop+=1;break;
-			case CRC_L:___output(ae,OPCODE+5);ae->nop+=1;break;
-			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,OPCODE+4);ae->nop+=2;break;
-			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,OPCODE+5);ae->nop+=2;break;
-			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,OPCODE+4);ae->nop+=2;break;
-			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,OPCODE+5);ae->nop+=2;break;
+			case CRC_A:___output(ae,OPCODE+7);ae->nop+=1;ae->tick+=4;break;
+			case CRC_MHL:___output(ae,OPCODE+6);ae->nop+=2;ae->tick+=7;break;
+			case CRC_B:___output(ae,OPCODE);ae->nop+=1;ae->tick+=4;break;
+			case CRC_C:___output(ae,OPCODE+1);ae->nop+=1;ae->tick+=4;break;
+			case CRC_D:___output(ae,OPCODE+2);ae->nop+=1;ae->tick+=4;break;
+			case CRC_E:___output(ae,OPCODE+3);ae->nop+=1;ae->tick+=4;break;
+			case CRC_H:___output(ae,OPCODE+4);ae->nop+=1;ae->tick+=4;break;
+			case CRC_L:___output(ae,OPCODE+5);ae->nop+=1;ae->tick+=4;break;
+			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,OPCODE+4);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,OPCODE+5);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,OPCODE+4);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,OPCODE+5);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,OPCODE+6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,OPCODE+6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else {
 					___output(ae,0xF6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_V8);
-					ae->nop+=2;
+					ae->nop+=2;ae->tick+=7;
 				}
 		}
 		ae->idx++;
@@ -7504,31 +10040,31 @@ void _XOR(struct s_assenv *ae) {
 	
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_A:___output(ae,OPCODE+7);ae->nop+=1;break;
-			case CRC_MHL:___output(ae,OPCODE+6);ae->nop+=2;break;
-			case CRC_B:___output(ae,OPCODE);ae->nop+=1;break;
-			case CRC_C:___output(ae,OPCODE+1);ae->nop+=1;break;
-			case CRC_D:___output(ae,OPCODE+2);ae->nop+=1;break;
-			case CRC_E:___output(ae,OPCODE+3);ae->nop+=1;break;
-			case CRC_H:___output(ae,OPCODE+4);ae->nop+=1;break;
-			case CRC_L:___output(ae,OPCODE+5);ae->nop+=1;break;
-			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,OPCODE+4);ae->nop+=2;break;
-			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,OPCODE+5);ae->nop+=2;break;
-			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,OPCODE+4);ae->nop+=2;break;
-			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,OPCODE+5);ae->nop+=2;break;
+			case CRC_A:___output(ae,OPCODE+7);ae->nop+=1;ae->tick+=4;break;
+			case CRC_MHL:___output(ae,OPCODE+6);ae->nop+=2;ae->tick+=7;break;
+			case CRC_B:___output(ae,OPCODE);ae->nop+=1;ae->tick+=4;break;
+			case CRC_C:___output(ae,OPCODE+1);ae->nop+=1;ae->tick+=4;break;
+			case CRC_D:___output(ae,OPCODE+2);ae->nop+=1;ae->tick+=4;break;
+			case CRC_E:___output(ae,OPCODE+3);ae->nop+=1;ae->tick+=4;break;
+			case CRC_H:___output(ae,OPCODE+4);ae->nop+=1;ae->tick+=4;break;
+			case CRC_L:___output(ae,OPCODE+5);ae->nop+=1;ae->tick+=4;break;
+			case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,OPCODE+4);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,OPCODE+5);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,OPCODE+4);ae->nop+=2;ae->tick+=8;break;
+			case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,OPCODE+5);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,OPCODE+6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,OPCODE+6);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					ae->nop+=5;
+					ae->nop+=5;ae->tick+=19;
 				} else {
 					___output(ae,0xEE);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_V8);
-					ae->nop+=2;
+					ae->nop+=2;ae->tick+=7;
 				}
 		}
 		ae->idx++;
@@ -7543,12 +10079,12 @@ void _POP(struct s_assenv *ae) {
 		do {
 			ae->idx++;
 			switch (GetCRC(ae->wl[ae->idx].w)) {
-				case CRC_AF:___output(ae,0xF1);ae->nop+=3;break;
-				case CRC_BC:___output(ae,0xC1);ae->nop+=3;break;
-				case CRC_DE:___output(ae,0xD1);ae->nop+=3;break;
-				case CRC_HL:___output(ae,0xE1);ae->nop+=3;break;
-				case CRC_IX:___output(ae,0xDD);___output(ae,0xE1);ae->nop+=4;break;
-				case CRC_IY:___output(ae,0xFD);___output(ae,0xE1);ae->nop+=4;break;
+				case CRC_AF:___output(ae,0xF1);ae->nop+=3;ae->tick+=10;break;
+				case CRC_BC:___output(ae,0xC1);ae->nop+=3;ae->tick+=10;break;
+				case CRC_DE:___output(ae,0xD1);ae->nop+=3;ae->tick+=10;break;
+				case CRC_HL:___output(ae,0xE1);ae->nop+=3;ae->tick+=10;break;
+				case CRC_IX:___output(ae,0xDD);___output(ae,0xE1);ae->nop+=4;ae->tick+=14;break;
+				case CRC_IY:___output(ae,0xFD);___output(ae,0xE1);ae->nop+=4;ae->tick+=14;break;
 				default:
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Use POP with AF,BC,DE,HL,IX,IY\n");
 			}
@@ -7562,12 +10098,12 @@ void _PUSH(struct s_assenv *ae) {
 		do {
 			ae->idx++;
 			switch (GetCRC(ae->wl[ae->idx].w)) {
-				case CRC_AF:___output(ae,0xF5);ae->nop+=4;break;
-				case CRC_BC:___output(ae,0xC5);ae->nop+=4;break;
-				case CRC_DE:___output(ae,0xD5);ae->nop+=4;break;
-				case CRC_HL:___output(ae,0xE5);ae->nop+=4;break;
-				case CRC_IX:___output(ae,0xDD);___output(ae,0xE5);ae->nop+=5;break;
-				case CRC_IY:___output(ae,0xFD);___output(ae,0xE5);ae->nop+=5;break;
+				case CRC_AF:___output(ae,0xF5);ae->nop+=4;ae->tick+=11;break;
+				case CRC_BC:___output(ae,0xC5);ae->nop+=4;ae->tick+=11;break;
+				case CRC_DE:___output(ae,0xD5);ae->nop+=4;ae->tick+=11;break;
+				case CRC_HL:___output(ae,0xE5);ae->nop+=4;ae->tick+=11;break;
+				case CRC_IX:___output(ae,0xDD);___output(ae,0xE5);ae->nop+=5;ae->tick+=15;break;
+				case CRC_IY:___output(ae,0xFD);___output(ae,0xE5);ae->nop+=5;ae->tick+=15;break;
 				default:
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Use PUSH with AF,BC,DE,HL,IX,IY\n");
 			}
@@ -7584,6 +10120,7 @@ void _IM(struct s_assenv *ae) {
 		PushExpression(ae,ae->idx+1,E_EXPRESSION_IM);
 		ae->idx++;
 		ae->nop+=2;
+		ae->tick+=8;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"IM need one parameter\n");
 	}
@@ -7593,6 +10130,7 @@ void _RLCA(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t) {
 		___output(ae,0x7);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"RLCA does not need parameter\n");
 	}
@@ -7601,6 +10139,7 @@ void _RRCA(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t) {
 		___output(ae,0xF);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"RRCA does not need parameter\n");
 	}
@@ -7610,6 +10149,7 @@ void _NEG(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0x44);
 		ae->nop+=2;
+		ae->tick+=8;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"NEG does not need parameter\n");
 	}
@@ -7618,6 +10158,7 @@ void _DAA(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t) {
 		___output(ae,0x27);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"DAA does not need parameter\n");
 	}
@@ -7626,6 +10167,7 @@ void _CPL(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t) {
 		___output(ae,0x2F);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CPL does not need parameter\n");
 	}
@@ -7635,6 +10177,7 @@ void _RETI(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0x4D);
 		ae->nop+=4;
+		ae->tick+=14;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"RETI does not need parameter\n");
 	}
@@ -7643,6 +10186,7 @@ void _SCF(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t) {
 		___output(ae,0x37);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"SCF does not need parameter\n");
 	}
@@ -7652,6 +10196,7 @@ void _LDD(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xA8);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LDD does not need parameter\n");
 	}
@@ -7661,6 +10206,7 @@ void _LDDR(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xB8);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LDDR does not need parameter\n");
 	}
@@ -7670,6 +10216,7 @@ void _LDI(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xA0);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LDI does not need parameter\n");
 	}
@@ -7679,6 +10226,7 @@ void _LDIR(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xB0);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LDIR does not need parameter\n");
 	}
@@ -7686,7 +10234,8 @@ void _LDIR(struct s_assenv *ae) {
 void _CCF(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t) {
 		___output(ae,0x3F);
-		ae->nop+=5;
+		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CCF does not need parameter\n");
 	}
@@ -7696,6 +10245,7 @@ void _CPD(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xA9);
 		ae->nop+=4;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CPD does not need parameter\n");
 	}
@@ -7705,6 +10255,7 @@ void _CPDR(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xB9);
 		ae->nop+=4;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CPDR does not need parameter\n");
 	}
@@ -7714,6 +10265,7 @@ void _CPI(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xA1);
 		ae->nop+=4;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CPI does not need parameter\n");
 	}
@@ -7723,6 +10275,7 @@ void _CPIR(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xB1);
 		ae->nop+=4;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CPIR does not need parameter\n");
 	}
@@ -7732,6 +10285,7 @@ void _OUTD(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xAB);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"OUTD does not need parameter\n");
 	}
@@ -7741,6 +10295,7 @@ void _OTDR(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xBB);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"OTDR does not need parameter\n");
 	}
@@ -7750,6 +10305,7 @@ void _OUTI(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xA3);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"OUTI does not need parameter\n");
 	}
@@ -7759,6 +10315,7 @@ void _OTIR(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xB3);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"OTIR does not need parameter\n");
 	}
@@ -7768,6 +10325,7 @@ void _RETN(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0x45);
 		ae->nop+=4;
+		ae->tick+=14;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"RETN does not need parameter\n");
 	}
@@ -7777,6 +10335,7 @@ void _IND(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xAA);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"IND does not need parameter\n");
 	}
@@ -7786,6 +10345,7 @@ void _INDR(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xBA);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"INDR does not need parameter\n");
 	}
@@ -7795,6 +10355,7 @@ void _INI(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xA2);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"INI does not need parameter\n");
 	}
@@ -7804,6 +10365,7 @@ void _INIR(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0xB2);
 		ae->nop+=5;
+		ae->tick+=16;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"INIR does not need parameter\n");
 	}
@@ -7812,6 +10374,7 @@ void _EXX(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t==1) {
 		___output(ae,0xD9);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"EXX does not need parameter\n");
 	}
@@ -7820,6 +10383,7 @@ void _HALT(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t==1) {
 		___output(ae,0x76);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"HALT does not need parameter\n");
 	}
@@ -7829,6 +10393,7 @@ void _RLA(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t==1) {
 		___output(ae,0x17);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"RLA does not need parameter\n");
 	}
@@ -7837,6 +10402,7 @@ void _RRA(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t==1) {
 		___output(ae,0x1F);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"RRA does not need parameter\n");
 	}
@@ -7846,6 +10412,7 @@ void _RLD(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0x6F);
 		ae->nop+=5;
+		ae->tick+=18;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"RLD does not need parameter\n");
 	}
@@ -7855,6 +10422,7 @@ void _RRD(struct s_assenv *ae) {
 		___output(ae,0xED);
 		___output(ae,0x67);
 		ae->nop+=5;
+		ae->tick+=18;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"RRD does not need parameter\n");
 	}
@@ -7864,6 +10432,7 @@ void _RRD(struct s_assenv *ae) {
 void _EXA(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t==1) {
 		___output(ae,0x08);ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"EXA alias does not need parameter\n");
 	}
@@ -7875,6 +10444,7 @@ void _NOP(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t) {
 		___output(ae,0x00);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
 		ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
 		o=RoundComputeExpressionCore(ae,ae->wl[ae->idx+1].w,ae->codeadr,0);
@@ -7882,6 +10452,7 @@ void _NOP(struct s_assenv *ae) {
 			while (o>0) {
 				___output(ae,0x00);
 				ae->nop+=1;
+				ae->tick+=4;
 				o--;
 			}
 		}
@@ -7893,6 +10464,7 @@ void _DI(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t) {
 	___output(ae,0xF3);
 	ae->nop+=1;
+	ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"DI does not need parameter\n");
 	}
@@ -7901,6 +10473,7 @@ void _EI(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t) {
 		___output(ae,0xFB);
 		ae->nop+=1;
+		ae->tick+=4;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"EI does not need parameter\n");
 	}
@@ -7916,6 +10489,7 @@ void _RST(struct s_assenv *ae) {
 		}
 		ae->idx++;
 		ae->nop+=4;
+		ae->tick+=11;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"RST need one parameter\n");
 	}
@@ -7931,6 +10505,7 @@ void _DJNZ(struct s_assenv *ae) {
 			___output(ae,0x10);
 			PushExpression(ae,ae->idx+1,E_EXPRESSION_J8);
 			ae->nop+=3;
+			ae->tick+=13;
 		}
 		ae->idx++;
 	} else {
@@ -7944,47 +10519,47 @@ void _LD(struct s_assenv *ae) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
 			case CRC_A:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_I:___output(ae,0xED);___output(ae,0x57);ae->nop+=3;break;
-					case CRC_R:___output(ae,0xED);___output(ae,0x5F);ae->nop+=3;break;
-					case CRC_B:___output(ae,0x78);ae->nop+=1;break;
-					case CRC_C:___output(ae,0x79);ae->nop+=1;break;
-					case CRC_D:___output(ae,0x7A);ae->nop+=1;break;
-					case CRC_E:___output(ae,0x7B);ae->nop+=1;break;
-					case CRC_H:___output(ae,0x7C);ae->nop+=1;break;
-					case CRC_L:___output(ae,0x7D);ae->nop+=1;break;
-					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x7C);ae->nop+=2;break;
-					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x7D);ae->nop+=2;break;
-					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x7C);ae->nop+=2;break;
-					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x7D);ae->nop+=2;break;
-					case CRC_MHL:___output(ae,0x7E);ae->nop+=2;break;
-					case CRC_A:___output(ae,0x7F);ae->nop+=1;break;
-					case CRC_MBC:___output(ae,0x0A);ae->nop+=2;break;
-					case CRC_MDE:___output(ae,0x1A);ae->nop+=2;break;
+					case CRC_I:___output(ae,0xED);___output(ae,0x57);ae->nop+=3;ae->tick+=9;break;
+					case CRC_R:___output(ae,0xED);___output(ae,0x5F);ae->nop+=3;ae->tick+=9;break;
+					case CRC_B:___output(ae,0x78);ae->nop+=1;ae->tick+=4;break;
+					case CRC_C:___output(ae,0x79);ae->nop+=1;ae->tick+=4;break;
+					case CRC_D:___output(ae,0x7A);ae->nop+=1;ae->tick+=4;break;
+					case CRC_E:___output(ae,0x7B);ae->nop+=1;ae->tick+=4;break;
+					case CRC_H:___output(ae,0x7C);ae->nop+=1;ae->tick+=4;break;
+					case CRC_L:___output(ae,0x7D);ae->nop+=1;ae->tick+=4;break;
+					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x7C);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x7D);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x7C);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x7D);ae->nop+=2;ae->tick+=8;break;
+					case CRC_MHL:___output(ae,0x7E);ae->nop+=2;ae->tick+=7;break;
+					case CRC_A:___output(ae,0x7F);ae->nop+=1;ae->tick+=4;break;
+					case CRC_MBC:___output(ae,0x0A);ae->nop+=2;ae->tick+=7;break;
+					case CRC_MDE:___output(ae,0x1A);ae->nop+=2;ae->tick+=7;break;
 					default:
 					/* (ix+expression) (iy+expression) (expression) expression */
 					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0x7E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0x7E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else if (StringIsMem(ae->wl[ae->idx+2].w)) {
 						___output(ae,0x3A);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V16);
-						ae->nop+=4;
+						ae->nop+=4;ae->tick+=13;
 					} else {
 						___output(ae,0x3E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=2;
+						ae->nop+=2;ae->tick+=7;
 					}
 				}
 				break;
 			case CRC_I:
 				if (GetCRC(ae->wl[ae->idx+2].w)==CRC_A) {
 					___output(ae,0xED);___output(ae,0x47);
-					ae->nop+=3;
+					ae->nop+=3;ae->tick+=9;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD I,A only\n");
 				}
@@ -7992,269 +10567,289 @@ void _LD(struct s_assenv *ae) {
 			case CRC_R:
 				if (GetCRC(ae->wl[ae->idx+2].w)==CRC_A) {
 					___output(ae,0xED);___output(ae,0x4F);
-					ae->nop+=3;
+					ae->nop+=3;ae->tick+=9;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD R,A only\n");
 				}
 				break;
 			case CRC_B:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0x40);ae->nop+=1;break;
-					case CRC_C:___output(ae,0x41);ae->nop+=1;break;
-					case CRC_D:___output(ae,0x42);ae->nop+=1;break;
-					case CRC_E:___output(ae,0x43);ae->nop+=1;break;
-					case CRC_H:___output(ae,0x44);ae->nop+=1;break;
-					case CRC_L:___output(ae,0x45);ae->nop+=1;break;
-					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x44);ae->nop+=2;break;
-					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x45);ae->nop+=2;break;
-					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x44);ae->nop+=2;break;
-					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x45);ae->nop+=2;break;
-					case CRC_MHL:___output(ae,0x46);ae->nop+=2;break;
-					case CRC_A:___output(ae,0x47);ae->nop+=1;break;
+					case CRC_B:___output(ae,0x40);ae->nop+=1;ae->tick+=4;break;
+					case CRC_C:___output(ae,0x41);ae->nop+=1;ae->tick+=4;break;
+					case CRC_D:___output(ae,0x42);ae->nop+=1;ae->tick+=4;break;
+					case CRC_E:___output(ae,0x43);ae->nop+=1;ae->tick+=4;break;
+					case CRC_H:___output(ae,0x44);ae->nop+=1;ae->tick+=4;break;
+					case CRC_L:___output(ae,0x45);ae->nop+=1;ae->tick+=4;break;
+					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x44);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x45);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x44);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x45);ae->nop+=2;ae->tick+=8;break;
+					case CRC_MHL:___output(ae,0x46);ae->nop+=2;ae->tick+=7;break;
+					case CRC_A:___output(ae,0x47);ae->nop+=1;ae->tick+=4;break;
 					default:
 					/* (ix+expression) (iy+expression) expression */
 					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0x46);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0x46);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else {
 						___output(ae,0x06);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=2;
+						ae->nop+=2;ae->tick+=7;
 					}
 				}
 				break;
 			case CRC_C:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0x48);ae->nop+=1;break;
-					case CRC_C:___output(ae,0x49);ae->nop+=1;break;
-					case CRC_D:___output(ae,0x4A);ae->nop+=1;break;
-					case CRC_E:___output(ae,0x4B);ae->nop+=1;break;
-					case CRC_H:___output(ae,0x4C);ae->nop+=1;break;
-					case CRC_L:___output(ae,0x4D);ae->nop+=1;break;
-					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x4C);ae->nop+=2;break;
-					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x4D);ae->nop+=2;break;
-					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x4C);ae->nop+=2;break;
-					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x4D);ae->nop+=2;break;
-					case CRC_MHL:___output(ae,0x4E);ae->nop+=2;break;
-					case CRC_A:___output(ae,0x4F);ae->nop+=1;break;
+					case CRC_B:___output(ae,0x48);ae->nop+=1;ae->tick+=4;break;
+					case CRC_C:___output(ae,0x49);ae->nop+=1;ae->tick+=4;break;
+					case CRC_D:___output(ae,0x4A);ae->nop+=1;ae->tick+=4;break;
+					case CRC_E:___output(ae,0x4B);ae->nop+=1;ae->tick+=4;break;
+					case CRC_H:___output(ae,0x4C);ae->nop+=1;ae->tick+=4;break;
+					case CRC_L:___output(ae,0x4D);ae->nop+=1;ae->tick+=4;break;
+					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x4C);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x4D);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x4C);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x4D);ae->nop+=2;ae->tick+=8;break;
+					case CRC_MHL:___output(ae,0x4E);ae->nop+=2;ae->tick+=7;break;
+					case CRC_A:___output(ae,0x4F);ae->nop+=1;ae->tick+=4;break;
 					default:
 					/* (ix+expression) (iy+expression) expression */
 					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0x4E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0x4E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else {
 						___output(ae,0x0E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=2;
+						ae->nop+=2;ae->tick+=7;
 					}
 				}
 				break;
 			case CRC_D:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0x50);ae->nop+=1;break;
-					case CRC_C:___output(ae,0x51);ae->nop+=1;break;
-					case CRC_D:___output(ae,0x52);ae->nop+=1;break;
-					case CRC_E:___output(ae,0x53);ae->nop+=1;break;
-					case CRC_H:___output(ae,0x54);ae->nop+=1;break;
-					case CRC_L:___output(ae,0x55);ae->nop+=1;break;
-					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x54);ae->nop+=2;break;
-					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x55);ae->nop+=2;break;
-					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x54);ae->nop+=2;break;
-					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x55);ae->nop+=2;break;
-					case CRC_MHL:___output(ae,0x56);ae->nop+=2;break;
-					case CRC_A:___output(ae,0x57);ae->nop+=1;break;
+					case CRC_B:___output(ae,0x50);ae->nop+=1;ae->tick+=4;break;
+					case CRC_C:___output(ae,0x51);ae->nop+=1;ae->tick+=4;break;
+					case CRC_D:___output(ae,0x52);ae->nop+=1;ae->tick+=4;break;
+					case CRC_E:___output(ae,0x53);ae->nop+=1;ae->tick+=4;break;
+					case CRC_H:___output(ae,0x54);ae->nop+=1;ae->tick+=4;break;
+					case CRC_L:___output(ae,0x55);ae->nop+=1;ae->tick+=4;break;
+					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x54);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x55);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x54);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x55);ae->nop+=2;ae->tick+=8;break;
+					case CRC_MHL:___output(ae,0x56);ae->nop+=2;ae->tick+=7;break;
+					case CRC_A:___output(ae,0x57);ae->nop+=1;ae->tick+=4;break;
 					default:
 					/* (ix+expression) (iy+expression) expression */
 					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0x56);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0x56);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else {
 						___output(ae,0x16);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=2;
+						ae->nop+=2;ae->tick+=7;
 					}
 				}
 				break;
 			case CRC_E:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0x58);ae->nop+=1;break;
-					case CRC_C:___output(ae,0x59);ae->nop+=1;break;
-					case CRC_D:___output(ae,0x5A);ae->nop+=1;break;
-					case CRC_E:___output(ae,0x5B);ae->nop+=1;break;
-					case CRC_H:___output(ae,0x5C);ae->nop+=1;break;
-					case CRC_L:___output(ae,0x5D);ae->nop+=1;break;
-					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x5C);ae->nop+=2;break;
-					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x5D);ae->nop+=2;break;
-					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x5C);ae->nop+=2;break;
-					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x5D);ae->nop+=2;break;
-					case CRC_MHL:___output(ae,0x5E);ae->nop+=2;break;
-					case CRC_A:___output(ae,0x5F);ae->nop+=1;break;
+					case CRC_B:___output(ae,0x58);ae->nop+=1;ae->tick+=4;break;
+					case CRC_C:___output(ae,0x59);ae->nop+=1;ae->tick+=4;break;
+					case CRC_D:___output(ae,0x5A);ae->nop+=1;ae->tick+=4;break;
+					case CRC_E:___output(ae,0x5B);ae->nop+=1;ae->tick+=4;break;
+					case CRC_H:___output(ae,0x5C);ae->nop+=1;ae->tick+=4;break;
+					case CRC_L:___output(ae,0x5D);ae->nop+=1;ae->tick+=4;break;
+					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x5C);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x5D);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x5C);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x5D);ae->nop+=2;ae->tick+=8;break;
+					case CRC_MHL:___output(ae,0x5E);ae->nop+=2;ae->tick+=7;break;
+					case CRC_A:___output(ae,0x5F);ae->nop+=1;ae->tick+=4;break;
 					default:
 					/* (ix+expression) (iy+expression) expression */
 					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0x5E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0x5E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else {
 						___output(ae,0x1E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=2;
+						ae->nop+=2;ae->tick+=7;
 					}
 				}
 				break;
 			case CRC_IYH:case CRC_HY:case CRC_YH:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0xFD);___output(ae,0x60);ae->nop+=2;break;
-					case CRC_C:___output(ae,0xFD);___output(ae,0x61);ae->nop+=2;break;
-					case CRC_D:___output(ae,0xFD);___output(ae,0x62);ae->nop+=2;break;
-					case CRC_E:___output(ae,0xFD);___output(ae,0x63);ae->nop+=2;break;
-					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x64);ae->nop+=2;break;
-					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x65);ae->nop+=2;break;
-					case CRC_A:___output(ae,0xFD);___output(ae,0x67);ae->nop+=2;break;
+					case CRC_B:___output(ae,0xFD);___output(ae,0x60);ae->nop+=2;ae->tick+=8;break;
+					case CRC_C:___output(ae,0xFD);___output(ae,0x61);ae->nop+=2;ae->tick+=8;break;
+					case CRC_D:___output(ae,0xFD);___output(ae,0x62);ae->nop+=2;ae->tick+=8;break;
+					case CRC_E:___output(ae,0xFD);___output(ae,0x63);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x64);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x65);ae->nop+=2;ae->tick+=8;break;
+					case CRC_A:___output(ae,0xFD);___output(ae,0x67);ae->nop+=2;ae->tick+=8;break;
 					default:
-						___output(ae,0xFD);___output(ae,0x26);
-						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=3;
+						if (strncmp(ae->wl[ae->idx+2].w,"(IX",3) && strncmp(ae->wl[ae->idx+2].w,"(IY",3)) {
+							___output(ae,0xFD);___output(ae,0x26);
+							PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
+							ae->nop+=3;ae->tick+=11;
+						} else {
+							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD iyh,n/r only\n");
+						}
 				}
 				break;
 			case CRC_IYL:case CRC_LY:case CRC_YL:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0xFD);___output(ae,0x68);ae->nop+=2;break;
-					case CRC_C:___output(ae,0xFD);___output(ae,0x69);ae->nop+=2;break;
-					case CRC_D:___output(ae,0xFD);___output(ae,0x6A);ae->nop+=2;break;
-					case CRC_E:___output(ae,0xFD);___output(ae,0x6B);ae->nop+=2;break;
-					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x6C);ae->nop+=2;break;
-					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x6D);ae->nop+=2;break;
-					case CRC_A:___output(ae,0xFD);___output(ae,0x6F);ae->nop+=2;break;
+					case CRC_B:___output(ae,0xFD);___output(ae,0x68);ae->nop+=2;ae->tick+=8;break;
+					case CRC_C:___output(ae,0xFD);___output(ae,0x69);ae->nop+=2;ae->tick+=8;break;
+					case CRC_D:___output(ae,0xFD);___output(ae,0x6A);ae->nop+=2;ae->tick+=8;break;
+					case CRC_E:___output(ae,0xFD);___output(ae,0x6B);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYH:case CRC_HY:case CRC_YH:___output(ae,0xFD);___output(ae,0x6C);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IYL:case CRC_LY:case CRC_YL:___output(ae,0xFD);___output(ae,0x6D);ae->nop+=2;ae->tick+=8;break;
+					case CRC_A:___output(ae,0xFD);___output(ae,0x6F);ae->nop+=2;ae->tick+=8;break;
 					default:
-						___output(ae,0xFD);___output(ae,0x2E);
-						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=3;
+						if (strncmp(ae->wl[ae->idx+2].w,"(IX",3) && strncmp(ae->wl[ae->idx+2].w,"(IY",3)) {
+							___output(ae,0xFD);___output(ae,0x2E);
+							PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
+							ae->nop+=3;ae->tick+=11;
+						} else {
+							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD iyl,n/r only\n");
+						}
 				}
 				break;
 			case CRC_IXH:case CRC_HX:case CRC_XH:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0xDD);___output(ae,0x60);ae->nop+=2;break;
-					case CRC_C:___output(ae,0xDD);___output(ae,0x61);ae->nop+=2;break;
-					case CRC_D:___output(ae,0xDD);___output(ae,0x62);ae->nop+=2;break;
-					case CRC_E:___output(ae,0xDD);___output(ae,0x63);ae->nop+=2;break;
-					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x64);ae->nop+=2;break;
-					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x65);ae->nop+=2;break;
-					case CRC_A:___output(ae,0xDD);___output(ae,0x67);ae->nop+=2;break;
+					case CRC_B:___output(ae,0xDD);___output(ae,0x60);ae->nop+=2;ae->tick+=8;break;
+					case CRC_C:___output(ae,0xDD);___output(ae,0x61);ae->nop+=2;ae->tick+=8;break;
+					case CRC_D:___output(ae,0xDD);___output(ae,0x62);ae->nop+=2;ae->tick+=8;break;
+					case CRC_E:___output(ae,0xDD);___output(ae,0x63);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x64);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x65);ae->nop+=2;ae->tick+=8;break;
+					case CRC_A:___output(ae,0xDD);___output(ae,0x67);ae->nop+=2;ae->tick+=8;break;
 					default:
-						___output(ae,0xDD);___output(ae,0x26);
-						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=3;
+						if (strncmp(ae->wl[ae->idx+2].w,"(IX",3) && strncmp(ae->wl[ae->idx+2].w,"(IY",3)) {
+							___output(ae,0xDD);___output(ae,0x26);
+							PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
+							ae->nop+=3;ae->tick+=11;
+						} else {
+							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD ixh,n/r only\n");
+						}
 				}
 				break;
 			case CRC_IXL:case CRC_LX:case CRC_XL:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0xDD);___output(ae,0x68);ae->nop+=2;break;
-					case CRC_C:___output(ae,0xDD);___output(ae,0x69);ae->nop+=2;break;
-					case CRC_D:___output(ae,0xDD);___output(ae,0x6A);ae->nop+=2;break;
-					case CRC_E:___output(ae,0xDD);___output(ae,0x6B);ae->nop+=2;break;
-					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x6C);ae->nop+=2;break;
-					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x6D);ae->nop+=2;break;
-					case CRC_A:___output(ae,0xDD);___output(ae,0x6F);ae->nop+=2;break;
+					case CRC_B:___output(ae,0xDD);___output(ae,0x68);ae->nop+=2;ae->tick+=8;break;
+					case CRC_C:___output(ae,0xDD);___output(ae,0x69);ae->nop+=2;ae->tick+=8;break;
+					case CRC_D:___output(ae,0xDD);___output(ae,0x6A);ae->nop+=2;ae->tick+=8;break;
+					case CRC_E:___output(ae,0xDD);___output(ae,0x6B);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IXH:case CRC_HX:case CRC_XH:___output(ae,0xDD);___output(ae,0x6C);ae->nop+=2;ae->tick+=8;break;
+					case CRC_IXL:case CRC_LX:case CRC_XL:___output(ae,0xDD);___output(ae,0x6D);ae->nop+=2;ae->tick+=8;break;
+					case CRC_A:___output(ae,0xDD);___output(ae,0x6F);ae->nop+=2;ae->tick+=8;break;
 					default:
-						___output(ae,0xDD);___output(ae,0x2E);
-						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=3;
+						if (strncmp(ae->wl[ae->idx+2].w,"(IX",3) && strncmp(ae->wl[ae->idx+2].w,"(IY",3)) {
+							___output(ae,0xDD);___output(ae,0x2E);
+							PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
+							ae->nop+=3;ae->tick+=11;
+						} else {
+							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD ixl,n/r only\n");
+						}
 				}
 				break;
 			case CRC_H:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0x60);ae->nop+=1;break;
-					case CRC_C:___output(ae,0x61);ae->nop+=1;break;
-					case CRC_D:___output(ae,0x62);ae->nop+=1;break;
-					case CRC_E:___output(ae,0x63);ae->nop+=1;break;
-					case CRC_H:___output(ae,0x64);ae->nop+=1;break;
-					case CRC_L:___output(ae,0x65);ae->nop+=1;break;
-					case CRC_MHL:___output(ae,0x66);ae->nop+=2;break;
-					case CRC_A:___output(ae,0x67);ae->nop+=1;break;
+					case CRC_B:___output(ae,0x60);ae->nop+=1;ae->tick+=4;break;
+					case CRC_C:___output(ae,0x61);ae->nop+=1;ae->tick+=4;break;
+					case CRC_D:___output(ae,0x62);ae->nop+=1;ae->tick+=4;break;
+					case CRC_E:___output(ae,0x63);ae->nop+=1;ae->tick+=4;break;
+					case CRC_H:___output(ae,0x64);ae->nop+=1;ae->tick+=4;break;
+					case CRC_L:___output(ae,0x65);ae->nop+=1;ae->tick+=4;break;
+					case CRC_MHL:___output(ae,0x66);ae->nop+=2;ae->tick+=7;break;
+					case CRC_A:___output(ae,0x67);ae->nop+=1;ae->tick+=4;break;
 					default:
 					/* (ix+expression) (iy+expression) expression */
 					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0x66);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0x66);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else {
 						___output(ae,0x26);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=2;
+						ae->nop+=2;ae->tick+=7;
 					}
 				}
 				break;
 			case CRC_L:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0x68);ae->nop+=1;break;
-					case CRC_C:___output(ae,0x69);ae->nop+=1;break;
-					case CRC_D:___output(ae,0x6A);ae->nop+=1;break;
-					case CRC_E:___output(ae,0x6B);ae->nop+=1;break;
-					case CRC_H:___output(ae,0x6C);ae->nop+=1;break;
-					case CRC_L:___output(ae,0x6D);ae->nop+=1;break;
-					case CRC_MHL:___output(ae,0x6E);ae->nop+=2;break;
-					case CRC_A:___output(ae,0x6F);ae->nop+=1;break;
+					case CRC_B:___output(ae,0x68);ae->nop+=1;ae->tick+=4;break;
+					case CRC_C:___output(ae,0x69);ae->nop+=1;ae->tick+=4;break;
+					case CRC_D:___output(ae,0x6A);ae->nop+=1;ae->tick+=4;break;
+					case CRC_E:___output(ae,0x6B);ae->nop+=1;ae->tick+=4;break;
+					case CRC_H:___output(ae,0x6C);ae->nop+=1;ae->tick+=4;break;
+					case CRC_L:___output(ae,0x6D);ae->nop+=1;ae->tick+=4;break;
+					case CRC_MHL:___output(ae,0x6E);ae->nop+=2;ae->tick+=7;break;
+					case CRC_A:___output(ae,0x6F);ae->nop+=1;ae->tick+=4;break;
 					default:
 					/* (ix+expression) (iy+expression) expression */
 					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0x6E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0x6E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=19;
 					} else {
 						___output(ae,0x2E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-						ae->nop+=2;
+						ae->nop+=2;ae->tick+=7;
 					}
 				}
 				break;
 			case CRC_MHL:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_B:___output(ae,0x70);ae->nop+=2;break;
-					case CRC_C:___output(ae,0x71);ae->nop+=2;break;
-					case CRC_D:___output(ae,0x72);ae->nop+=2;break;
-					case CRC_E:___output(ae,0x73);ae->nop+=2;break;
-					case CRC_H:___output(ae,0x74);ae->nop+=2;break;
-					case CRC_L:___output(ae,0x75);ae->nop+=2;break;
-					case CRC_A:___output(ae,0x77);ae->nop+=2;break;
+					case CRC_B:___output(ae,0x70);ae->nop+=2;ae->tick+=7;break;
+					case CRC_C:___output(ae,0x71);ae->nop+=2;ae->tick+=7;break;
+					case CRC_D:___output(ae,0x72);ae->nop+=2;ae->tick+=7;break;
+					case CRC_E:___output(ae,0x73);ae->nop+=2;ae->tick+=7;break;
+					case CRC_H:___output(ae,0x74);ae->nop+=2;ae->tick+=7;break;
+					case CRC_L:___output(ae,0x75);ae->nop+=2;ae->tick+=7;break;
+					case CRC_A:___output(ae,0x77);ae->nop+=2;ae->tick+=7;break;
 					default:
 					/* expression */
-					___output(ae,0x36);
-					PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
-					ae->nop+=3;
+					if (!StringIsMem(ae->wl[ae->idx+2].w)) {
+						___output(ae,0x36);
+						PushExpression(ae,ae->idx+2,E_EXPRESSION_V8);
+						ae->nop+=3;ae->tick+=10;
+					} else {
+						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD (HL),n/r only\n");
+					}
 				}
 				break;
 			case CRC_MBC:
 				if (GetCRC(ae->wl[ae->idx+2].w)==CRC_A)  {
 					___output(ae,0x02);
-					ae->nop+=2;
+					ae->nop+=2;ae->tick+=7;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD (BC),A only\n");
 				}
@@ -8262,140 +10857,178 @@ void _LD(struct s_assenv *ae) {
 			case CRC_MDE:
 				if (GetCRC(ae->wl[ae->idx+2].w)==CRC_A)  {
 					___output(ae,0x12);
-					ae->nop+=2;
+					ae->nop+=2;ae->tick+=7;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD (DE),A only\n");
 				}
 				break;
 			case CRC_HL:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_BC:___output(ae,0x60);___output(ae,0x69);ae->nop+=2;break;
-					case CRC_DE:___output(ae,0x62);___output(ae,0x6B);ae->nop+=2;break;
-					case CRC_HL:___output(ae,0x64);___output(ae,0x6D);ae->nop+=2;break;
+					case CRC_BC:___output(ae,0x60);___output(ae,0x69);ae->nop+=2;ae->tick+=8;break;
+					case CRC_DE:___output(ae,0x62);___output(ae,0x6B);ae->nop+=2;ae->tick+=8;break;
+					case CRC_HL:___output(ae,0x64);___output(ae,0x6D);ae->nop+=2;ae->tick+=8;break;
 					default:
-					if (strncmp(ae->wl[ae->idx+2].w,"(IX+",4)==0) {
+					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0 && (ae->wl[ae->idx+2].w[3]=='+' || ae->wl[ae->idx+2].w[3]=='-')) {
 						/* enhanced LD HL,(IX+nn) */
 						___output(ae,0xDD);___output(ae,0x66);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV81);
 						___output(ae,0xDD);___output(ae,0x6E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=10;
-					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY+",4)==0) {
+						ae->nop+=10;ae->tick+=19;ae->tick+=19;
+					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0 && (ae->wl[ae->idx+2].w[3]=='+' || ae->wl[ae->idx+2].w[3]=='-')) {
 						/* enhanced LD HL,(IY+nn) */
 						___output(ae,0xFD);___output(ae,0x66);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV81);
 						___output(ae,0xFD);___output(ae,0x6E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=10;
+						ae->nop+=10;ae->tick+=19;ae->tick+=19;
 					} else if (StringIsMem(ae->wl[ae->idx+2].w)) {
 						___output(ae,0x2A);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V16);
-						ae->nop+=5;
+						ae->nop+=5;ae->tick+=16;
 					} else {
 						___output(ae,0x21);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V16);
-						ae->nop+=3;
+						ae->nop+=3;ae->tick+=10;
 					}
 				}
 				break;
 			case CRC_BC:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_BC:___output(ae,0x40);___output(ae,0x49);ae->nop+=2;break;
-					case CRC_DE:___output(ae,0x42);___output(ae,0x4B);ae->nop+=2;break;
-					case CRC_HL:___output(ae,0x44);___output(ae,0x4D);ae->nop+=2;break;
+					case CRC_BC:___output(ae,0x40);___output(ae,0x49);ae->nop+=2;ae->tick+=8;break;
+					case CRC_DE:___output(ae,0x42);___output(ae,0x4B);ae->nop+=2;ae->tick+=8;break;
+					case CRC_HL:___output(ae,0x44);___output(ae,0x4D);ae->nop+=2;ae->tick+=8;break;
+					/* enhanced LD BC,IX / LD BC,IY */
+					case CRC_IX:___output(ae,0xDD);___output(ae,0x44);ae->nop+=4;
+						    ___output(ae,0xDD);___output(ae,0x4D);ae->tick+=16;break;
+					case CRC_IY:___output(ae,0xFD);___output(ae,0x44);ae->nop+=4;
+						    ___output(ae,0xFD);___output(ae,0x4D);ae->tick+=16;break;
 					default:
-					if (strncmp(ae->wl[ae->idx+2].w,"(IX+",4)==0) {
+					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0 && (ae->wl[ae->idx+2].w[3]=='+' || ae->wl[ae->idx+2].w[3]=='-')) {
 						/* enhanced LD BC,(IX+nn) */
 						___output(ae,0xDD);___output(ae,0x46);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV81);
 						___output(ae,0xDD);___output(ae,0x4E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=10;
-					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY+",4)==0) {
+						ae->nop+=10;ae->tick+=19;ae->tick+=19;
+					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0 && (ae->wl[ae->idx+2].w[3]=='+' || ae->wl[ae->idx+2].w[3]=='-')) {
 						/* enhanced LD BC,(IY+nn) */
 						___output(ae,0xFD);___output(ae,0x46);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV81);
 						___output(ae,0xFD);___output(ae,0x4E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=10;
+						ae->nop+=10;ae->tick+=19;ae->tick+=19;
 					} else if (StringIsMem(ae->wl[ae->idx+2].w)) {
 						___output(ae,0xED);___output(ae,0x4B);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
-						ae->nop+=6;
+						ae->nop+=6;ae->tick+=20;
 					} else {
 						___output(ae,0x01);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V16);
-						ae->nop+=3;
+						ae->nop+=3;ae->tick+=10;
 					}
 				}
 				break;
 			case CRC_DE:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_BC:___output(ae,0x50);___output(ae,0x59);ae->nop+=2;break;
-					case CRC_DE:___output(ae,0x52);___output(ae,0x5B);ae->nop+=2;break;
-					case CRC_HL:___output(ae,0x54);___output(ae,0x5D);ae->nop+=2;break;
+					case CRC_BC:___output(ae,0x50);___output(ae,0x59);ae->nop+=2;ae->tick+=8;break;
+					case CRC_DE:___output(ae,0x52);___output(ae,0x5B);ae->nop+=2;ae->tick+=8;break;
+					case CRC_HL:___output(ae,0x54);___output(ae,0x5D);ae->nop+=2;ae->tick+=8;break;
+					/* enhanced LD DE,IX / LD DE,IY */
+					case CRC_IX:___output(ae,0xDD);___output(ae,0x54);ae->nop+=4;
+						    ___output(ae,0xDD);___output(ae,0x5D);ae->tick+=16;break;
+					case CRC_IY:___output(ae,0xFD);___output(ae,0x54);ae->nop+=4;
+						    ___output(ae,0xFD);___output(ae,0x5D);ae->tick+=16;break;
 					default:
-					if (strncmp(ae->wl[ae->idx+2].w,"(IX+",4)==0) {
+					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0 && (ae->wl[ae->idx+2].w[3]=='+' || ae->wl[ae->idx+2].w[3]=='-')) {
 						/* enhanced LD DE,(IX+nn) */
 						___output(ae,0xDD);___output(ae,0x56);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV81);
 						___output(ae,0xDD);___output(ae,0x5E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=10;
-					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY+",4)==0) {
+						ae->nop+=10;ae->tick+=19;ae->tick+=19;
+					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0 && (ae->wl[ae->idx+2].w[3]=='+' || ae->wl[ae->idx+2].w[3]=='-')) {
 						/* enhanced LD DE,(IY+nn) */
 						___output(ae,0xFD);___output(ae,0x56);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV81);
 						___output(ae,0xFD);___output(ae,0x5E);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
-						ae->nop+=10;
+						ae->nop+=10;ae->tick+=19;ae->tick+=19;
 					} else if (StringIsMem(ae->wl[ae->idx+2].w)) {
 						___output(ae,0xED);___output(ae,0x5B);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
-						ae->nop+=6;
+						ae->nop+=6;ae->tick+=20;
 					} else {
 						___output(ae,0x11);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_V16);
-						ae->nop+=3;
+						ae->nop+=3;ae->tick+=10;
 					}
 				}
 				break;
 			case CRC_IX:
-				if (StringIsMem(ae->wl[ae->idx+2].w)) {
-					___output(ae,0xDD);___output(ae,0x2A);
-					PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
-					ae->nop+=6;
-				} else {
-					___output(ae,0xDD);___output(ae,0x21);
-					PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
-					ae->nop+=4;
+				switch (GetCRC(ae->wl[ae->idx+2].w)) {
+					/* enhanced LD IX,BC / LD IX,DE */
+					case CRC_BC:___output(ae,0xDD);___output(ae,0x60);
+						    ___output(ae,0xDD);___output(ae,0x69);ae->nop+=4;ae->tick+=16;break;
+					case CRC_DE:___output(ae,0xDD);___output(ae,0x62);
+						    ___output(ae,0xDD);___output(ae,0x6B);ae->nop+=4;ae->tick+=16;break;
+					default:
+						if (strncmp(ae->wl[ae->idx+2].w,"(IX",3) && strncmp(ae->wl[ae->idx+2].w,"(IY",3)) {
+							if (StringIsMem(ae->wl[ae->idx+2].w)) {
+								___output(ae,0xDD);___output(ae,0x2A);
+								PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
+								ae->nop+=6;ae->tick+=20;
+							} else {
+								___output(ae,0xDD);___output(ae,0x21);
+								PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
+								ae->nop+=4;ae->tick+=14;
+							}
+						} else {
+							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD IX,(nn)/BC/DE/nn only\n");
+						}
 				}
 				break;
 			case CRC_IY:
-				if (StringIsMem(ae->wl[ae->idx+2].w)) {
-					___output(ae,0xFD);___output(ae,0x2A);
-					PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
-					ae->nop+=6;
-				} else {
-					___output(ae,0xFD);___output(ae,0x21);
-					PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
-					ae->nop+=4;
+				switch (GetCRC(ae->wl[ae->idx+2].w)) {
+					/* enhanced LD IY,BC / LD IY,DE */
+					case CRC_BC:___output(ae,0xFD);___output(ae,0x60);
+						    ___output(ae,0xFD);___output(ae,0x69);ae->nop+=4;ae->tick+=16;break;
+					case CRC_DE:___output(ae,0xFD);___output(ae,0x62);
+						    ___output(ae,0xFD);___output(ae,0x6B);ae->nop+=4;ae->tick+=16;break;
+					default:
+						if (strncmp(ae->wl[ae->idx+2].w,"(IX",3) && strncmp(ae->wl[ae->idx+2].w,"(IY",3)) {
+							if (StringIsMem(ae->wl[ae->idx+2].w)) {
+								___output(ae,0xFD);___output(ae,0x2A);
+								PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
+								ae->nop+=6;ae->tick+=20;
+							} else {
+								___output(ae,0xFD);___output(ae,0x21);
+								PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
+								ae->nop+=4;ae->tick+=14;
+							}
+						} else {
+							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD IY,(nn)/BC/DE/nn only\n");
+						}
 				}
 				break;
 			case CRC_SP:
 				switch (GetCRC(ae->wl[ae->idx+2].w)) {
-					case CRC_HL:___output(ae,0xF9);ae->nop+=2;break;
-					case CRC_IX:___output(ae,0xDD);___output(ae,0xF9);ae->nop+=3;break;
-					case CRC_IY:___output(ae,0xFD);___output(ae,0xF9);ae->nop+=3;break;
+					case CRC_HL:___output(ae,0xF9);ae->nop+=2;ae->tick+=6;break;
+					case CRC_IX:___output(ae,0xDD);___output(ae,0xF9);ae->nop+=3;ae->tick+=10;break;
+					case CRC_IY:___output(ae,0xFD);___output(ae,0xF9);ae->nop+=3;ae->tick+=10;break;
 					default:
-						if (StringIsMem(ae->wl[ae->idx+2].w)) {
-							___output(ae,0xED);___output(ae,0x7B);
-							PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
-							ae->nop+=6;
+						if (strncmp(ae->wl[ae->idx+2].w,"(IX",3) && strncmp(ae->wl[ae->idx+2].w,"(IY",3)) {
+							if (StringIsMem(ae->wl[ae->idx+2].w)) {
+								___output(ae,0xED);___output(ae,0x7B);
+								PushExpression(ae,ae->idx+2,E_EXPRESSION_IV16);
+								ae->nop+=6;ae->tick+=20;
+							} else {
+								___output(ae,0x31);
+								PushExpression(ae,ae->idx+2,E_EXPRESSION_V16);
+								ae->nop+=3;ae->tick+=10;
+							}
 						} else {
-							___output(ae,0x31);
-							PushExpression(ae,ae->idx+2,E_EXPRESSION_V16);
-							ae->nop+=3;
+							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD SP,(nn)/HL/IX/IY only\n");
 						}
 				}
 				break;
@@ -8403,47 +11036,57 @@ void _LD(struct s_assenv *ae) {
 				/* (ix+expression) (iy+expression) (expression) expression */
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					switch (GetCRC(ae->wl[ae->idx+2].w)) {
-						case CRC_B:___output(ae,0xDD);___output(ae,0x70);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_C:___output(ae,0xDD);___output(ae,0x71);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_D:___output(ae,0xDD);___output(ae,0x72);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_E:___output(ae,0xDD);___output(ae,0x73);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_H:___output(ae,0xDD);___output(ae,0x74);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_L:___output(ae,0xDD);___output(ae,0x75);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_A:___output(ae,0xDD);___output(ae,0x77);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_HL:___output(ae,0xDD);___output(ae,0x74);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xDD);___output(ae,0x75);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;break;
-						case CRC_DE:___output(ae,0xDD);___output(ae,0x72);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xDD);___output(ae,0x73);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;break;
-						case CRC_BC:___output(ae,0xDD);___output(ae,0x70);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xDD);___output(ae,0x71);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;break;
-						default:___output(ae,0xDD);___output(ae,0x36);
-							PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-							PushExpression(ae,ae->idx+2,E_EXPRESSION_3V8);
-							ae->nop+=6;
+						case CRC_B:___output(ae,0xDD);___output(ae,0x70);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_C:___output(ae,0xDD);___output(ae,0x71);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_D:___output(ae,0xDD);___output(ae,0x72);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_E:___output(ae,0xDD);___output(ae,0x73);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_H:___output(ae,0xDD);___output(ae,0x74);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_L:___output(ae,0xDD);___output(ae,0x75);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_A:___output(ae,0xDD);___output(ae,0x77);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_HL:___output(ae,0xDD);___output(ae,0x74);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xDD);___output(ae,0x75);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;ae->tick+=38;break;
+						case CRC_DE:___output(ae,0xDD);___output(ae,0x72);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xDD);___output(ae,0x73);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;ae->tick+=38;break;
+						case CRC_BC:___output(ae,0xDD);___output(ae,0x70);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xDD);___output(ae,0x71);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;ae->tick+=38;break;
+						default:
+							if (!StringIsMem(ae->wl[ae->idx+2].w)) {
+								___output(ae,0xDD);___output(ae,0x36);
+								PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
+								PushExpression(ae,ae->idx+2,E_EXPRESSION_3V8);
+								ae->nop+=6;ae->tick+=23;
+							} else {
+								MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD (IX+n),n/r only\n");
+							}
 					}
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					switch (GetCRC(ae->wl[ae->idx+2].w)) {
-						case CRC_B:___output(ae,0xFD);___output(ae,0x70);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_C:___output(ae,0xFD);___output(ae,0x71);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_D:___output(ae,0xFD);___output(ae,0x72);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_E:___output(ae,0xFD);___output(ae,0x73);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_H:___output(ae,0xFD);___output(ae,0x74);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_L:___output(ae,0xFD);___output(ae,0x75);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_A:___output(ae,0xFD);___output(ae,0x77);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;break;
-						case CRC_HL:___output(ae,0xFD);___output(ae,0x74);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xFD);___output(ae,0x75);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;break;
-						case CRC_DE:___output(ae,0xFD);___output(ae,0x72);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xFD);___output(ae,0x73);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;break;
-						case CRC_BC:___output(ae,0xFD);___output(ae,0x70);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xFD);___output(ae,0x71);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;break;
-						default:___output(ae,0xFD);___output(ae,0x36);
-							PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-							PushExpression(ae,ae->idx+2,E_EXPRESSION_3V8);
-							ae->nop+=6;
+						case CRC_B:___output(ae,0xFD);___output(ae,0x70);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_C:___output(ae,0xFD);___output(ae,0x71);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_D:___output(ae,0xFD);___output(ae,0x72);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_E:___output(ae,0xFD);___output(ae,0x73);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_H:___output(ae,0xFD);___output(ae,0x74);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_L:___output(ae,0xFD);___output(ae,0x75);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_A:___output(ae,0xFD);___output(ae,0x77);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=5;ae->tick+=19;break;
+						case CRC_HL:___output(ae,0xFD);___output(ae,0x74);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xFD);___output(ae,0x75);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;ae->tick+=38;break;
+						case CRC_DE:___output(ae,0xFD);___output(ae,0x72);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xFD);___output(ae,0x73);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;ae->tick+=38;break;
+						case CRC_BC:___output(ae,0xFD);___output(ae,0x70);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV81);___output(ae,0xFD);___output(ae,0x71);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);ae->nop+=10;ae->tick+=38;break;
+						default:
+							if (!StringIsMem(ae->wl[ae->idx+2].w)) {
+							    ___output(ae,0xFD);___output(ae,0x36);
+								PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
+								PushExpression(ae,ae->idx+2,E_EXPRESSION_3V8);
+								ae->nop+=6;ae->tick+=23;
+							} else {
+								MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD (IX+n),n/r only\n");
+							}
 					}
 				} else if (StringIsMem(ae->wl[ae->idx+1].w)) {
 					switch (GetCRC(ae->wl[ae->idx+2].w)) {
-						case CRC_A:___output(ae,0x32);PushExpression(ae,ae->idx+1,E_EXPRESSION_V16);ae->nop+=4;break;
-						case CRC_BC:___output(ae,0xED);___output(ae,0x43);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV16);ae->nop+=6;break;
-						case CRC_DE:___output(ae,0xED);___output(ae,0x53);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV16);ae->nop+=6;break;
-						case CRC_HL:___output(ae,0x22);PushExpression(ae,ae->idx+1,E_EXPRESSION_V16);ae->nop+=5;break;
-						case CRC_IX:___output(ae,0xDD);___output(ae,0x22);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV16);ae->nop+=6;break;
-						case CRC_IY:___output(ae,0xFD);___output(ae,0x22);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV16);ae->nop+=6;break;
-						case CRC_SP:___output(ae,0xED);___output(ae,0x73);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV16);ae->nop+=6;break;
+						case CRC_A:___output(ae,0x32);PushExpression(ae,ae->idx+1,E_EXPRESSION_V16);ae->nop+=4;ae->tick+=13;break;
+						case CRC_BC:___output(ae,0xED);___output(ae,0x43);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV16);ae->nop+=6;ae->tick+=20;break;
+						case CRC_DE:___output(ae,0xED);___output(ae,0x53);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV16);ae->nop+=6;ae->tick+=20;break;
+						case CRC_HL:___output(ae,0x22);PushExpression(ae,ae->idx+1,E_EXPRESSION_V16);ae->nop+=5;ae->tick+=16;break;
+						case CRC_IX:___output(ae,0xDD);___output(ae,0x22);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV16);ae->nop+=6;ae->tick+=20;break;
+						case CRC_IY:___output(ae,0xFD);___output(ae,0x22);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV16);ae->nop+=6;ae->tick+=20;break;
+						case CRC_SP:___output(ae,0xED);___output(ae,0x73);PushExpression(ae,ae->idx+1,E_EXPRESSION_IV16);ae->nop+=6;ae->tick+=20;break;
 						default:
 							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LD (#nnnn),[A,BC,DE,HL,SP,IX,IY] only\n");
 					}
@@ -8463,25 +11106,25 @@ void _RLC(struct s_assenv *ae) {
 	/* on check qu'il y a un ou deux parametres */
 	if (ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_B:___output(ae,0xCB);___output(ae,0x0);ae->nop+=2;break;
-			case CRC_C:___output(ae,0xCB);___output(ae,0x1);ae->nop+=2;break;
-			case CRC_D:___output(ae,0xCB);___output(ae,0x2);ae->nop+=2;break;
-			case CRC_E:___output(ae,0xCB);___output(ae,0x3);ae->nop+=2;break;
-			case CRC_H:___output(ae,0xCB);___output(ae,0x4);ae->nop+=2;break;
-			case CRC_L:___output(ae,0xCB);___output(ae,0x5);ae->nop+=2;break;
-			case CRC_MHL:___output(ae,0xCB);___output(ae,0x6);ae->nop+=4;break;
-			case CRC_A:___output(ae,0xCB);___output(ae,0x7);ae->nop+=2;break;
+			case CRC_B:___output(ae,0xCB);___output(ae,0x0);ae->nop+=2;ae->tick+=8;break;
+			case CRC_C:___output(ae,0xCB);___output(ae,0x1);ae->nop+=2;ae->tick+=8;break;
+			case CRC_D:___output(ae,0xCB);___output(ae,0x2);ae->nop+=2;ae->tick+=8;break;
+			case CRC_E:___output(ae,0xCB);___output(ae,0x3);ae->nop+=2;ae->tick+=8;break;
+			case CRC_H:___output(ae,0xCB);___output(ae,0x4);ae->nop+=2;ae->tick+=8;break;
+			case CRC_L:___output(ae,0xCB);___output(ae,0x5);ae->nop+=2;ae->tick+=8;break;
+			case CRC_MHL:___output(ae,0xCB);___output(ae,0x6);ae->nop+=4;ae->tick+=15;break;
+			case CRC_A:___output(ae,0xCB);___output(ae,0x7);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x6);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x6);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is RLC reg8/(HL)/(IX+n)/(IY+n)\n");
 				}
@@ -8497,13 +11140,13 @@ void _RLC(struct s_assenv *ae) {
 		}
 		___output(ae,0xCB);
 		switch (GetCRC(ae->wl[ae->idx+2].w)) {
-			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x0);ae->nop+=7;break;
-			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1);ae->nop+=7;break;
-			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2);ae->nop+=7;break;
-			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3);ae->nop+=7;break;
-			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x4);ae->nop+=7;break;
-			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x5);ae->nop+=7;break;
-			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x7);ae->nop+=7;break;
+			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x0);ae->nop+=7;ae->tick+=23;break;
+			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1);ae->nop+=7;ae->tick+=23;break;
+			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2);ae->nop+=7;ae->tick+=23;break;
+			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3);ae->nop+=7;ae->tick+=23;break;
+			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x4);ae->nop+=7;ae->tick+=23;break;
+			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x5);ae->nop+=7;ae->tick+=23;break;
+			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x7);ae->nop+=7;ae->tick+=23;break;
 			default:			
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is RLC (IX+n),reg8\n");
 		}
@@ -8516,24 +11159,24 @@ void _RRC(struct s_assenv *ae) {
 	/* on check qu'il y a un ou deux parametres */
 	if (ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_B:___output(ae,0xCB);___output(ae,0x8);ae->nop+=2;break;
-			case CRC_C:___output(ae,0xCB);___output(ae,0x9);ae->nop+=2;break;
-			case CRC_D:___output(ae,0xCB);___output(ae,0xA);ae->nop+=2;break;
-			case CRC_E:___output(ae,0xCB);___output(ae,0xB);ae->nop+=2;break;
-			case CRC_H:___output(ae,0xCB);___output(ae,0xC);ae->nop+=2;break;
-			case CRC_L:___output(ae,0xCB);___output(ae,0xD);ae->nop+=2;break;
-			case CRC_MHL:___output(ae,0xCB);___output(ae,0xE);ae->nop+=4;break;
-			case CRC_A:___output(ae,0xCB);___output(ae,0xF);ae->nop+=2;break;
+			case CRC_B:___output(ae,0xCB);___output(ae,0x8);ae->nop+=2;ae->tick+=8;break;
+			case CRC_C:___output(ae,0xCB);___output(ae,0x9);ae->nop+=2;ae->tick+=8;break;
+			case CRC_D:___output(ae,0xCB);___output(ae,0xA);ae->nop+=2;ae->tick+=8;break;
+			case CRC_E:___output(ae,0xCB);___output(ae,0xB);ae->nop+=2;ae->tick+=8;break;
+			case CRC_H:___output(ae,0xCB);___output(ae,0xC);ae->nop+=2;ae->tick+=8;break;
+			case CRC_L:___output(ae,0xCB);___output(ae,0xD);ae->nop+=2;ae->tick+=8;break;
+			case CRC_MHL:___output(ae,0xCB);___output(ae,0xE);ae->nop+=4;ae->tick+=15;break;
+			case CRC_A:___output(ae,0xCB);___output(ae,0xF);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0xE);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
-					___output(ae,0xE);
+					___output(ae,0xE);ae->tick+=23;
 					ae->nop+=7;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is RRC reg8/(HL)/(IX+n)/(IY+n)\n");
@@ -8550,13 +11193,13 @@ void _RRC(struct s_assenv *ae) {
 		}
 		___output(ae,0xCB);
 		switch (GetCRC(ae->wl[ae->idx+2].w)) {
-			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x8);ae->nop+=7;break;
-			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x9);ae->nop+=7;break;
-			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0xA);ae->nop+=7;break;
-			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0xB);ae->nop+=7;break;
-			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0xC);ae->nop+=7;break;
-			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0xD);ae->nop+=7;break;
-			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0xF);ae->nop+=7;break;
+			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x8);ae->nop+=7;ae->tick+=23;break;
+			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x9);ae->nop+=7;ae->tick+=23;break;
+			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0xA);ae->nop+=7;ae->tick+=23;break;
+			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0xB);ae->nop+=7;ae->tick+=23;break;
+			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0xC);ae->nop+=7;ae->tick+=23;break;
+			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0xD);ae->nop+=7;ae->tick+=23;break;
+			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0xF);ae->nop+=7;ae->tick+=23;break;
 			default:			
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is RRC (IX+n),reg8\n");
 		}
@@ -8570,28 +11213,28 @@ void _RL(struct s_assenv *ae) {
 	/* on check qu'il y a un ou deux parametres */
 	if (ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_BC:___output(ae,0xCB);___output(ae,0x10);___output(ae,0xCB);___output(ae,0x11);ae->nop+=4;break;
-			case CRC_B:___output(ae,0xCB);___output(ae,0x10);ae->nop+=2;break;
-			case CRC_C:___output(ae,0xCB);___output(ae,0x11);ae->nop+=2;break;
-			case CRC_DE:___output(ae,0xCB);___output(ae,0x12);___output(ae,0xCB);___output(ae,0x13);ae->nop+=4;break;
-			case CRC_D:___output(ae,0xCB);___output(ae,0x12);ae->nop+=2;break;
-			case CRC_E:___output(ae,0xCB);___output(ae,0x13);ae->nop+=2;break;
-			case CRC_HL:___output(ae,0xCB);___output(ae,0x14);___output(ae,0xCB);___output(ae,0x15);ae->nop+=4;break;
-			case CRC_H:___output(ae,0xCB);___output(ae,0x14);ae->nop+=2;break;
-			case CRC_L:___output(ae,0xCB);___output(ae,0x15);ae->nop+=2;break;
-			case CRC_MHL:___output(ae,0xCB);___output(ae,0x16);ae->nop+=4;break;
-			case CRC_A:___output(ae,0xCB);___output(ae,0x17);ae->nop+=2;break;
+			case CRC_BC:___output(ae,0xCB);___output(ae,0x10);___output(ae,0xCB);___output(ae,0x11);ae->nop+=4;ae->tick+=16;break;
+			case CRC_B:___output(ae,0xCB);___output(ae,0x10);ae->nop+=2;ae->tick+=8;break;
+			case CRC_C:___output(ae,0xCB);___output(ae,0x11);ae->nop+=2;ae->tick+=8;break;
+			case CRC_DE:___output(ae,0xCB);___output(ae,0x12);___output(ae,0xCB);___output(ae,0x13);ae->nop+=4;ae->tick+=16;break;
+			case CRC_D:___output(ae,0xCB);___output(ae,0x12);ae->nop+=2;ae->tick+=8;break;
+			case CRC_E:___output(ae,0xCB);___output(ae,0x13);ae->nop+=2;ae->tick+=8;break;
+			case CRC_HL:___output(ae,0xCB);___output(ae,0x14);___output(ae,0xCB);___output(ae,0x15);ae->nop+=4;ae->tick+=16;break;
+			case CRC_H:___output(ae,0xCB);___output(ae,0x14);ae->nop+=2;ae->tick+=8;break;
+			case CRC_L:___output(ae,0xCB);___output(ae,0x15);ae->nop+=2;ae->tick+=8;break;
+			case CRC_MHL:___output(ae,0xCB);___output(ae,0x16);ae->nop+=4;ae->tick+=15;break;
+			case CRC_A:___output(ae,0xCB);___output(ae,0x17);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x16);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x16);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is RL reg8/(HL)/(IX+n)/(IY+n)\n");
 				}
@@ -8607,13 +11250,13 @@ void _RL(struct s_assenv *ae) {
 		}
 		___output(ae,0xCB);
 		switch (GetCRC(ae->wl[ae->idx+2].w)) {
-			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x10);ae->nop+=7;break;
-			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x11);ae->nop+=7;break;
-			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x12);ae->nop+=7;break;
-			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x13);ae->nop+=7;break;
-			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x14);ae->nop+=7;break;
-			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x15);ae->nop+=7;break;
-			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x17);ae->nop+=7;break;
+			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x10);ae->nop+=7;ae->tick+=23;break;
+			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x11);ae->nop+=7;ae->tick+=23;break;
+			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x12);ae->nop+=7;ae->tick+=23;break;
+			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x13);ae->nop+=7;ae->tick+=23;break;
+			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x14);ae->nop+=7;ae->tick+=23;break;
+			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x15);ae->nop+=7;ae->tick+=23;break;
+			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x17);ae->nop+=7;ae->tick+=23;break;
 			default:			
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is RL (IX+n),reg8\n");
 		}
@@ -8628,28 +11271,28 @@ void _RR(struct s_assenv *ae) {
 	/* on check qu'il y a un ou deux parametres */
 	if (ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_BC:___output(ae,0xCB);___output(ae,0x18);___output(ae,0xCB);___output(ae,0x19);ae->nop+=4;break;
-			case CRC_B:___output(ae,0xCB);___output(ae,0x18);ae->nop+=2;break;
-			case CRC_C:___output(ae,0xCB);___output(ae,0x19);ae->nop+=2;break;
-			case CRC_DE:___output(ae,0xCB);___output(ae,0x1A);___output(ae,0xCB);___output(ae,0x1B);ae->nop+=4;break;
-			case CRC_D:___output(ae,0xCB);___output(ae,0x1A);ae->nop+=2;break;
-			case CRC_E:___output(ae,0xCB);___output(ae,0x1B);ae->nop+=2;break;
-			case CRC_HL:___output(ae,0xCB);___output(ae,0x1C);___output(ae,0xCB);___output(ae,0x1D);ae->nop+=4;break;
-			case CRC_H:___output(ae,0xCB);___output(ae,0x1C);ae->nop+=2;break;
-			case CRC_L:___output(ae,0xCB);___output(ae,0x1D);ae->nop+=2;break;
-			case CRC_MHL:___output(ae,0xCB);___output(ae,0x1E);ae->nop+=4;break;
-			case CRC_A:___output(ae,0xCB);___output(ae,0x1F);ae->nop+=2;break;
+			case CRC_BC:___output(ae,0xCB);___output(ae,0x18);___output(ae,0xCB);___output(ae,0x19);ae->nop+=4;ae->tick+=16;break;
+			case CRC_B:___output(ae,0xCB);___output(ae,0x18);ae->nop+=2;ae->tick+=8;break;
+			case CRC_C:___output(ae,0xCB);___output(ae,0x19);ae->nop+=2;ae->tick+=8;break;
+			case CRC_DE:___output(ae,0xCB);___output(ae,0x1A);___output(ae,0xCB);___output(ae,0x1B);ae->nop+=4;ae->tick+=16;break;
+			case CRC_D:___output(ae,0xCB);___output(ae,0x1A);ae->nop+=2;ae->tick+=8;break;
+			case CRC_E:___output(ae,0xCB);___output(ae,0x1B);ae->nop+=2;ae->tick+=8;break;
+			case CRC_HL:___output(ae,0xCB);___output(ae,0x1C);___output(ae,0xCB);___output(ae,0x1D);ae->nop+=4;ae->tick+=16;break;
+			case CRC_H:___output(ae,0xCB);___output(ae,0x1C);ae->nop+=2;ae->tick+=8;break;
+			case CRC_L:___output(ae,0xCB);___output(ae,0x1D);ae->nop+=2;ae->tick+=8;break;
+			case CRC_MHL:___output(ae,0xCB);___output(ae,0x1E);ae->nop+=4;ae->tick+=15;break;
+			case CRC_A:___output(ae,0xCB);___output(ae,0x1F);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x1E);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x1E);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is RR reg8/(HL)/(IX+n)/(IY+n)\n");
 				}
@@ -8665,13 +11308,13 @@ void _RR(struct s_assenv *ae) {
 		}
 		___output(ae,0xCB);
 		switch (GetCRC(ae->wl[ae->idx+2].w)) {
-			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x18);ae->nop+=7;break;
-			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x19);ae->nop+=7;break;
-			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1A);ae->nop+=7;break;
-			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1B);ae->nop+=7;break;
-			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1C);ae->nop+=7;break;
-			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1D);ae->nop+=7;break;
-			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1F);ae->nop+=7;break;
+			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x18);ae->nop+=7;ae->tick+=23;break;
+			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x19);ae->nop+=7;ae->tick+=23;break;
+			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1A);ae->nop+=7;ae->tick+=23;break;
+			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1B);ae->nop+=7;ae->tick+=23;break;
+			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1C);ae->nop+=7;ae->tick+=23;break;
+			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1D);ae->nop+=7;ae->tick+=23;break;
+			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x1F);ae->nop+=7;ae->tick+=23;break;
 			default:			
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is RR (IX+n),reg8\n");
 		}
@@ -8682,36 +11325,32 @@ void _RR(struct s_assenv *ae) {
 	}
 }
 
-
-
-
-
 void _SLA(struct s_assenv *ae) {
 	/* on check qu'il y a un ou deux parametres */
 	if (ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_BC:___output(ae,0xCB);___output(ae,0x21);___output(ae,0xCB);___output(ae,0x10);ae->nop+=4;break; /* SLA C : RL B */
-			case CRC_B:___output(ae,0xCB);___output(ae,0x20);ae->nop+=2;break;
-			case CRC_C:___output(ae,0xCB);___output(ae,0x21);ae->nop+=2;break;
-			case CRC_DE:___output(ae,0xCB);___output(ae,0x23);___output(ae,0xCB);___output(ae,0x12);ae->nop+=4;break; /* SLA E : RL D */
-			case CRC_D:___output(ae,0xCB);___output(ae,0x22);ae->nop+=2;break;
-			case CRC_E:___output(ae,0xCB);___output(ae,0x23);ae->nop+=2;break;
-			case CRC_HL:___output(ae,0xCB);___output(ae,0x25);___output(ae,0xCB);___output(ae,0x14);ae->nop+=4;break; /* SLA L : RL H */
-			case CRC_H:___output(ae,0xCB);___output(ae,0x24);ae->nop+=2;break;
-			case CRC_L:___output(ae,0xCB);___output(ae,0x25);ae->nop+=2;break;
-			case CRC_MHL:___output(ae,0xCB);___output(ae,0x26);ae->nop+=4;break;
-			case CRC_A:___output(ae,0xCB);___output(ae,0x27);ae->nop+=2;break;
+			case CRC_BC:___output(ae,0xCB);___output(ae,0x21);___output(ae,0xCB);___output(ae,0x10);ae->nop+=4;ae->tick+=16;break; /* SLA C : RL B */
+			case CRC_B:___output(ae,0xCB);___output(ae,0x20);ae->nop+=2;ae->tick+=8;break;
+			case CRC_C:___output(ae,0xCB);___output(ae,0x21);ae->nop+=2;ae->tick+=8;break;
+			case CRC_DE:___output(ae,0xCB);___output(ae,0x23);___output(ae,0xCB);___output(ae,0x12);ae->nop+=4;ae->tick+=16;break; /* SLA E : RL D */
+			case CRC_D:___output(ae,0xCB);___output(ae,0x22);ae->nop+=2;ae->tick+=8;break;
+			case CRC_E:___output(ae,0xCB);___output(ae,0x23);ae->nop+=2;ae->tick+=8;break;
+			case CRC_HL:___output(ae,0xCB);___output(ae,0x25);___output(ae,0xCB);___output(ae,0x14);ae->nop+=4;ae->tick+=16;break; /* SLA L : RL H */
+			case CRC_H:___output(ae,0xCB);___output(ae,0x24);ae->nop+=2;ae->tick+=8;break;
+			case CRC_L:___output(ae,0xCB);___output(ae,0x25);ae->nop+=2;ae->tick+=8;break;
+			case CRC_MHL:___output(ae,0xCB);___output(ae,0x26);ae->nop+=4;ae->tick+=15;break;
+			case CRC_A:___output(ae,0xCB);___output(ae,0x27);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x26);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x26);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SLA reg8/(HL)/(IX+n)/(IY+n)\n");
 				}
@@ -8723,17 +11362,17 @@ void _SLA(struct s_assenv *ae) {
 		} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 			___output(ae,0xFD);
 		} else {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SLL (IX+n),reg8\n");
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SLA (IX+n),reg8\n");
 		}
 		___output(ae,0xCB);
 		switch (GetCRC(ae->wl[ae->idx+2].w)) {
-			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x20);ae->nop+=7;break;
-			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x21);ae->nop+=7;break;
-			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x22);ae->nop+=7;break;
-			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x23);ae->nop+=7;break;
-			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x24);ae->nop+=7;break;
-			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x25);ae->nop+=7;break;
-			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x27);ae->nop+=7;break;
+			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x20);ae->nop+=7;ae->tick+=23;break;
+			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x21);ae->nop+=7;ae->tick+=23;break;
+			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x22);ae->nop+=7;ae->tick+=23;break;
+			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x23);ae->nop+=7;ae->tick+=23;break;
+			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x24);ae->nop+=7;ae->tick+=23;break;
+			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x25);ae->nop+=7;ae->tick+=23;break;
+			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x27);ae->nop+=7;ae->tick+=23;break;
 			default:			
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SLA (IX+n),reg8\n");
 		}
@@ -8748,28 +11387,28 @@ void _SRA(struct s_assenv *ae) {
 	/* on check qu'il y a un ou deux parametres */
 	if (ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_BC:___output(ae,0xCB);___output(ae,0x28);___output(ae,0xCB);___output(ae,0x19);ae->nop+=4;break; /* SRA B : RR C */
-			case CRC_B:___output(ae,0xCB);___output(ae,0x28);ae->nop+=2;break;
-			case CRC_C:___output(ae,0xCB);___output(ae,0x29);ae->nop+=2;break;
-			case CRC_DE:___output(ae,0xCB);___output(ae,0x2A);___output(ae,0xCB);___output(ae,0x1B);ae->nop+=4;break; /* SRA D : RR E */
-			case CRC_D:___output(ae,0xCB);___output(ae,0x2A);ae->nop+=2;break;
-			case CRC_E:___output(ae,0xCB);___output(ae,0x2B);ae->nop+=2;break;
-			case CRC_HL:___output(ae,0xCB);___output(ae,0x2C);___output(ae,0xCB);___output(ae,0x1D);ae->nop+=4;break; /* SRA H : RR L */
-			case CRC_H:___output(ae,0xCB);___output(ae,0x2C);ae->nop+=2;break;
-			case CRC_L:___output(ae,0xCB);___output(ae,0x2D);ae->nop+=2;break;
-			case CRC_MHL:___output(ae,0xCB);___output(ae,0x2E);ae->nop+=4;break;
-			case CRC_A:___output(ae,0xCB);___output(ae,0x2F);ae->nop+=2;break;
+			case CRC_BC:___output(ae,0xCB);___output(ae,0x28);___output(ae,0xCB);___output(ae,0x19);ae->nop+=4;ae->tick+=16;break; /* SRA B : RR C */
+			case CRC_B:___output(ae,0xCB);___output(ae,0x28);ae->nop+=2;ae->tick+=8;break;
+			case CRC_C:___output(ae,0xCB);___output(ae,0x29);ae->nop+=2;ae->tick+=8;break;
+			case CRC_DE:___output(ae,0xCB);___output(ae,0x2A);___output(ae,0xCB);___output(ae,0x1B);ae->nop+=4;ae->tick+=16;break; /* SRA D : RR E */
+			case CRC_D:___output(ae,0xCB);___output(ae,0x2A);ae->nop+=2;ae->tick+=8;break;
+			case CRC_E:___output(ae,0xCB);___output(ae,0x2B);ae->nop+=2;ae->tick+=8;break;
+			case CRC_HL:___output(ae,0xCB);___output(ae,0x2C);___output(ae,0xCB);___output(ae,0x1D);ae->nop+=4;ae->tick+=16;break; /* SRA H : RR L */
+			case CRC_H:___output(ae,0xCB);___output(ae,0x2C);ae->nop+=2;ae->tick+=8;break;
+			case CRC_L:___output(ae,0xCB);___output(ae,0x2D);ae->nop+=2;ae->tick+=8;break;
+			case CRC_MHL:___output(ae,0xCB);___output(ae,0x2E);ae->nop+=4;ae->tick+=15;break;
+			case CRC_A:___output(ae,0xCB);___output(ae,0x2F);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x2E);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x2E);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SRA reg8/(HL)/(IX+n)/(IY+n)\n");
 				}
@@ -8785,13 +11424,13 @@ void _SRA(struct s_assenv *ae) {
 		}
 		___output(ae,0xCB);
 		switch (GetCRC(ae->wl[ae->idx+2].w)) {
-			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x28);ae->nop+=7;break;
-			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x29);ae->nop+=7;break;
-			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2A);ae->nop+=7;break;
-			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2B);ae->nop+=7;break;
-			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2C);ae->nop+=7;break;
-			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2D);ae->nop+=7;break;
-			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2F);ae->nop+=7;break;
+			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x28);ae->nop+=7;ae->tick+=23;break;
+			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x29);ae->nop+=7;ae->tick+=23;break;
+			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2A);ae->nop+=7;ae->tick+=23;break;
+			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2B);ae->nop+=7;ae->tick+=23;break;
+			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2C);ae->nop+=7;ae->tick+=23;break;
+			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2D);ae->nop+=7;ae->tick+=23;break;
+			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x2F);ae->nop+=7;ae->tick+=23;break;
 			default:			
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SRA (IX+n),reg8\n");
 		}
@@ -8807,28 +11446,28 @@ void _SLL(struct s_assenv *ae) {
 	/* on check qu'il y a un ou deux parametres */
 	if (ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_BC:___output(ae,0xCB);___output(ae,0x31);___output(ae,0xCB);___output(ae,0x10);ae->nop+=4;break; /* SLL C : RL B */
-			case CRC_B:___output(ae,0xCB);___output(ae,0x30);ae->nop+=2;break;
-			case CRC_C:___output(ae,0xCB);___output(ae,0x31);ae->nop+=2;break;
-			case CRC_DE:___output(ae,0xCB);___output(ae,0x33);___output(ae,0xCB);___output(ae,0x12);ae->nop+=4;break; /* SLL E : RL D */
-			case CRC_D:___output(ae,0xCB);___output(ae,0x32);ae->nop+=2;break;
-			case CRC_E:___output(ae,0xCB);___output(ae,0x33);ae->nop+=2;break;
-			case CRC_HL:___output(ae,0xCB);___output(ae,0x35);___output(ae,0xCB);___output(ae,0x14);ae->nop+=4;break; /* SLL L : RL H */
-			case CRC_H:___output(ae,0xCB);___output(ae,0x34);ae->nop+=2;break;
-			case CRC_L:___output(ae,0xCB);___output(ae,0x35);ae->nop+=2;break;
-			case CRC_MHL:___output(ae,0xCB);___output(ae,0x36);ae->nop+=4;break;
-			case CRC_A:___output(ae,0xCB);___output(ae,0x37);ae->nop+=2;break;
+			case CRC_BC:___output(ae,0xCB);___output(ae,0x31);___output(ae,0xCB);___output(ae,0x10);ae->nop+=4;ae->tick+=16;break; /* SLL C : RL B */
+			case CRC_B:___output(ae,0xCB);___output(ae,0x30);ae->nop+=2;ae->tick+=8;break;
+			case CRC_C:___output(ae,0xCB);___output(ae,0x31);ae->nop+=2;ae->tick+=8;break;
+			case CRC_DE:___output(ae,0xCB);___output(ae,0x33);___output(ae,0xCB);___output(ae,0x12);ae->nop+=4;ae->tick+=16;break; /* SLL E : RL D */
+			case CRC_D:___output(ae,0xCB);___output(ae,0x32);ae->nop+=2;ae->tick+=8;break;
+			case CRC_E:___output(ae,0xCB);___output(ae,0x33);ae->nop+=2;ae->tick+=8;break;
+			case CRC_HL:___output(ae,0xCB);___output(ae,0x35);___output(ae,0xCB);___output(ae,0x14);ae->nop+=4;ae->tick+=16;break; /* SLL L : RL H */
+			case CRC_H:___output(ae,0xCB);___output(ae,0x34);ae->nop+=2;ae->tick+=8;break;
+			case CRC_L:___output(ae,0xCB);___output(ae,0x35);ae->nop+=2;ae->tick+=8;break;
+			case CRC_MHL:___output(ae,0xCB);___output(ae,0x36);ae->nop+=4;ae->tick+=15;break;
+			case CRC_A:___output(ae,0xCB);___output(ae,0x37);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x36);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x36);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SLL reg8/(HL)/(IX+n)/(IY+n)\n");
 				}
@@ -8844,13 +11483,13 @@ void _SLL(struct s_assenv *ae) {
 		}
 		___output(ae,0xCB);
 		switch (GetCRC(ae->wl[ae->idx+2].w)) {
-			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x30);ae->nop+=7;break;
-			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x31);ae->nop+=7;break;
-			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x32);ae->nop+=7;break;
-			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x33);ae->nop+=7;break;
-			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x34);ae->nop+=7;break;
-			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x35);ae->nop+=7;break;
-			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x37);ae->nop+=7;break;
+			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x30);ae->nop+=7;ae->tick+=23;break;
+			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x31);ae->nop+=7;ae->tick+=23;break;
+			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x32);ae->nop+=7;ae->tick+=23;break;
+			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x33);ae->nop+=7;ae->tick+=23;break;
+			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x34);ae->nop+=7;ae->tick+=23;break;
+			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x35);ae->nop+=7;ae->tick+=23;break;
+			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x37);ae->nop+=7;ae->tick+=23;break;
 			default:			
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SLL (IX+n),reg8\n");
 		}
@@ -8865,28 +11504,28 @@ void _SRL(struct s_assenv *ae) {
 	/* on check qu'il y a un ou deux parametres */
 	if (ae->wl[ae->idx+1].t==1) {
 		switch (GetCRC(ae->wl[ae->idx+1].w)) {
-			case CRC_BC:___output(ae,0xCB);___output(ae,0x38);___output(ae,0xCB);___output(ae,0x11);ae->nop+=4;break; /* SRL B : RL C */
-			case CRC_B:___output(ae,0xCB);___output(ae,0x38);ae->nop+=2;break;
-			case CRC_C:___output(ae,0xCB);___output(ae,0x39);ae->nop+=2;break;
-			case CRC_DE:___output(ae,0xCB);___output(ae,0x3A);___output(ae,0xCB);___output(ae,0x13);ae->nop+=4;break; /* SRL D : RL E */
-			case CRC_D:___output(ae,0xCB);___output(ae,0x3A);ae->nop+=2;break;
-			case CRC_E:___output(ae,0xCB);___output(ae,0x3B);ae->nop+=2;break;
-			case CRC_HL:___output(ae,0xCB);___output(ae,0x3C);___output(ae,0xCB);___output(ae,0x15);ae->nop+=4;break; /* SRL H : RL L */
-			case CRC_H:___output(ae,0xCB);___output(ae,0x3C);ae->nop+=2;break;
-			case CRC_L:___output(ae,0xCB);___output(ae,0x3D);ae->nop+=2;break;
-			case CRC_MHL:___output(ae,0xCB);___output(ae,0x3E);ae->nop+=4;break;
-			case CRC_A:___output(ae,0xCB);___output(ae,0x3F);ae->nop+=2;break;
+			case CRC_BC:___output(ae,0xCB);___output(ae,0x38);___output(ae,0xCB);___output(ae,0x19);ae->nop+=4;ae->tick+=16;break; /* SRL B : RR C */
+			case CRC_B:___output(ae,0xCB);___output(ae,0x38);ae->nop+=2;ae->tick+=8;break;
+			case CRC_C:___output(ae,0xCB);___output(ae,0x39);ae->nop+=2;ae->tick+=8;break;
+			case CRC_DE:___output(ae,0xCB);___output(ae,0x3A);___output(ae,0xCB);___output(ae,0x1B);ae->nop+=4;ae->tick+=16;break; /* SRL D : RR E */
+			case CRC_D:___output(ae,0xCB);___output(ae,0x3A);ae->nop+=2;ae->tick+=8;break;
+			case CRC_E:___output(ae,0xCB);___output(ae,0x3B);ae->nop+=2;ae->tick+=8;break;
+			case CRC_HL:___output(ae,0xCB);___output(ae,0x3C);___output(ae,0xCB);___output(ae,0x1D);ae->nop+=4;ae->tick+=16;break; /* SRL H : RR L */
+			case CRC_H:___output(ae,0xCB);___output(ae,0x3C);ae->nop+=2;ae->tick+=8;break;
+			case CRC_L:___output(ae,0xCB);___output(ae,0x3D);ae->nop+=2;ae->tick+=8;break;
+			case CRC_MHL:___output(ae,0xCB);___output(ae,0x3E);ae->nop+=4;ae->tick+=15;break;
+			case CRC_A:___output(ae,0xCB);___output(ae,0x3F);ae->nop+=2;ae->tick+=8;break;
 			default:
 				if (strncmp(ae->wl[ae->idx+1].w,"(IX",3)==0) {
 					___output(ae,0xDD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x3E);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else if (strncmp(ae->wl[ae->idx+1].w,"(IY",3)==0) {
 					___output(ae,0xFD);___output(ae,0xCB);
 					PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);
 					___output(ae,0x3E);
-					ae->nop+=7;
+					ae->nop+=7;ae->tick+=23;
 				} else {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SRL reg8/(HL)/(IX+n)/(IY+n)\n");
 				}
@@ -8902,13 +11541,13 @@ void _SRL(struct s_assenv *ae) {
 		}
 		___output(ae,0xCB);
 		switch (GetCRC(ae->wl[ae->idx+2].w)) {
-			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x38);ae->nop+=7;break;
-			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x39);ae->nop+=7;break;
-			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3A);ae->nop+=7;break;
-			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3B);ae->nop+=7;break;
-			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3C);ae->nop+=7;break;
-			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3D);ae->nop+=7;break;
-			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3F);ae->nop+=7;break;
+			case CRC_B:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x38);ae->nop+=7;ae->tick+=23;break;
+			case CRC_C:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x39);ae->nop+=7;ae->tick+=23;break;
+			case CRC_D:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3A);ae->nop+=7;ae->tick+=23;break;
+			case CRC_E:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3B);ae->nop+=7;ae->tick+=23;break;
+			case CRC_H:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3C);ae->nop+=7;ae->tick+=23;break;
+			case CRC_L:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3D);ae->nop+=7;ae->tick+=23;break;
+			case CRC_A:PushExpression(ae,ae->idx+1,E_EXPRESSION_IV8);___output(ae,0x3F);ae->nop+=7;ae->tick+=23;break;
 			default:			
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SRL (IX+n),reg8\n");
 		}
@@ -8933,25 +11572,25 @@ void _BIT(struct s_assenv *ae) {
 		o=0x40+o*8;
 		if (ae->wl[ae->idx+1].t==0 && ae->wl[ae->idx+2].t==1) {
 			switch (GetCRC(ae->wl[ae->idx+2].w)) {
-				case CRC_B:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=2;break;
-				case CRC_C:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=2;break;
-				case CRC_D:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=2;break;
-				case CRC_E:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=2;break;
-				case CRC_H:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=2;break;
-				case CRC_L:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=2;break;
-				case CRC_MHL:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);ae->nop+=3;break;
-				case CRC_A:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=2;break;
+				case CRC_B:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_C:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_D:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_E:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_H:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_L:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_MHL:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);ae->nop+=3;ae->tick+=12;break;
+				case CRC_A:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=2;ae->tick+=8;break;
 				default:
 					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0xCB);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
 						PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);
-						ae->nop+=6;
+						ae->nop+=6;ae->tick+=20;
 					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0xCB);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
 						PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);
-						ae->nop+=6;
+						ae->nop+=6;ae->tick+=20;
 					} else {
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is BIT n,reg8/(HL)/(IX+n)/(IY+n)\n");
 					}
@@ -8967,13 +11606,13 @@ void _BIT(struct s_assenv *ae) {
 			}
 			___output(ae,0xCB);
 			switch (GetCRC(ae->wl[ae->idx+3].w)) {
-				case CRC_B:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=6;break;
-				case CRC_C:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=6;break;
-				case CRC_D:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=6;break;
-				case CRC_E:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=6;break;
-				case CRC_H:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=6;break;
-				case CRC_L:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=6;break;
-				case CRC_A:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=6;break;
+				case CRC_B:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=6;ae->tick+=20;break;
+				case CRC_C:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=6;ae->tick+=20;break;
+				case CRC_D:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=6;ae->tick+=20;break;
+				case CRC_E:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=6;ae->tick+=20;break;
+				case CRC_H:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=6;ae->tick+=20;break;
+				case CRC_L:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=6;ae->tick+=20;break;
+				case CRC_A:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=6;ae->tick+=20;break;
 				default:			
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is BIT n,(IX+n),reg8\n");
 			}
@@ -8996,25 +11635,25 @@ void _RES(struct s_assenv *ae) {
 		o=0x80+o*8;
 		if (ae->wl[ae->idx+1].t==0 && ae->wl[ae->idx+2].t==1) {
 			switch (GetCRC(ae->wl[ae->idx+2].w)) {
-				case CRC_B:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=2;break;
-				case CRC_C:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=2;break;
-				case CRC_D:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=2;break;
-				case CRC_E:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=2;break;
-				case CRC_H:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=2;break;
-				case CRC_L:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=2;break;
-				case CRC_MHL:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);ae->nop+=4;break;
-				case CRC_A:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=2;break;
+				case CRC_B:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_C:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_D:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_E:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_H:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_L:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_MHL:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);ae->nop+=4;ae->tick+=15;break;
+				case CRC_A:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=2;ae->tick+=8;break;
 				default:
 					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0xCB);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
 						PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);
-						ae->nop+=7;
+						ae->nop+=7;ae->tick+=23;
 					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0xCB);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
 						PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);
-						ae->nop+=7;
+						ae->nop+=7;ae->tick+=23;
 					} else {
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is RES n,reg8/(HL)/(IX+n)/(IY+n)\n");
 					}
@@ -9030,13 +11669,13 @@ void _RES(struct s_assenv *ae) {
 			}
 			___output(ae,0xCB);
 			switch (GetCRC(ae->wl[ae->idx+3].w)) {
-				case CRC_B:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=7;break;
-				case CRC_C:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=7;break;
-				case CRC_D:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=7;break;
-				case CRC_E:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=7;break;
-				case CRC_H:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=7;break;
-				case CRC_L:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=7;break;
-				case CRC_A:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=7;break;
+				case CRC_B:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_C:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_D:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_E:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_H:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_L:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_A:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=7;ae->tick+=23;break;
 				default:			
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is RES n,(IX+n),reg8\n");
 			}
@@ -9059,25 +11698,25 @@ void _SET(struct s_assenv *ae) {
 		o=0xC0+o*8;
 		if (ae->wl[ae->idx+1].t==0 && ae->wl[ae->idx+2].t==1) {
 			switch (GetCRC(ae->wl[ae->idx+2].w)) {
-				case CRC_B:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=2;break;
-				case CRC_C:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=2;break;
-				case CRC_D:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=2;break;
-				case CRC_E:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=2;break;
-				case CRC_H:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=2;break;
-				case CRC_L:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=2;break;
-				case CRC_MHL:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);ae->nop+=4;break;
-				case CRC_A:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=2;break;
+				case CRC_B:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_C:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_D:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_E:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_H:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_L:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=2;ae->tick+=8;break;
+				case CRC_MHL:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);ae->nop+=4;ae->tick+=15;break;
+				case CRC_A:___output(ae,0xCB);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=2;ae->tick+=8;break;
 				default:
 					if (strncmp(ae->wl[ae->idx+2].w,"(IX",3)==0) {
 						___output(ae,0xDD);___output(ae,0xCB);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
 						PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);
-						ae->nop+=7;
+						ae->nop+=7;ae->tick+=23;
 					} else if (strncmp(ae->wl[ae->idx+2].w,"(IY",3)==0) {
 						___output(ae,0xFD);___output(ae,0xCB);
 						PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);
 						PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x6+o);
-						ae->nop+=7;
+						ae->nop+=7;ae->tick+=23;
 					} else {
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SET n,reg8/(HL)/(IX+n)/(IY+n)\n");
 					}
@@ -9093,13 +11732,13 @@ void _SET(struct s_assenv *ae) {
 			}
 			___output(ae,0xCB);
 			switch (GetCRC(ae->wl[ae->idx+3].w)) {
-				case CRC_B:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=7;break;
-				case CRC_C:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=7;break;
-				case CRC_D:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=7;break;
-				case CRC_E:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=7;break;
-				case CRC_H:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=7;break;
-				case CRC_L:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=7;break;
-				case CRC_A:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=7;break;
+				case CRC_B:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x0+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_C:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x1+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_D:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x2+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_E:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x3+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_H:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x4+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_L:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x5+o);ae->nop+=7;ae->tick+=23;break;
+				case CRC_A:PushExpression(ae,ae->idx+2,E_EXPRESSION_IV8);PushExpression(ae,ae->idx+1,E_EXPRESSION_BRS);___output(ae,0x7+o);ae->nop+=7;ae->tick+=23;break;
 				default:			
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is SET n,(IX+n),reg8\n");
 			}
@@ -9210,9 +11849,9 @@ void _STR(struct s_assenv *ae) {
 					} else {
 						/* charset conversion on the fly */
 						if (ae->wl[ae->idx].w[i+1]!=tquote) {
-							___output(ae,ae->charset[(int)ae->wl[ae->idx].w[i]]);
+							___output(ae,ae->charset[((unsigned int)ae->wl[ae->idx].w[i])&0xFF]);
 						} else {
-							___output(ae,ae->charset[(int)ae->wl[ae->idx].w[i]]|0x80);
+							___output(ae,ae->charset[((unsigned int)ae->wl[ae->idx].w[i]|0x80)&0xFF]);
 						}
 					}
 
@@ -9226,6 +11865,45 @@ void _STR(struct s_assenv *ae) {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"STR needs one or more quotes parameters\n");
 	}
 }
+
+/* Microsoft IEEE-754 40bits float value */
+void _DEFF(struct s_assenv *ae) {
+	if (!ae->wl[ae->idx].t) {
+		do {
+			ae->idx++;
+			PushExpression(ae,ae->idx,E_EXPRESSION_0VRMike);
+		} while (ae->wl[ae->idx].t==0);
+	} else {
+		if (ae->getstruct) {
+			___output(ae,0);___output(ae,0);___output(ae,0);___output(ae,0);___output(ae,0);
+		} else {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"DEFF needs one or more parameters\n");
+		}
+	}
+}
+void _DEFF_struct(struct s_assenv *ae) {
+	unsigned char *rc;
+	double v;
+	if (!ae->wl[ae->idx].t) {
+		do {
+			ae->idx++;
+			/* conversion des symboles connus */
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx].w,0);
+			/* calcul de la valeur définitive de l'expression */
+			v=ComputeExpressionCore(ae,ae->wl[ae->idx].w,ae->outputadr,0);
+			/* conversion en réel Amsdos */
+			rc=__internal_MakeRosoftREAL(ae,v,0);
+			___output(ae,rc[0]);___output(ae,rc[1]);___output(ae,rc[2]);___output(ae,rc[3]);___output(ae,rc[4]);			
+		} while (ae->wl[ae->idx].t==0);
+	} else {
+		if (ae->getstruct) {
+			___output(ae,0);___output(ae,0);___output(ae,0);___output(ae,0);___output(ae,0);
+		} else {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"DEFF needs one or more parameters\n");
+		}
+	}
+}
+
 
 void _DEFR(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
@@ -9278,20 +11956,22 @@ void _DEFB(struct s_assenv *ae) {
 						/* no conversion on escaped chars */
 						c=ae->wl[ae->idx].w[i];
 						switch (c) {
+							case 'e':___output(ae,0x1B);break;
+							case 'a':___output(ae,0x07);break; // alarm
 							case 'b':___output(ae,'\b');break;
-							case 'v':___output(ae,'\v');break;
-							case 'f':___output(ae,'\f');break;
+							case 'v':___output(ae,'\v');break; // v-tab
+							case 'f':___output(ae,'\f');break; // feed
 							case '0':___output(ae,'\0');break;
-							case 'r':___output(ae,'\r');break;
-							case 'n':___output(ae,'\n');break;
-							case 't':___output(ae,'\t');break;
+							case 'r':___output(ae,'\r');break; // return
+							case 'n':___output(ae,'\n');break; // carriage-return
+							case 't':___output(ae,'\t');break; // tab
 							default:
 							___output(ae,c);
-							ae->nop+=1;
 						}						
+						ae->nop+=1;
 					} else {
 						/* charset conversion on the fly */
-						___output(ae,ae->charset[(int)ae->wl[ae->idx].w[i]]);
+						___output(ae,ae->charset[(unsigned int)(ae->wl[ae->idx].w[i]&0xFF)]);
 						ae->nop+=1;
 					}
 					i++;
@@ -9336,7 +12016,7 @@ void _DEFB_struct(struct s_assenv *ae) {
 						}						
 					} else {
 						/* charset conversion on the fly */
-						___output(ae,ae->charset[(int)ae->wl[ae->idx].w[i]]);
+						___output(ae,ae->charset[(unsigned int)ae->wl[ae->idx].w[i]&0xFF]);
 						ae->nop+=1;
 					}
 					i++;
@@ -9436,7 +12116,7 @@ void _DEFB_as80(struct s_assenv *ae) {
 				while (ae->wl[ae->idx].w[i] && ae->wl[ae->idx].w[i]!=tquote) {
 					if (ae->wl[ae->idx].w[i]=='\\') i++;
 					/* charset conversion on the fly */
-					___output(ae,ae->charset[(int)ae->wl[ae->idx].w[i]]);
+					___output(ae,ae->charset[(unsigned int)ae->wl[ae->idx].w[i]&0xFF]);
 					ae->nop+=1;
 					ae->codeadr--;modadr++;
 					i++;
@@ -9530,14 +12210,57 @@ void _DEFSTR(struct s_assenv *ae) {
 #endif
 
 #undef FUNC
+#define FUNC "Import/Export CORE"
+
+// symbol export
+void __SYMBOL(struct s_assenv *ae) {
+}
+
+// external symbol import => declare one or more new external variables
+void __EXTERNAL(struct s_assenv *ae) {
+	struct s_external zexternal={0};
+
+	while (!ae->wl[ae->idx].t) {
+		ExpressionSetDicoVar(ae,ae->wl[ae->idx+1].w,0.0,1);
+		zexternal.name=TxtStrDup(ae->wl[ae->idx+1].w);
+		zexternal.crc=GetCRC(zexternal.name);
+		ObjectArrayAddDynamicValueConcat((void**)&ae->external,&ae->nexternal,&ae->mexternal,&zexternal,sizeof(struct s_external));
+		ae->idx++;
+	}
+}
+
+// procedure export => tag and declare a label for export
+void __PROCEDURE(struct s_assenv *ae) {
+	char *dupname;
+	int cpt=1;
+	while (!ae->wl[ae->idx].t) {
+		ae->idx++;
+		/* store procedure label */
+		dupname=TxtStrDup(ae->wl[ae->idx].w);
+		ObjectArrayAddDynamicValueConcat((void**)&ae->procedurename,&ae->nprocedurename,&ae->mprocedurename,&dupname,sizeof(char *));
+		/* push label as usual */
+		PushLabel(ae);
+		if (cpt>1) {
+			if (!ae->nowarning) {
+				rasm_printf(ae,KWARNING"[%s:%d] Warning: PROCEDURE directive is not supposed to declare more than one label\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+				if (ae->erronwarn) MaxError(ae);
+			}
+		}
+		cpt++;
+	}
+}
+
+void __ENDPROC(struct s_assenv *ae) {
+}
+
+
+
+
+#undef FUNC
 #define FUNC "Directive CORE"
 
 void __internal_UpdateLZBlockIfAny(struct s_assenv *ae) {
-	/* there was a crunched block opened in the previous bank */
-	if (ae->lz>=0) {
-		//ae->lzsection[ae->ilz-1].iorgzone=ae->io-1;
-		//ae->lzsection[ae->ilz-1].ibank=ae->activebank;
-	}
+	/* if there was a crunched block opened in the previous bank */
 	ae->lz=-1;
 }
 
@@ -9593,26 +12316,211 @@ void __ENOEXPORT(struct s_assenv *ae) {
 	__internal_EXPORT(ae,1);
 }
 
+void __BUILDOBJ(struct s_assenv *ae) {
+	if (!ae->wl[ae->idx].t) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BUILDOBJ does not need a parameter\n");
+	}
+	ae->buildobj=1;
+}
 void __BUILDZX(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BUILDZX does not need a parameter\n");
 	}
-	if (!ae->forcesnapshot && !ae->forcetape && !ae->forcecpr) {
+	if (!ae->forcesnapshot && !ae->forcetape && !ae->forcecpr && !ae->forceROM) {
+		ae->forcesnapshot=1;
 		ae->forcezx=1;
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select ZX output when already in Amstrad cartridge/snapshot/tape output\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select ZX output when already in Amstrad ROM/cartridge/snapshot/tape output\n");
 	}
 }
 void __BUILDCPR(struct s_assenv *ae) {
-	if (!ae->wl[ae->idx].t) {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BUILDCPR does not need a parameter\n");
+	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1 && strcmp(ae->wl[ae->idx+1].w,"EXTENDED")==0) {
+		ae->extendedCPR=1;
+	} else if (!ae->wl[ae->idx].t) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BUILDCPR unknown parameter\n");
 	}
-	if (!ae->forcesnapshot && !ae->forcetape && !ae->forcezx) {
+	if (!ae->forcesnapshot && !ae->forcetape && !ae->forcezx && !ae->forceROM) {
 		ae->forcecpr=1;
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select Amstrad cartridge output when already in snapshot/tape output\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select Amstrad cartridge output when already in ZX/ROM/snapshot/tape output\n");
 	}
 }
+void __BUILDROM(struct s_assenv *ae) {
+	if (!ae->forcesnapshot && !ae->forcetape && !ae->forcezx && !ae->forcecpr) {
+		if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t) {
+			if (strcmp(ae->wl[ae->idx+1].w,"CONCAT")==0) {
+				ae->forceROMconcat=1;
+			} else {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is BUILDROM [CONCAT]\n");
+			}
+		}
+		ae->forceROM=1;
+	} else {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select ROM output when already in ZX/cartridge/snapshot/tape output\n");
+	}
+}
+
+
+void __SNAPINIT(struct s_assenv *ae) {
+	unsigned char *dataout;
+	unsigned char *snapdata;
+	int src,idx,rep,i,srcmax;
+	int chunksize;
+	int version,size;
+	int snapsize;
+	int slot;
+	// integration
+	char *newfilename=NULL;
+	int fileok=0;
+
+	if (!ae->forcecpr && !ae->forcetape && !ae->forcezx && !ae->forceROM) {
+		// automatic BUILDSNA
+		ae->forcesnapshot=1;
+	}
+
+	if (!ae->wl[ae->idx].t) {
+		if (!StringIsQuote(ae->wl[ae->idx+1].w)) {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"SNAPINIT needs a snapshot filename to proceed\n");
+			return;
+		} else {
+			newfilename=TxtStrDup(ae->wl[ae->idx+1].w+1); // skip first quote
+			newfilename[strlen(newfilename)-1]=0; // remove last quote
+		}
+	} else {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"SNAPINIT needs a snapshot filename to proceed\n");
+		return;
+	}
+
+	/* Where is the file to load? */
+	if (!FileExists(newfilename)) {
+		int ilookfile;
+		char *filename_toread;
+
+		/* on cherche dans les include */
+		for (ilookfile=0;ilookfile<ae->ipath && !fileok;ilookfile++) {
+			filename_toread=MergePath(ae,ae->includepath[ilookfile],newfilename);
+			if (FileExists(filename_toread)) {
+				fileok=1;
+				MemFree(newfilename);
+				newfilename=TxtStrDup(filename_toread); // Merge renvoie un static
+			}
+		}
+	} else {
+		fileok=1;
+	}
+
+	if (fileok) {
+		snapsize=FileGetSize(newfilename);
+		snapdata=MemMalloc(snapsize);
+		if (FileReadBinary(newfilename,(char*)snapdata,snapsize)!=snapsize) {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"read error on file [%s]\n",newfilename);
+			MemFree(newfilename);
+			MemFree(snapdata);
+			return;
+		}
+		FileReadBinaryClose(newfilename);
+
+		if (snapsize<0x100) {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"file [%s] seems too small to be a snapshot\n",newfilename);
+		} else if (snapdata[0]!='M' || snapdata[1]!='V' || snapdata[2]!=' ' || snapdata[3]!='-' || snapdata[4]!=' ' || snapdata[5]!='S' || snapdata[6]!='N' || snapdata[7]!='A') {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"file [%s] invalid snapshot header\n",newfilename);
+		} else {
+		}
+	} else {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"file [%s] not found!\n",newfilename);
+		return;
+	}
+
+	// data extraction
+	size=snapdata[0x6B]*1024;
+	src=0x100;
+	switch (snapdata[0x6B]) {
+		default:
+		case 0:
+			if (snapdata[16]<3) {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"file [%s] empty snapshot v2\n",newfilename);
+				snapsize=0;
+			}
+			break;
+		case 64:
+			if (snapsize>=size+0x100) {
+				memcpy(ae->mem[0],snapdata+0x100,65536);
+				src+=65536;
+				ae->snapRAMsize=4;
+			} else {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"file [%s] snapshot v2 inconsistency (supposed to be 64k)\n",newfilename);
+				snapsize=0;
+			}
+			break;
+		case 128:
+			if (snapsize>=size+0x100) {
+				memcpy(ae->mem[0],snapdata+0x100,65536);
+				memcpy(ae->mem[4],snapdata+0x100+65536,65536);
+				src+=65536*2;
+				ae->snapRAMsize=8;
+			} else {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"file [%s] snapshot v2 inconsistency (supposed to be 128k)\n",newfilename);
+				snapsize=0;
+			}
+			break;
+	}
+
+	// raw copy of header for output (check for v2 or v3 ?)
+	memcpy(&ae->snapshot,snapdata,0x100);
+	if (ae->snapshot.version<2) {
+		rasm_printf(ae,KWARNING"[%s:%d] early version of snapshot, upgrading to V2, you may need to use SNASET to get a proper snapshot\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		ae->snapshot.version=2;
+	}
+
+	while (src+8<snapsize) {
+		chunksize=snapdata[src+4]+snapdata[src+5]*256+snapdata[src+6]*65536+snapdata[src+7]*65536*256;
+		if (snapdata[src+0]=='M' && snapdata[src+1]=='E' && snapdata[src+2]=='M') {
+			// v3 snapshot has chunk MEM%d ou MX%02X en RLE + chunksize + data
+			slot=snapdata[src+3]-'0';
+			idx=0;
+			src+=8;
+			srcmax=src+chunksize;
+			if (srcmax>snapsize) {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"file [%s] invalid chunk in snapshot (overrun) chunksize=%d\n",newfilename,chunksize);
+				break;
+			}
+
+			dataout=ae->mem[slot*4];
+
+			if (slot*4+4>ae->snapRAMsize) ae->snapRAMsize=slot*4+4;
+
+			while (idx<65536 && src<srcmax) {
+				if (snapdata[src]==0xE5) {
+					src++;
+					for (i=0;i<snapdata[src] && idx<65536;i++) {
+						dataout[idx++]=snapdata[src+1];
+					}
+					src+=2;
+				} else {
+					dataout[idx++]=snapdata[src++];
+				}
+			}
+			if (src!=srcmax) {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"file [%s] invalid chunk in snapshot (overrun)\n",newfilename);
+				break;
+			}
+		} else {
+			// skip non memory chunk
+			src+=8+chunksize;
+		}
+	}
+	// replicate bankset in memory to be ok with bankset rebuilding
+	memcpy(ae->mem[1],ae->mem[0],65536);
+	memcpy(ae->mem[2],ae->mem[0],65536);
+	memcpy(ae->mem[3],ae->mem[0],65536);
+	memcpy(ae->mem[5],ae->mem[4],65536);
+	memcpy(ae->mem[6],ae->mem[4],65536);
+	memcpy(ae->mem[7],ae->mem[4],65536);
+	MemFree(newfilename);
+	MemFree(snapdata);
+}
+
+
 void __BUILDSNA(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
 		if (strcmp(ae->wl[ae->idx+1].w,"V2")==0) {
@@ -9621,34 +12529,113 @@ void __BUILDSNA(struct s_assenv *ae) {
 			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BUILDSNA unrecognized option\n");
 		}
 	}
-	if (!ae->forcecpr && !ae->forcetape && !ae->forcezx) {
+	if (!ae->forcecpr && !ae->forcetape && !ae->forcezx && !ae->forceROM) {
 		ae->forcesnapshot=1;
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select snapshot output when already in cartridge/tape output\n");
-	}
-}
-void __BUILDROM(struct s_assenv *ae) {
-	if (!ae->wl[ae->idx].t) {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BUILDROM does not need a parameter\n");
-	}
-	if (!ae->forcesnapshot && !ae->forcetape && !ae->forcezx && !ae->forcecpr) {
-		ae->forceROM=1;
-	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select Amstrad ROM output when already in snapshot/tape/zx/cartridge output\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select snapshot output when already in ZX/ROM/cartridge/tape output\n");
 	}
 }
 void __BUILDTAPE(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BUILDTAPE does not need a parameter\n");
 	}
-	if (!ae->forcesnapshot && !ae->forcecpr && !ae->forcezx) {
+	if (!ae->forcesnapshot && !ae->forcecpr && !ae->forcezx && !ae->forceROM) {
 		ae->forcetape=1;
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select tape output when already in snapshot/cartridge output\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select tape output when already in ZX/ROM/snapshot/cartridge output\n");
 	}
 }
 	
 
+void __LZSA1(struct s_assenv *ae) {
+	struct s_lz_section curlz={0};
+	
+	if (!ae->wl[ae->idx].t) {
+		ae->idx++;
+		curlz.minmatch=atoi(ae->wl[ae->idx].w);
+		if (!ae->wl[ae->idx].t) {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LZSA1 directive may only have 1 parameter\n");
+		}
+	}
+	#ifdef NO_3RD_PARTIES
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n");
+		FreeAssenv(ae);
+		exit(-5);
+	#endif
+	
+	if (ae->lz>=0 && ae->lz<ae->ilz && ae->lzsection[ae->ilz-1].lzversion) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",ae->lz);
+		FreeAssenv(ae);
+		exit(-5);
+	}
+	curlz.version=1;
+	curlz.iw=ae->idx;
+	curlz.iorgzone=ae->io-1;
+	curlz.ibank=ae->activebank;
+	curlz.memstart=ae->outputadr;
+	curlz.memend=-1;
+	curlz.lzversion=18;
+	ae->lz=ae->ilz;
+	ObjectArrayAddDynamicValueConcat((void**)&ae->lzsection,&ae->ilz,&ae->mlz,&curlz,sizeof(curlz));
+}
+void __LZSA2(struct s_assenv *ae) {
+	struct s_lz_section curlz={0};
+	
+	if (!ae->wl[ae->idx].t) {
+		ae->idx++;
+		curlz.minmatch=atoi(ae->wl[ae->idx].w);
+		if (!ae->wl[ae->idx].t) {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LZSA2 directive may only have 1 parameter\n");
+		}
+	}
+	#ifdef NO_3RD_PARTIES
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n");
+		FreeAssenv(ae);
+		exit(-5);
+	#endif
+	
+	if (ae->lz>=0 && ae->lz<ae->ilz && ae->lzsection[ae->ilz-1].lzversion) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",ae->lz);
+		FreeAssenv(ae);
+		exit(-5);
+	}
+	curlz.version=2;
+	curlz.iw=ae->idx;
+	curlz.iorgzone=ae->io-1;
+	curlz.ibank=ae->activebank;
+	curlz.memstart=ae->outputadr;
+	curlz.memend=-1;
+	curlz.lzversion=18;
+	ae->lz=ae->ilz;
+	ObjectArrayAddDynamicValueConcat((void**)&ae->lzsection,&ae->ilz,&ae->mlz,&curlz,sizeof(curlz));
+}
+void __LZAPU(struct s_assenv *ae) {
+	struct s_lz_section curlz;
+	
+	if (!ae->wl[ae->idx].t) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LZ directive does not need any parameter\n");
+		return;
+	}
+	#ifdef NO_3RD_PARTIES
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n");
+		FreeAssenv(ae);
+		exit(-5);
+	#endif
+	
+	if (ae->lz>=0 && ae->lz<ae->ilz && ae->lzsection[ae->ilz-1].lzversion) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",ae->lz);
+		FreeAssenv(ae);
+		exit(-5);
+	}
+	curlz.iw=ae->idx;
+	curlz.iorgzone=ae->io-1;
+	curlz.ibank=ae->activebank;
+	curlz.memstart=ae->outputadr;
+	curlz.memend=-1;
+	curlz.lzversion=17;
+	ae->lz=ae->ilz;
+	ObjectArrayAddDynamicValueConcat((void**)&ae->lzsection,&ae->ilz,&ae->mlz,&curlz,sizeof(curlz));
+}
 void __LZ4(struct s_assenv *ae) {
 	struct s_lz_section curlz;
 	
@@ -9657,13 +12644,13 @@ void __LZ4(struct s_assenv *ae) {
 		return;
 	}
 	#ifdef NO_3RD_PARTIES
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n");
 		FreeAssenv(ae);
 		exit(-5);
 	#endif
 	
-	if (ae->lz>=0 && ae->lz<ae->ilz) {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",GetCurrentFile(ae),ae->wl[ae->idx].l,ae->lz);
+	if (ae->lz>=0 && ae->lz<ae->ilz && ae->lzsection[ae->ilz-1].lzversion) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",ae->lz);
 		FreeAssenv(ae);
 		exit(-5);
 	}
@@ -9676,6 +12663,62 @@ void __LZ4(struct s_assenv *ae) {
 	ae->lz=ae->ilz;
 	ObjectArrayAddDynamicValueConcat((void**)&ae->lzsection,&ae->ilz,&ae->mlz,&curlz,sizeof(curlz));
 }
+void __LZX0(struct s_assenv *ae) {
+	struct s_lz_section curlz;
+
+	if (!ae->wl[ae->idx].t) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LZ directive does not need any parameter\n");
+		return;
+	}
+	#ifdef NO_3RD_PARTIES
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n");
+		FreeAssenv(ae);
+		exit(-5);
+	#endif
+	
+	if (ae->lz>=0 && ae->lz<ae->ilz && ae->lzsection[ae->ilz-1].lzversion) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",ae->lz);
+		FreeAssenv(ae);
+		exit(-5);
+	}
+	curlz.version=MAX_OFFSET_ZX0;
+	curlz.iw=ae->idx;
+	curlz.iorgzone=ae->io-1;
+	curlz.ibank=ae->activebank;
+	curlz.memstart=ae->outputadr;
+	curlz.memend=-1;
+	curlz.lzversion=70;
+	ae->lz=ae->ilz;
+	ObjectArrayAddDynamicValueConcat((void**)&ae->lzsection,&ae->ilz,&ae->mlz,&curlz,sizeof(curlz));
+}
+void __LZX0B(struct s_assenv *ae) {
+	struct s_lz_section curlz;
+	
+	if (!ae->wl[ae->idx].t) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LZ directive does not need any parameter\n");
+		return;
+	}
+	#ifdef NO_3RD_PARTIES
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n");
+		FreeAssenv(ae);
+		exit(-5);
+	#endif
+	
+	if (ae->lz>=0 && ae->lz<ae->ilz && ae->lzsection[ae->ilz-1].lzversion) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",ae->lz);
+		FreeAssenv(ae);
+		exit(-5);
+	}
+	curlz.version=MAX_OFFSET_ZX0;
+	curlz.iw=ae->idx;
+	curlz.iorgzone=ae->io-1;
+	curlz.ibank=ae->activebank;
+	curlz.memstart=ae->outputadr;
+	curlz.memend=-1;
+	curlz.lzversion=71;
+	ae->lz=ae->ilz;
+	ObjectArrayAddDynamicValueConcat((void**)&ae->lzsection,&ae->ilz,&ae->mlz,&curlz,sizeof(curlz));
+}
 void __LZX7(struct s_assenv *ae) {
 	struct s_lz_section curlz;
 	
@@ -9684,13 +12727,13 @@ void __LZX7(struct s_assenv *ae) {
 		return;
 	}
 	#ifdef NO_3RD_PARTIES
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n");
 		FreeAssenv(ae);
 		exit(-5);
 	#endif
 	
-	if (ae->lz>=0 && ae->lz<ae->ilz) {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",GetCurrentFile(ae),ae->wl[ae->idx].l,ae->lz);
+	if (ae->lz>=0 && ae->lz<ae->ilz && ae->lzsection[ae->ilz-1].lzversion) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",ae->lz);
 		FreeAssenv(ae);
 		exit(-5);
 	}
@@ -9711,13 +12754,13 @@ void __LZEXO(struct s_assenv *ae) {
 		return;
 	}
 	#ifdef NO_3RD_PARTIES
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot use 3rd parties cruncher with this version of RASM\n");
 		FreeAssenv(ae);
 		exit(-5);
 	#endif
 	
-	if (ae->lz>=0 && ae->lz<ae->ilz) {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",GetCurrentFile(ae),ae->wl[ae->idx].l,ae->lz);
+	if (ae->lz>=0 && ae->lz<ae->ilz && ae->lzsection[ae->ilz-1].lzversion) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",ae->lz);
 		FreeAssenv(ae);
 		exit(-5);
 	}
@@ -9737,8 +12780,8 @@ void __LZ48(struct s_assenv *ae) {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LZ directive does not need any parameter\n");
 		return;
 	}
-	if (ae->lz>=0 && ae->lz<ae->ilz) {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",GetCurrentFile(ae),ae->wl[ae->idx].l,ae->lz);
+	if (ae->lz>=0 && ae->lz<ae->ilz && ae->lzsection[ae->ilz-1].lzversion) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",ae->lz);
 		FreeAssenv(ae);
 		exit(-5);
 	}
@@ -9758,8 +12801,8 @@ void __LZ49(struct s_assenv *ae) {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LZ directive does not need any parameter\n");
 		return;
 	}
-	if (ae->lz>=0 && ae->lz<ae->ilz) {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",GetCurrentFile(ae),ae->wl[ae->idx].l,ae->lz);
+	if (ae->lz>=0 && ae->lz<ae->ilz && ae->lzsection[ae->ilz-1].lzversion) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot start a new LZ section inside another one (%d)\n",ae->lz);
 		FreeAssenv(ae);
 		exit(-5);
 	}
@@ -9774,6 +12817,8 @@ void __LZ49(struct s_assenv *ae) {
 	ObjectArrayAddDynamicValueConcat((void**)&ae->lzsection,&ae->ilz,&ae->mlz,&curlz,sizeof(curlz));
 }
 void __LZCLOSE(struct s_assenv *ae) {
+	struct s_lz_section curlz;
+
 	if (!ae->ilz || ae->lz==-1) {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot close LZ section as it wasn't opened\n");
 		return;
@@ -9782,8 +12827,17 @@ void __LZCLOSE(struct s_assenv *ae) {
 	ae->lzsection[ae->ilz-1].memend=ae->outputadr;
 	ae->lzsection[ae->ilz-1].ilabel=ae->il;
 	ae->lzsection[ae->ilz-1].iexpr=ae->ie;
-	//ae->lz=ae->ilz;
-	ae->lz=-1;
+	// commentaire
+	curlz.iw=ae->idx;
+	curlz.iorgzone=ae->io-1;
+	curlz.ibank=ae->activebank;
+	curlz.memstart=ae->outputadr;
+	curlz.memend=-1;
+	curlz.lzversion=0; // intermediate zone
+	ae->lz=ae->ilz;
+	ObjectArrayAddDynamicValueConcat((void**)&ae->lzsection,&ae->ilz,&ae->mlz,&curlz,sizeof(curlz));
+
+	//ae->lz=-1;
 }
 
 void __LIMIT(struct s_assenv *ae) {
@@ -9840,7 +12894,10 @@ void ___new_memory_space(struct s_assenv *ae)
 		ae->orgzone[ae->io-1].memend=ae->outputadr;
 	}
 	if (ae->lz>=0) {
-		if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: LZ section wasn't closed before a new memory space directive\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: LZ section wasn't closed before a new memory space directive\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
 		__LZCLOSE(ae);
 	}
 	ae->activebank=ae->nbbank;
@@ -9853,6 +12910,7 @@ void ___new_memory_space(struct s_assenv *ae)
 	orgzone.memstart=0;
 	orgzone.ibank=ae->activebank;
 	orgzone.nocode=ae->nocode=0;
+	orgzone.inplace=1;
 	ObjectArrayAddDynamicValueConcat((void**)&ae->orgzone,&ae->io,&ae->mo,&orgzone,sizeof(orgzone));
 
 	OverWriteCheck(ae);
@@ -9874,6 +12932,7 @@ void __BANK(struct s_assenv *ae) {
 	}
 	
 	ae->bankmode=1;
+	/* using BANK without build mode will select cartridge output as default */
 	if (!ae->forceROM && !ae->forcecpr && !ae->forcesnapshot && !ae->forcezx) ae->forcecpr=1;
 
 	if (ae->wl[ae->idx+1].t!=2) {
@@ -9889,20 +12948,24 @@ void __BANK(struct s_assenv *ae) {
 			ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
 			ae->activebank=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,0);
 		}
-		if (ae->forcecpr && (ae->activebank<0 || ae->activebank>31)) {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank selection must be from 0 to 31 in cartridge mode\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		if (ae->forcecpr && (ae->activebank<0 || ae->activebank>31) && !ae->extendedCPR) {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank selection must be from 0 to 31 in cartridge mode\n");
+			FreeAssenv(ae);
+			exit(2);
+		} else if (ae->extendedCPR && (ae->activebank<0 || ae->activebank>256) && !ae->extendedCPR) {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank selection must be from 0 to 256 in extended cartridge mode\n");
 			FreeAssenv(ae);
 			exit(2);
 		} else if (ae->forcezx && (ae->activebank<0 || ae->activebank>7)) {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank selection must be from 0 to 7 in ZX Spectrum mode\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank selection must be from 0 to 7 in ZX Spectrum mode\n");
 			FreeAssenv(ae);
 			exit(2);
 		} else if (ae->forceROM && (ae->activebank<0 || ae->activebank>=256)) {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank selection must be from 0 to 255 in ROM mode\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank selection must be from 0 to 255 in ROM mode\n");
 			FreeAssenv(ae);
 			exit(2);
 		} else if (ae->forcesnapshot && (ae->activebank<0 || ae->activebank>=260)) {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank selection must be from 0 to 259 in snapshot mode\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank selection must be from 0 to 259 in snapshot mode\n");
 			FreeAssenv(ae);
 			exit(2);
 		}
@@ -9920,7 +12983,10 @@ void __BANK(struct s_assenv *ae) {
 		return;
 	}
 	if (ae->lz>=0) {
-		if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: LZ section wasn't closed before a new BANK directive\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: LZ section wasn't closed before a new BANK directive\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
 		__LZCLOSE(ae);
 	}
 
@@ -9945,11 +13011,11 @@ void __BANK(struct s_assenv *ae) {
 
 void __BANKSET(struct s_assenv *ae) {
 	struct s_orgzone orgzone={0};
-	int ibank;
+	int ibank,i;
 
 	__internal_UpdateLZBlockIfAny(ae);
 
-	if (!ae->forcesnapshot && !ae->forcecpr && !ae->forcezx) ae->forcesnapshot=1;
+	if (!ae->forcesnapshot && !ae->forcecpr && !ae->forcezx && !ae->forceROM) ae->forcesnapshot=1;
 	if (!ae->forcesnapshot) {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BANKSET directive is specific to snapshot output\n");
 		return;
@@ -9965,26 +13031,37 @@ void __BANKSET(struct s_assenv *ae) {
 		ae->activebank=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,0);
 		ae->activebank*=4;
 		if (ae->forcesnapshot && (ae->activebank<0 || ae->activebank>=260)) {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank set selection must be from 0 to 64 in snapshot mode\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"FATAL - Bank set selection must be from 0 to 64 in snapshot mode\n");
 			FreeAssenv(ae);
 			exit(2);
 		}
 		/* control */
 		ibank=ae->activebank;
-		if (ae->bankused[ibank] || ae->bankused[ibank+1]|| ae->bankused[ibank+2]|| ae->bankused[ibank+3]) {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot BANKSET because bank %d was already selected in single page mode\n",ibank);
-			ae->idx++;
-			return;
-		} else {	
-			ae->bankset[ae->activebank/4]=1; /* pas très heureux mais bon... */
-		}
+		if (!ae->bankset[ibank>>2]) {
+			if (ae->bankused[ibank] || ae->bankused[ibank+1]|| ae->bankused[ibank+2]|| ae->bankused[ibank+3]) {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot BANKSET because bank %d was already selected in single page mode\n",ibank);
+				ae->idx++;
+				return;
+			} else {
+				/* in case of EMURAM, rebuild bankset with existing data (this is done only once) */
+				ae->bankset[ibank>>2]=1;
+				for (i=16384;i<32768;i++) {
+					ae->mem[ibank][i]=ae->mem[ibank+1][i];
+					ae->mem[ibank][i+16384]=ae->mem[ibank+2][i+16384];
+					ae->mem[ibank][i+32768]=ae->mem[ibank+3][i+32768];
+				}
+			}
+		} 
 		ae->idx++;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BANKSET directive need one integer parameter\n");
 		return;
 	}
 	if (ae->lz>=0) {
-		if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: LZ section wasn't closed before a new BANKSET directive\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: LZ section wasn't closed before a new BANKSET directive\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
 		__LZCLOSE(ae);
 	}
 
@@ -10052,7 +13129,10 @@ void __WRITE(struct s_assenv *ae) {
 				__BANK(ae);	
 				ok=1;
 			} else {
-				if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: WRITE DIRECT lower ROM ignored (value %d out of bounds 0-7)\n",GetCurrentFile(ae),ae->wl[ae->idx].l,lower);
+				if (!ae->nowarning) {
+					rasm_printf(ae,KWARNING"[%s:%d] Warning: WRITE DIRECT lower ROM ignored (value %d out of bounds 0-7)\n",GetCurrentFile(ae),ae->wl[ae->idx].l,lower);
+					if (ae->erronwarn) MaxError(ae);
+				}
 			}
 		} else if (upper!=-1) {
 			if (upper>=0 && ((ae->forcecpr && upper<32) || (ae->forcesnapshot && upper<BANK_MAX_NUMBER))) {
@@ -10061,15 +13141,24 @@ void __WRITE(struct s_assenv *ae) {
 				ok=1;
 			} else {
 				if (!ae->forcecpr && !ae->forcesnapshot) {
-					if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: WRITE DIRECT select a ROM without cartridge output\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: WRITE DIRECT select a ROM without cartridge output\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+						if (ae->erronwarn) MaxError(ae);
+					}
 				} else {
-					if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: WRITE DIRECT upper ROM ignored (value %d out of bounds 0-31)\n",GetCurrentFile(ae),ae->wl[ae->idx].l,upper);
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: WRITE DIRECT upper ROM ignored (value %d out of bounds 0-31)\n",GetCurrentFile(ae),ae->wl[ae->idx].l,upper);
+						if (ae->erronwarn) MaxError(ae);
+					}
 				}
 			}
 		} else if (bank!=-1) {
 			/* selection de bank on ouvre un nouvel espace */
 		} else {
-			if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: meaningless WRITE DIRECT\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (!ae->nowarning) {
+				rasm_printf(ae,KWARNING"[%s:%d] Warning: meaningless WRITE DIRECT\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+				if (ae->erronwarn) MaxError(ae);
+			}
 		}
 	}
 	while (!ae->wl[ae->idx].t) ae->idx++;
@@ -10094,7 +13183,7 @@ void __CHARSET(struct s_assenv *ae) {
 				i=1;
 				while (ae->wl[ae->idx+1].w[i] && ae->wl[ae->idx+1].w[i]!=tquote) {
 					if (ae->wl[ae->idx+1].w[i]=='\\') i++;
-					ae->charset[(int)ae->wl[ae->idx+1].w[i]]=(unsigned char)v++;
+					ae->charset[(unsigned int)ae->wl[ae->idx+1].w[i]&0xFF]=(unsigned char)v++;
 					i++;
 				}
 			} else {
@@ -10123,12 +13212,47 @@ void __CHARSET(struct s_assenv *ae) {
 				ae->charset[i]=(unsigned char)v++;
 			}
 		} else {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CHARSET winape directive wrong interval value\n");
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CHARSET Winape directive wrong interval value\n");
 		}
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CHARSET winape directive wrong parameter count\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CHARSET Winape directive wrong parameter count\n");
 	}
 }
+
+void PushGlobal(struct s_assenv *ae) {
+	char *zelast;
+	if (ae->lastgloballabel) zelast=TxtStrDup(ae->lastgloballabel); else zelast=NULL;
+	ObjectArrayAddDynamicValueConcat((void **)&ae->globalstack,&ae->igs,&ae->mgs,&zelast,sizeof(char *));
+
+#if TRACE_LABEL
+printf("==> PushGlobal on Stack [%s] igs=%d\n",zelast,ae->igs);
+#endif
+}
+
+void PopGlobal(struct s_assenv *ae) {
+	if (ae->igs) {
+		ae->igs--;
+#if TRACE_LABEL
+printf("<== PopGlobal on Stack [%s] igs=%d\n",ae->globalstack[ae->igs],ae->igs+1);
+#endif
+		if (ae->lastglobalalloc) MemFree(ae->lastgloballabel);
+
+		if (ae->globalstack[ae->igs]) {
+			ae->lastgloballabel=TxtStrDup(ae->globalstack[ae->igs]);
+			ae->lastgloballabellen=strlen(ae->lastgloballabel);
+			ae->lastglobalalloc=1;
+		} else {
+			ae->lastgloballabel=NULL;
+			ae->lastgloballabellen=0;
+			ae->lastglobalalloc=0;
+		}
+
+		if (ae->globalstack[ae->igs]) MemFree(ae->globalstack[ae->igs]);
+	} else {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"PopGlobal INTERNAL ERROR / Please report\n");
+	}
+}
+
 
 void __MACRO(struct s_assenv *ae) {
 	struct s_macro curmacro={0};
@@ -10144,9 +13268,27 @@ void __MACRO(struct s_assenv *ae) {
 			getparam=0;
 		}
 		/* overload forbidden */
+		/* macro, keywords and directives forbidden */
 		if (SearchMacro(ae,curmacro.crc,curmacro.mnemo)>=0) {
 			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Macro already defined with this name\n");
+		} else {
+			if ((SearchDico(ae,ae->wl[ae->idx+1].w,curmacro.crc))!=NULL) {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Macro definition: There is already a variable with this name\n");
+			} else {
+				if ((SearchLabel(ae,ae->wl[ae->idx+1].w,curmacro.crc))!=NULL) {
+					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Macro definition: There is already a label with this name\n");
+				} else {
+					if ((SearchAlias(ae,curmacro.crc,ae->wl[ae->idx+1].w))!=-1) {
+						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Macro definition: There is already an alias with this name\n");
+					} else {
+						if (IsRegister(curmacro.mnemo)) {
+							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Macro definition: Cannot choose a register as macro name\n");
+						}
+					}
+				}
+			}
 		}
+
 		idx=ae->idx+2;
 		while (ae->wl[idx].t!=2 && (GetCRC(ae->wl[idx].w)!=CRC_MEND || strcmp(ae->wl[idx].w,"MEND")!=0) && (GetCRC(ae->wl[idx].w)!=CRC_ENDM || strcmp(ae->wl[idx].w,"ENDM")!=0)) {
 			if (GetCRC(ae->wl[idx].w)==CRC_MACRO || strcmp(ae->wl[idx].w,"MACRO")==0) {
@@ -10190,7 +13332,7 @@ void __MACRO(struct s_assenv *ae) {
 		if (ae->wl[idx].t==2) idx--;
 		ae->idx=idx;
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"MACRO definition need at least one parameter\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"MACRO definition need at least one parameter for the name of the macro\n");
 	}
 }
 
@@ -10219,10 +13361,6 @@ struct s_wordlist *__MACRO_EXECUTE(struct s_assenv *ae, int imacro) {
 		} else {
 			if (ae->macrovoid) {
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"MACRO [%s] used without (void) and option -void used!\n",ae->macro[imacro].mnemo);
-				while (!ae->wl[ae->idx].t) {
-					ae->idx++;
-				}
-				ae->idx++;
 			}
 		}
 	}
@@ -10280,10 +13418,26 @@ struct s_wordlist *__MACRO_EXECUTE(struct s_assenv *ae, int imacro) {
 			for (i=0;i<nbparam;i++) {
 				cpybackup[i]=ae->wl[ae->idx+1+i];
 			}
-			/* insert macro position */
+			/************************
+			  insert macro position
+			*************************/
 			curmacropos.start=ae->idx;
 			curmacropos.end=ae->idx+ae->macro[imacro].nbword;
 			curmacropos.value=ae->macrocounter;
+			/* which level? */
+			curmacropos.pushed=0;
+			if (!ae->imacropos) {
+				curmacropos.level=1;
+			} else {
+				if (ae->macropos[ae->imacropos-1].end<=curmacropos.start) {
+					/* same level */
+					curmacropos.level=ae->macropos[ae->imacropos-1].level;
+				} else {
+					/* inception */
+					curmacropos.level=ae->macropos[ae->imacropos-1].level+1;
+				}
+			}
+
 			ObjectArrayAddDynamicValueConcat((void**)&ae->macropos,&ae->imacropos,&ae->mmacropos,&curmacropos,sizeof(curmacropos));
 			
 			/* are we in a repeat/while block? */
@@ -10333,11 +13487,32 @@ struct s_wordlist *__MACRO_EXECUTE(struct s_assenv *ae, int imacro) {
 							if (ae->wl[j].w[lm]=='{') touched++; else if (ae->wl[j].w[lm]=='}') touched--; else if (touched) ae->wl[j].w[lm]=toupper(ae->wl[j].w[lm]);
 						}
 					}
+//printf("MACRO_EXECUTE word[%d]=[%s] param[%d]=[%s] cpybackup[%d]=[%s]\n",j,ae->wl[j].w,i,ae->macro[imacro].param[i],i,cpybackup[i].w);
 					ae->wl[j].w=TxtReplace(ae->wl[j].w,ae->macro[imacro].param[i],cpybackup[i].w,0);
 				}
 				MemFree(cpybackup[i].w);
 			}
 			MemFree(cpybackup);
+
+			/* look for specific tags */
+			for (j=idx;j<idx+ae->macro[imacro].nbword;j++) {
+				switch (GetCRC(ae->wl[j].w)) {
+					case CRC_AF_HIGH:if (strcmp(ae->wl[j].w,"AF.HIGH")==0) strcpy(ae->wl[j].w,"A");break;
+					case CRC_AF_LOW: if (strcmp(ae->wl[j].w,"AF.LOW")==0) strcpy(ae->wl[j].w,"F");break;
+					case CRC_BC_HIGH:if (strcmp(ae->wl[j].w,"BC.HIGH")==0) strcpy(ae->wl[j].w,"B");break;
+					case CRC_BC_LOW: if (strcmp(ae->wl[j].w,"BC.LOW")==0) strcpy(ae->wl[j].w,"C");break;
+					case CRC_DE_HIGH:if (strcmp(ae->wl[j].w,"DE.HIGH")==0) strcpy(ae->wl[j].w,"D");break;
+					case CRC_DE_LOW: if (strcmp(ae->wl[j].w,"DE.LOW")==0) strcpy(ae->wl[j].w,"E");break;
+					case CRC_HL_HIGH:if (strcmp(ae->wl[j].w,"HL.HIGH")==0) strcpy(ae->wl[j].w,"H");break;
+					case CRC_HL_LOW: if (strcmp(ae->wl[j].w,"HL.LOW")==0) strcpy(ae->wl[j].w,"L");break;
+					case CRC_IX_HIGH:if (strcmp(ae->wl[j].w,"IX.HIGH")==0) strcpy(ae->wl[j].w,"XH");break;
+					case CRC_IX_LOW: if (strcmp(ae->wl[j].w,"IX.LOW")==0) strcpy(ae->wl[j].w,"XL");break;
+					case CRC_IY_HIGH:if (strcmp(ae->wl[j].w,"IY.HIGH")==0) strcpy(ae->wl[j].w,"YH");break;
+					case CRC_IY_LOW: if (strcmp(ae->wl[j].w,"IY.LOW")==0) strcpy(ae->wl[j].w,"YL");break;
+					default:break;
+				}
+			}
+
 			/* macro replaced, need to rollback index */
 			//ae->idx--;
 		}
@@ -10373,7 +13548,8 @@ void __TICKER(struct s_assenv *ae) {
 				ObjectArrayAddDynamicValueConcat((void **)&ae->ticker,&ae->iticker,&ae->mticker,&ticker,sizeof(struct s_ticker));
 			}
 			ae->ticker[i].nopstart=ae->nop;
-		} else if (strcmp(ae->wl[ae->idx+1].w,"STOP")==0) {
+			ae->ticker[i].tickerstart=ae->tick;
+		} else if (strncmp(ae->wl[ae->idx+1].w,"STOP",4)==0) {
 			for (i=0;i<ae->iticker;i++) {
 				if (ae->ticker[i].crc==crc && strcmp(ae->wl[ae->idx+2].w,ae->ticker[i].varname)==0) {
 					break;
@@ -10383,20 +13559,22 @@ void __TICKER(struct s_assenv *ae) {
 				/* set var */
 				if ((tvar=SearchDico(ae,ae->wl[ae->idx+2].w,crc))!=NULL) {
 					/* compute nop count */
-					tvar->v=ae->nop-ae->ticker[i].nopstart;
+					if (ae->wl[ae->idx+1].w[4]=='Z') tvar->v=ae->tick-ae->ticker[i].tickerstart;
+					else tvar->v=ae->nop-ae->ticker[i].nopstart;
 				} else {
 					/* create var with nop count */
-					ExpressionSetDicoVar(ae,ae->wl[ae->idx+2].w,ae->nop-ae->ticker[i].nopstart);
+					if (ae->wl[ae->idx+1].w[4]=='Z') ExpressionSetDicoVar(ae,ae->wl[ae->idx+2].w,ae->tick-ae->ticker[i].tickerstart,0);
+					else ExpressionSetDicoVar(ae,ae->wl[ae->idx+2].w,ae->nop-ae->ticker[i].nopstart,0);
 				}
 			} else {
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"TICKER not found\n");
 			}
 		} else {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is TICKER start/stop,<variable>\n");
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is TICKER start/stop(z),<variable>\n");
 		}
 		ae->idx+=2;
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is TICKER start/stop,<variable>\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is TICKER start/stop(z),<variable>\n");
 	}
 }
 
@@ -10406,7 +13584,7 @@ void __LET(struct s_assenv *ae) {
 		ExpressionFastTranslate(ae,&ae->wl[ae->idx].w,0);
 		RoundComputeExpression(ae,ae->wl[ae->idx].w,ae->codeadr,0,0);
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LET useless winape directive need one expression\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LET useless Winape directive need one expression\n");
 	}
 }
 
@@ -10416,13 +13594,13 @@ void __RUN(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
 		ae->current_run_idx=ae->idx+1;
 		if (ae->forcezx) {
+			PushExpression(ae,ae->idx+1,E_EXPRESSION_ZXRUN); // delayed RUN value
+			ae->idx++;
 			if (!ae->wl[ae->idx].t) {
-				PushExpression(ae,ae->idx+1,E_EXPRESSION_ZXRUN); // delayed RUN value
-				PushExpression(ae,ae->idx+2,E_EXPRESSION_ZXSTACK); // delayed STACK value
-				ae->idx+=2;
-			} else {
+				PushExpression(ae,ae->idx+1,E_EXPRESSION_ZXSTACK); // delayed STACK value
 				ae->idx++;
-				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is RUN <adress>,<stack> (ZX mode)\n");
+			} else {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is RUN <address>,<stack> (ZX mode, you must set address+stack)\n");
 			}
 		} else {
 			PushExpression(ae,ae->idx+1,E_EXPRESSION_RUN); // delayed RUN value
@@ -10432,16 +13610,23 @@ void __RUN(struct s_assenv *ae) {
 				ramconf=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,0);
 				ae->idx++;
 				if (ramconf<0xC0 || ramconf>0xFF) {
-					if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: ram configuration out of bound %X forced to #C0\n",GetCurrentFile(ae),ae->wl[ae->idx].l,ramconf);
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: ram configuration out of bound %X forced to #C0\n",GetCurrentFile(ae),ae->wl[ae->idx].l,ramconf);
+						if (ae->erronwarn) MaxError(ae);
+					}
+					ramconf=0xC0;
 				}
+				ae->snapshot.ramconfiguration=ramconf;
 			}
 		}
 	} else {
-		if (ae->forcezx) MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is RUN <adress>,<stack> (ZX mode)\n");
-		else MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is RUN <adress>[,<ppi>]\n");
+		if (ae->forcezx) MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is RUN <address>,<stack> (ZX mode)\n");
+		else MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is RUN <address>[,<ppi>]\n");
 	}
-	ae->snapshot.ramconfiguration=ramconf;
-	if (ae->rundefined && !ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: run adress redefinition\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+	if (ae->rundefined && !ae->nowarning) {
+		rasm_printf(ae,KWARNING"[%s:%d] Warning: run address redefinition\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		if (ae->erronwarn) MaxError(ae);
+	}
 	ae->rundefined=1;
 }
 void __BREAKPOINT(struct s_assenv *ae) {
@@ -10455,16 +13640,224 @@ void __BREAKPOINT(struct s_assenv *ae) {
 		breakpoint.address=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,0);
 		ObjectArrayAddDynamicValueConcat((void **)&ae->breakpoint,&ae->ibreakpoint,&ae->maxbreakpoint,&breakpoint,sizeof(struct s_breakpoint));
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is BREAKPOINT [adress]\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is BREAKPOINT [address]\n");
 	}
 }
+
+void __SNASET(struct s_assenv *ae) {
+	int myvalue,idx;
+
+	if (!ae->forcecpr && !ae->forcetape && !ae->forcezx && !ae->forceROM) {
+		ae->forcesnapshot=1;
+	} else {
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: Cannot SNASET when already in ZX/ROM/cartridge/tape output\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
+	}
+
+	if (!ae->wl[ae->idx].t) {
+		ae->idx++;
+		/* TWO parameters */
+		if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
+			/* parameter value */
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
+			myvalue=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,0);
+
+			/* Z80 register/value */
+			if (strcmp(ae->wl[ae->idx].w,"Z80_AF")==0) {
+				ae->snapshot.registers.general.F=myvalue&0xFF;
+				ae->snapshot.registers.general.A=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_F")==0) {
+				ae->snapshot.registers.general.F=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_A")==0) {
+				ae->snapshot.registers.general.A=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_BC")==0) {
+				ae->snapshot.registers.general.C=myvalue&0xFF;
+				ae->snapshot.registers.general.B=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_C")==0) {
+				ae->snapshot.registers.general.C=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_B")==0) {
+				ae->snapshot.registers.general.B=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_DE")==0) {
+				ae->snapshot.registers.general.E=myvalue&0xFF;
+				ae->snapshot.registers.general.D=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_E")==0) {
+				ae->snapshot.registers.general.E=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_D")==0) {
+				ae->snapshot.registers.general.D=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_HL")==0) {
+				ae->snapshot.registers.general.L=myvalue&0xFF;
+				ae->snapshot.registers.general.H=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_L")==0) {
+				ae->snapshot.registers.general.L=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_H")==0) {
+				ae->snapshot.registers.general.H=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_I")==0) {
+				ae->snapshot.registers.regI=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_R")==0) {
+				ae->snapshot.registers.R=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_IFF0")==0) {
+				ae->snapshot.registers.IFF0=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_IFF1")==0) {
+				ae->snapshot.registers.IFF1=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_IX")==0) {
+				ae->snapshot.registers.LX=myvalue&0xFF;
+				ae->snapshot.registers.HX=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_IXL")==0) {
+				ae->snapshot.registers.LX=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_IXH")==0) {
+				ae->snapshot.registers.HX=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_IY")==0) {
+				ae->snapshot.registers.LY=myvalue&0xFF;
+				ae->snapshot.registers.HY=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_IYL")==0) {
+				ae->snapshot.registers.LY=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_IYH")==0) {
+				ae->snapshot.registers.HY=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_SP")==0) {
+				ae->snapshot.registers.LSP=myvalue&0xFF;
+				ae->snapshot.registers.HSP=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_PC")==0) {
+				ae->snapshot.registers.LPC=myvalue&0xFF;
+				ae->snapshot.registers.HPC=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_IM")==0) {
+				ae->snapshot.registers.IM=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_AFX")==0) {
+				ae->snapshot.registers.alternate.F=myvalue&0xFF;
+				ae->snapshot.registers.alternate.A=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_AX")==0) {
+				ae->snapshot.registers.alternate.A=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_FX")==0) {
+				ae->snapshot.registers.alternate.F=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_BCX")==0) {
+				ae->snapshot.registers.alternate.C=myvalue&0xFF;
+				ae->snapshot.registers.alternate.B=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_CX")==0) {
+				ae->snapshot.registers.alternate.C=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_BX")==0) {
+				ae->snapshot.registers.alternate.B=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_DEX")==0) {
+				ae->snapshot.registers.alternate.E=myvalue&0xFF;
+				ae->snapshot.registers.alternate.D=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_EX")==0) {
+				ae->snapshot.registers.alternate.E=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_DX")==0) {
+				ae->snapshot.registers.alternate.D=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_HLX")==0) {
+				ae->snapshot.registers.alternate.L=myvalue&0xFF;
+				ae->snapshot.registers.alternate.H=(myvalue>>8)&0xFF;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_LX")==0) {
+				ae->snapshot.registers.alternate.L=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"Z80_HX")==0) {
+				ae->snapshot.registers.alternate.H=myvalue;
+				/* Gate Array / CRTC / PPI / FDD */
+			} else if (strcmp(ae->wl[ae->idx].w,"GA_PEN")==0) {
+				ae->snapshot.gatearray.selectedpen=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"GA_ROMCFG")==0) {
+				ae->snapshot.gatearray.multiconfiguration=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"GA_RAMCFG")==0) {
+				ae->snapshot.ramconfiguration=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"CRTC_SEL")==0) {
+				ae->snapshot.crtc.selectedregister=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"ROM_UP")==0) {
+				ae->snapshot.romselect=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"PPI_A")==0) {
+				ae->snapshot.ppi.portA=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"PPI_B")==0) {
+				ae->snapshot.ppi.portB=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"PPI_C")==0) {
+				ae->snapshot.ppi.portC=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"PPI_CTL")==0) {
+				ae->snapshot.ppi.control=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"PSG_SEL")==0) {
+				ae->snapshot.psg.selectedregister=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"CPC_TYPE")==0) {
+				ae->snapshot.CPCType=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"INT_NUM")==0) {
+				ae->snapshot.interruptnumber=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"FDD_MOTOR")==0) {
+				ae->snapshot.fdd.motorstate=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"FDD_TRACK")==0) {
+				ae->snapshot.fdd.physicaltrack=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"PRNT_DATA")==0) {
+				ae->snapshot.printerstrobe=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"CRTC_TYPE")==0) {
+				ae->snapshot.crtcstate.model=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"CRTC_HCC")==0) {
+				ae->snapshot.crtcstate.HCC=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"CRTC_CLC")==0) {
+				ae->snapshot.crtcstate.CLC=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"CRTC_RLC")==0) {
+				ae->snapshot.crtcstate.RLC=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"CRTC_VAC")==0) { // Vertical Total Adjust Counter
+				ae->snapshot.crtcstate.VTC=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"CRTC_HSWC")==0) {
+				ae->snapshot.crtcstate.HSC=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"CRTC_VSWC")==0) {
+				ae->snapshot.crtcstate.VSC=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"CRTC_STATE")==0) {
+				ae->snapshot.crtcstate.flags=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"GA_VSC")==0) {
+				ae->snapshot.vsyncdelay=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"GA_ISC")==0) {
+				ae->snapshot.interruptscanlinecounter=myvalue;
+			} else if (strcmp(ae->wl[ae->idx].w,"INT_REQ")==0) {
+				ae->snapshot.interruptrequestflag=myvalue;
+			} else {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"SNASET directive unknown non array settings\n");
+			}
+		} else if (!ae->wl[ae->idx].t && !ae->wl[ae->idx+1].t && ae->wl[ae->idx+2].t==1) {
+			/* index value */
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
+			idx=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,0);
+
+			/* parameter value */
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx+2].w,0);
+			myvalue=RoundComputeExpression(ae,ae->wl[ae->idx+2].w,ae->codeadr,0,0);
+
+			if (strcmp(ae->wl[ae->idx].w,"GA_PAL")==0) {
+				if (idx>=0 && idx<17) {
+					ae->snapshot.gatearray.palette[idx]=myvalue;
+				} else {
+					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"SNASET directive needs [0-16] index for GA_PAL\n");
+				}
+			} else if (strcmp(ae->wl[ae->idx].w,"CRTC_REG")==0) {
+				if (idx>=0 && idx<18) {
+					ae->snapshot.crtc.registervalue[idx]=myvalue;
+				} else {
+					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"SNASET directive needs [0-17] index for CRTC_REG\n");
+				}
+			} else if (strcmp(ae->wl[ae->idx].w,"PSG_REG")==0) {
+				if (idx>=0 && idx<16) {
+					ae->snapshot.psg.registervalue[idx]=myvalue;
+				} else {
+					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"SNASET directive needs [0-15] index for PSG_REG\n");
+				}
+			} else {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"SNASET directive unknown array settings\n");
+			}
+		} else {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"SNASET directive need 2 or 3 parameters (see documentation for more informations)\n");
+		}
+	}
+
+
+}
+
+
 void __SETCPC(struct s_assenv *ae) {
 	int mycpc;
 
-	if (!ae->forcecpr) {
+	rasm_printf(ae,KWARNING"[%s:%d] Warning: SETCPC is deprecated, use SNASET CPC_TYPE,<type> instead\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+
+	if (!ae->forcecpr && !ae->forceROM && !ae->forcezx) {
 		ae->forcesnapshot=1;
 	} else {
-		if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: Cannot SETCPC when already in cartridge output\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: Cannot SETCPC when already in ZX/ROM/cartridge output\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
 	}
 
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
@@ -10490,10 +13883,15 @@ void __SETCPC(struct s_assenv *ae) {
 void __SETCRTC(struct s_assenv *ae) {
 	int mycrtc;
 
-	if (!ae->forcecpr) {
+	rasm_printf(ae,KWARNING"[%s:%d] Warning: SETCRTC is deprecated, use SNASET CRTC_TYPE,<type> instead\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+
+	if (!ae->forcecpr && !ae->forcezx && !ae->forceROM) {
 		ae->forcesnapshot=1;
 	} else {
-		if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: Cannot SETCRTC when already in cartridge output\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: Cannot SETCRTC when already in ZX/ROM/cartridge output\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
 	}
 
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
@@ -10502,6 +13900,7 @@ void __SETCRTC(struct s_assenv *ae) {
 		ae->idx++;
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"SETCRTC directive need one integer parameter\n");
+		mycrtc=0;
 	}
 	switch (mycrtc) {
 		case 0:
@@ -10519,18 +13918,21 @@ void __SETCRTC(struct s_assenv *ae) {
 
 void __LIST(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LIST winape directive do not need parameter\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"LIST Winape directive does not need parameter\n");
 	}
 }
 void __NOLIST(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"NOLIST winape directive do not need parameter\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"NOLIST Winape directive does not need parameter\n");
 	}
 }
 
 void __BRK(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BRK winape directive do not need parameter\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BRK Winape directive does not need parameter\n");
+	} else {
+		___output(ae,0xED);
+		___output(ae,0xFF);
 	}
 }
 
@@ -10539,6 +13941,14 @@ void __STOP(struct s_assenv *ae) {
 	while (ae->wl[ae->idx].t!=2) ae->idx++;
 	ae->idx--;
 	ae->stop=1;
+}
+
+void __DELAYED_PRINT(struct s_assenv *ae) {
+	IntArrayAddDynamicValueConcat(&ae->dprint_idx,&ae->idprint,&ae->mdprint,ae->idx);
+	/* skip parameters */
+	while (ae->wl[ae->idx].t!=1) {
+		ae->idx++;
+	}
 }
 
 void __PRINT(struct s_assenv *ae) {
@@ -10574,6 +13984,13 @@ void __PRINT(struct s_assenv *ae) {
 			} else if (strncmp(ae->wl[ae->idx+1].w,"{INT}",5)==0) {
 				string2print=TxtStrDup(ae->wl[ae->idx+1].w+5);
 				entier=1;
+			} else if (strncmp(ae->wl[ae->idx+1].w,"{INT",4)==0 && ae->wl[ae->idx+1].w[4] && ae->wl[ae->idx+1].w[5]=='}') {
+				string2print=TxtStrDup(ae->wl[ae->idx+1].w+6);
+				entier=ae->wl[ae->idx+1].w[4]-'0';
+				if (entier<2 || entier>5) {
+					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"invalid prefix, must be from INT2 to INT5\n");
+					entier=5;
+				}
 			} else {
 				string2print=TxtStrDup(ae->wl[ae->idx+1].w);
 			}
@@ -10617,7 +14034,7 @@ void __PRINT(struct s_assenv *ae) {
 				}
 				rasm_printf(ae," ");
 			} else if (entier) {
-				rasm_printf(ae,"%d ",(int)RoundComputeExpressionCore(ae,string2print,ae->codeadr,0));
+				rasm_printf(ae,"%0*d ",entier,(int)RoundComputeExpressionCore(ae,string2print,ae->codeadr,0));
 			} else {
 				rasm_printf(ae,"%.2lf ",ComputeExpressionCore(ae,string2print,ae->codeadr,0));
 			}
@@ -10656,6 +14073,54 @@ void __FAIL(struct s_assenv *ae) {
 	MaxError(ae);
 }
 
+void __CONFINE(struct s_assenv *ae) {
+	int aval,ifill=0,warning=0,enforce=0;
+
+	if (ae->io) {
+		ae->orgzone[ae->io-1].memend=ae->outputadr; // mandatory but why???
+	}
+	if (!ae->wl[ae->idx].t) {
+		ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
+		aval=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,0)-1;
+		ae->idx++;
+		while (!ae->wl[ae->idx].t) {
+			if (strcmp(ae->wl[ae->idx+1].w,"ENFORCE")==0) {
+				warning=1;
+			} else if (strcmp(ae->wl[ae->idx+1].w,"WARNING")==0) {
+				warning=1;
+			} else /* confine with fill ? */ {
+				ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
+				ifill=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,0);
+				if (ifill<0 || ifill>255) {
+					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"ALIGN fill value must be 0 to 255\n");
+					ifill=0;
+				}
+			}
+			ae->idx++;
+		}
+		if (aval<1 || aval>256) {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CONFINE size must be in [2-256] interval\n");
+			aval=1;
+		}
+		/* touch codeadr only if needed */
+		if (((ae->codeadr+aval)&0xFF00)!=(ae->codeadr&0xFF00)) {
+			if (!ae->nowarning || warning || enforce) {
+				rasm_printf(ae,KWARNING"[%s:%d] Warning: confinement overflows %d byte%s, loss of %d byte%s\n",GetCurrentFile(ae),ae->wl[ae->idx].l,
+						((ae->codeadr+aval)&0xFF)+1,(((ae->codeadr+aval)&0xFF)+1)>1?"s":"",
+						aval-((ae->codeadr+aval)&0xFF)-1,aval-((ae->codeadr+aval)&0xFF)-1>1?"s":"");
+				if (ae->erronwarn || enforce) MaxError(ae);
+			}
+			/* physical ALIGN fill bytes */
+			while ((ae->codeadr&0xFF)!=0) {
+				___output(ae,ifill);
+				ae->nop+=1;
+			}
+		}
+	} else {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CONFINE <confined size>[,fill] directive need one or two integers parameters\n");
+	}
+}
+
 void __ALIGN(struct s_assenv *ae) {
 	int aval,ifill=-1;
 	
@@ -10682,7 +14147,7 @@ void __ALIGN(struct s_assenv *ae) {
 			aval=1;
 		}
 
-		/* touch codeadr only if adress is misaligned */
+		/* touch codeadr only if address is misaligned */
 		if (ae->codeadr%aval) {
 			if (ifill==-1) {
 				/* virtual ALIGN is moving outputadr the same value as codeadr move */
@@ -10767,6 +14232,12 @@ void __WHILE(struct s_assenv *ae) {
 				___internal_skip_loop_block(ae,E_LOOPSTYLE_WHILE);
 				return;
 		} else {
+
+			/*************************************************/
+			/********* PUSH Global on Stack ******************/
+			/*************************************************/
+			PushGlobal(ae);
+
 			ae->idx++;
 			whilewend.start=ae->idx;
 			whilewend.cpt=0;
@@ -10788,6 +14259,12 @@ void __WEND(struct s_assenv *ae) {
 		if (ae->wl[ae->idx].t==1) {
 			if (ComputeExpression(ae,ae->wl[ae->whilewend[ae->iw-1].start].w,ae->codeadr,0,2)) {
 				if (ae->whilewend[ae->iw-1].while_counter>65536) {
+
+					/*************************************************/
+					/********* POP Global on Stack *******************/
+					/*************************************************/
+					PopGlobal(ae);
+
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Bypass infinite WHILE loop\n");
 					ae->iw--;
 					/* refresh macro check index */
@@ -10800,6 +14277,12 @@ void __WEND(struct s_assenv *ae) {
 					ae->imacropos=ae->whilewend[ae->iw-1].maxim;
 				}
 			} else {
+
+				/*************************************************/
+				/********* POP Global on Stack *******************/
+				/*************************************************/
+				PopGlobal(ae);
+
 				ae->iw--;
 				/* refresh macro check index */
 				if (ae->iw) ae->imacropos=ae->whilewend[ae->iw-1].maxim;
@@ -10812,17 +14295,32 @@ void __WEND(struct s_assenv *ae) {
 	}
 }
 
+void __STARTINGINDEX(struct s_assenv *ae) {
+	if (ae->wl[ae->idx].t==0) {
+		ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
+		ae->repeat_start=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,0,0,0);
+		ae->idx++;
+		if (ae->wl[ae->idx].t==0) {
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
+			ae->repeat_increment=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,0,0,0);
+			ae->idx++;
+		}
+	} else {
+		ae->repeat_start=1;
+		ae->repeat_increment=1;
+	}
+}
+
 void __REPEAT(struct s_assenv *ae) {
 	struct s_repeat currepeat={0};
 	struct s_expr_dico *rvar;
-	int *loopstyle;
-	int iloop,mloop;
-	int cidx,crc;
+	int crc;
 	
 	if (ae->wl[ae->idx+1].t!=2) {
 		if (ae->wl[ae->idx].t==0) {
 			ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
 			currepeat.cpt=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,0,0,0);
+
 			if (!currepeat.cpt) {
 				/* skip repeat block */
 				___internal_skip_loop_block(ae,E_LOOPSTYLE_REPEATN);
@@ -10833,28 +14331,48 @@ void __REPEAT(struct s_assenv *ae) {
 				return;
 			}
 			ae->idx++;
-			currepeat.start=ae->idx;
 			if (ae->wl[ae->idx].t==0) {
+				double vstart;
 				ae->idx++;
-				if (ae->wl[ae->idx].t==1) {
-					/* la variable peut exister -> OK */
-					crc=GetCRC(ae->wl[ae->idx].w);
-					if ((rvar=SearchDico(ae,ae->wl[ae->idx].w,crc))!=NULL) {
-						rvar->v=1;
-					} else {
-						/* mais ne peut être un label ou un alias */
-						ExpressionSetDicoVar(ae,ae->wl[ae->idx].w, 1);
+
+				// default
+				currepeat.varincrement=ae->repeat_increment;
+				vstart=ae->repeat_start;
+
+				/* additionnal options */
+				if (ae->wl[ae->idx].t==0) {
+					ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
+					vstart=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,0,0,0);
+					if (ae->wl[ae->idx+1].t==0) {
+						ExpressionFastTranslate(ae,&ae->wl[ae->idx+2].w,0);
+						currepeat.varincrement=RoundComputeExpression(ae,ae->wl[ae->idx+2].w,0,0,0);
 					}
-					currepeat.repeatvar=ae->wl[ae->idx].w;
-					currepeat.repeatcrc=crc;
-				} else {
-					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"extended syntax is REPEAT <n>,<var>\n");
 				}
+
+				/* la variable peut exister -> OK */
+				crc=GetCRC(ae->wl[ae->idx].w);
+				if ((rvar=SearchDico(ae,ae->wl[ae->idx].w,crc))!=NULL) {
+					rvar->v=vstart;
+				} else {
+					/* mais ne peut être un label ou un alias */
+					ExpressionSetDicoVar(ae,ae->wl[ae->idx].w,vstart,0);
+				}
+				currepeat.repeatvar=ae->wl[ae->idx].w;
+				currepeat.repeatcrc=crc;
+				// adjust
+				while (ae->wl[ae->idx].t==0) ae->idx++;
 			}
+			currepeat.start=ae->idx-1;
 		} else {
 			currepeat.start=ae->idx;
 			currepeat.cpt=-1;
 		}
+
+		/*************************************************/
+		/********* PUSH Global on Stack ******************/
+		/*************************************************/
+		PushGlobal(ae);
+
 		currepeat.value=ae->repeatcounter;
 		currepeat.repeat_counter=1;
 		ae->repeatcounter++;
@@ -10877,7 +14395,7 @@ void __REND(struct s_assenv *ae) {
 			ae->repeat[ae->ir-1].cpt--;
 			ae->repeat[ae->ir-1].repeat_counter++;
 			if ((rvar=SearchDico(ae,ae->repeat[ae->ir-1].repeatvar,ae->repeat[ae->ir-1].repeatcrc))!=NULL) {
-				rvar->v=ae->repeat[ae->ir-1].repeat_counter;
+				rvar->v+=ae->repeat[ae->ir-1].varincrement; // LEGACY rvar->v=ae->repeat[ae->ir-1].repeat_counter;
 			}
 			if (ae->repeat[ae->ir-1].cpt) {
 				ae->idx=ae->repeat[ae->ir-1].start;
@@ -10887,6 +14405,12 @@ void __REND(struct s_assenv *ae) {
 				ae->ir--;
 				/* refresh macro check index */
 				if (ae->ir) ae->imacropos=ae->repeat[ae->ir-1].maxim;
+
+				/*************************************************/
+				/********* POP Global on Stack *******************/
+				/*************************************************/
+				PopGlobal(ae);
+
 			}
 		}
 	} else {
@@ -10904,6 +14428,12 @@ void __UNTIL(struct s_assenv *ae) {
 				ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
 				if (!ComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,2)) {
 					if (ae->repeat[ae->ir-1].repeat_counter>65536) {
+
+						/*************************************************/
+						/********* POP Global on Stack *******************/
+						/*************************************************/
+						PopGlobal(ae);
+
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Bypass infinite REPEAT loop\n");
 						ae->ir--;
 						/* refresh macro check index */
@@ -10915,6 +14445,12 @@ void __UNTIL(struct s_assenv *ae) {
 						ae->imacropos=ae->repeat[ae->ir-1].maxim;
 					}
 				} else {
+
+					/*************************************************/
+					/********* POP Global on Stack *******************/
+					/*************************************************/
+					PopGlobal(ae);
+
 					ae->ir--;
 					/* refresh macro check index */
 					if (ae->ir) ae->imacropos=ae->repeat[ae->ir-1].maxim;
@@ -10976,7 +14512,7 @@ void __IF_light(struct s_assenv *ae) {
 	struct s_ifthen ifthen={0};
 
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
-		/* do not need to compute the value in shadow execution */
+		/* does not need to compute the value in shadow execution */
 		ifthen.v=0;
 		ifthen.filename=GetCurrentFile(ae);
 		ifthen.line=ae->wl[ae->idx].l;
@@ -10998,15 +14534,24 @@ void __IFUSED(struct s_assenv *ae) {
 		if ((SearchDico(ae,ae->wl[ae->idx+1].w,crc))!=NULL) {
 			rexpr=1;
 		} else {
-			if ((SearchLabel(ae,ae->wl[ae->idx+1].w,crc))!=NULL) {
+			char *labelmodule=NULL;
+			// first look for module label!
+			if (ae->module) {
+				labelmodule=MemMalloc(ae->modulen+2+strlen(ae->wl[ae->idx+1].w));
+				strcpy(labelmodule,ae->module);
+				strcat(labelmodule,ae->module_separator);
+				strcat(labelmodule,ae->wl[ae->idx+1].w);
+			}
+			if (ae->module && (SearchLabel(ae,labelmodule,GetCRC(labelmodule)))!=NULL) {
+				rexpr=1;
+			} else if ((SearchLabel(ae,ae->wl[ae->idx+1].w,crc))!=NULL) {
+				rexpr=1;
+			} else if ((SearchAlias(ae,crc,ae->wl[ae->idx+1].w))!=-1) {
 				rexpr=1;
 			} else {
-				if ((SearchAlias(ae,crc,ae->wl[ae->idx+1].w))!=-1) {
-					rexpr=1;
-				} else {
-					rexpr=SearchUsed(ae,ae->wl[ae->idx+1].w,crc);
-				}
+				rexpr=SearchUsed(ae,ae->wl[ae->idx+1].w,crc);
 			}
+			if (labelmodule) MemFree(labelmodule);
 		}
 		ifthen.v=rexpr;
 		ifthen.filename=GetCurrentFile(ae);
@@ -11052,19 +14597,26 @@ void __IFDEF(struct s_assenv *ae) {
 		if ((SearchDico(ae,ae->wl[ae->idx+1].w,crc))!=NULL) {
 			rexpr=1;
 		} else {
-			if ((SearchLabel(ae,ae->wl[ae->idx+1].w,crc))!=NULL) {
-				rexpr=1;
-			} else {
-				if ((SearchAlias(ae,crc,ae->wl[ae->idx+1].w))!=-1) {
-					rexpr=1;
-				} else {
-					if (SearchMacro(ae,crc,ae->wl[ae->idx+1].w)>=0) {
-						rexpr=1;
-					} else {
-						rexpr=0;
-					}
-				}
+			char *labelmodule=NULL;
+			// first look for module label!
+			if (ae->module) {
+				labelmodule=MemMalloc(ae->modulen+2+strlen(ae->wl[ae->idx+1].w));
+				strcpy(labelmodule,ae->module);
+				strcat(labelmodule,ae->module_separator);
+				strcat(labelmodule,ae->wl[ae->idx+1].w);
 			}
+			if (labelmodule && (SearchLabel(ae,labelmodule,GetCRC(labelmodule)))!=NULL) {
+				rexpr=1;
+			} else if ((SearchLabel(ae,ae->wl[ae->idx+1].w,crc))!=NULL) {
+				rexpr=1;
+			} else if ((SearchAlias(ae,crc,ae->wl[ae->idx+1].w))!=-1) {
+					rexpr=1;
+			} else if (SearchMacro(ae,crc,ae->wl[ae->idx+1].w)>=0) {
+					rexpr=1;
+			} else {
+				rexpr=0;
+			}
+			if (labelmodule) MemFree(labelmodule);
 		}
 		ifthen.v=rexpr;
 		ifthen.filename=GetCurrentFile(ae);
@@ -11087,12 +14639,10 @@ void __IFDEF_light(struct s_assenv *ae) {
 		ObjectArrayAddDynamicValueConcat((void **)&ae->ifthen,&ae->ii,&ae->mi,&ifthen,sizeof(ifthen));
 		ae->idx++;
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"GetCurrentFile(ae),ae->wl[ae->idx].l[%s:%d] FATAL - IFDEF need one variable or label\n");
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"IFDEF need one variable or label\n");
 	}
 }
 void __IFNDEF(struct s_assenv *ae) {
-	struct s_expr_dico *curdic=NULL;
-	struct s_label *curlabel=NULL;
 	struct s_ifthen ifthen={0};
 	int rexpr,crc;
 	
@@ -11101,19 +14651,26 @@ void __IFNDEF(struct s_assenv *ae) {
 		if ((SearchDico(ae,ae->wl[ae->idx+1].w,crc))!=NULL) {
 			rexpr=0;
 		} else {
-			if ((SearchLabel(ae,ae->wl[ae->idx+1].w,crc))!=NULL) {
+			char *labelmodule=NULL;
+			// first look for module label!
+			if (ae->module) {
+				labelmodule=MemMalloc(ae->modulen+2+strlen(ae->wl[ae->idx+1].w));
+				strcpy(labelmodule,ae->module);
+				strcat(labelmodule,ae->module_separator);
+				strcat(labelmodule,ae->wl[ae->idx+1].w);
+			}
+			if (ae->module && (SearchLabel(ae,labelmodule,GetCRC(labelmodule)))!=NULL) {
+				rexpr=0;
+			} else if ((SearchLabel(ae,ae->wl[ae->idx+1].w,crc))!=NULL) {
+				rexpr=0;
+			} else if ((SearchAlias(ae,crc,ae->wl[ae->idx+1].w))!=-1) {
+					rexpr=0;
+			} else if (SearchMacro(ae,crc,ae->wl[ae->idx+1].w)>=0) {
 				rexpr=0;
 			} else {
-				if ((SearchAlias(ae,crc,ae->wl[ae->idx+1].w))!=-1) {
-					rexpr=0;
-				} else {
-					if (SearchMacro(ae,crc,ae->wl[ae->idx+1].w)>=0) {
-						rexpr=0;
-					} else {
-						rexpr=1;
-					}
-				}
+				rexpr=1;
 			}
+			if (labelmodule) MemFree(labelmodule);
 		}
 		ifthen.v=rexpr;
 		ifthen.filename=GetCurrentFile(ae);
@@ -11126,9 +14683,8 @@ void __IFNDEF(struct s_assenv *ae) {
 	}
 }
 void __IFNDEF_light(struct s_assenv *ae) {
-	struct s_expr_dico *curdic=NULL;
-	struct s_label *curlabel=NULL;
 	struct s_ifthen ifthen={0};
+
 	
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
 		ifthen.v=0;
@@ -11138,7 +14694,7 @@ void __IFNDEF_light(struct s_assenv *ae) {
 		ObjectArrayAddDynamicValueConcat((void **)&ae->ifthen,&ae->ii,&ae->mi,&ifthen,sizeof(ifthen));
 		ae->idx++;
 	} else {
-		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"IFNDEF need one variable or label\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"IFNDEF need one variable or label\n");
 	}
 }
 
@@ -11196,7 +14752,7 @@ void __DEFAULT(struct s_assenv *ae) {
 				ae->switchcase[ae->isw-1].execute=1;
 			}
 		} else {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"DEFAULT do not need parameter\n");
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"DEFAULT does not need parameter\n");
 		}
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"DEFAULT encounter whereas there is no referent SWITCH\n");
@@ -11208,7 +14764,7 @@ void __BREAK(struct s_assenv *ae) {
 		if (ae->wl[ae->idx].t==1) {
 			ae->switchcase[ae->isw-1].execute=0;
 		} else {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BREAK do not need parameter\n");
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BREAK does not need parameter\n");
 		}
 	} else {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"BREAK encounter whereas there is no referent SWITCH\n");
@@ -11390,7 +14946,7 @@ void __PROTECT(struct s_assenv *ae) {
 }
 
 void ___org_close(struct s_assenv *ae) {
-	if (ae->lz>=0) {
+	if (ae->lz>=0 && ae->lzsection[ae->ilz-1].lzversion) {
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot ORG inside a LZ section\n");
 		return;
 	}
@@ -11447,9 +15003,17 @@ void __ORG(struct s_assenv *ae) {
 	if (ae->wl[ae->idx+1].t!=2) {
 		ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
 		ae->codeadr=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->outputadr,0,0);
+		if (ae->codeadr<0 || ae->codeadr>0xFFFF) {
+			ae->codeadr=0;
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"[%s:%d] cannot ORG outside memory!\n");
+		}
 		if (!ae->wl[ae->idx+1].t && ae->wl[ae->idx+2].t!=2) {
 			ExpressionFastTranslate(ae,&ae->wl[ae->idx+2].w,0);
 			ae->outputadr=RoundComputeExpression(ae,ae->wl[ae->idx+2].w,ae->outputadr,0,0);
+			if (ae->outputadr<0 || ae->outputadr>0xFFFF) {
+				ae->outputadr=0;
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"[%s:%d] cannot ORG outside memory!\n");
+			}
 			ae->idx+=2;
 		} else {
 			ae->outputadr=ae->codeadr;
@@ -11461,6 +15025,8 @@ void __ORG(struct s_assenv *ae) {
 	}
 	
 	___org_new(ae,ae->nocode);
+
+	if (ae->outputadr==ae->codeadr) ae->orgzone[ae->io-1].inplace=1;
 }
 void __NOCODE(struct s_assenv *ae) {
 	if (ae->wl[ae->idx].t==1) {
@@ -11500,7 +15066,6 @@ void __STRUCT(struct s_assenv *ae) {
 	int crc,i,j,irs;
 	/* filler */
 	int localsize,cursize;
-	double zeval;
 
 	if (!ae->wl[ae->idx].t) {
 		if (ae->wl[ae->idx+1].t) {
@@ -11532,6 +15097,7 @@ void __STRUCT(struct s_assenv *ae) {
 					instruction[ICRC_DEFB].makemnemo=_DEFB_struct;instruction[ICRC_DB].makemnemo=_DEFB_struct;
 					instruction[ICRC_DEFW].makemnemo=_DEFW_struct;instruction[ICRC_DW].makemnemo=_DEFW_struct;
 					instruction[ICRC_DEFI].makemnemo=_DEFI_struct;
+					instruction[ICRC_DEFF].makemnemo=_DEFF_struct;instruction[ICRC_DF].makemnemo=_DEFF_struct;
 					instruction[ICRC_DEFR].makemnemo=_DEFR_struct;instruction[ICRC_DR].makemnemo=_DEFR_struct;
 					instruction[ICRC_DEFS].makemnemo=_DEFS_struct;instruction[ICRC_DS].makemnemo=_DEFS_struct;
 				}
@@ -11595,6 +15161,8 @@ printf("EVOL 119 - tableau! %d elem(s)\n",nbelem);
 				/* create label for global struct ptr */
 				curlabel.iw=-1;
 				curlabel.ptr=ae->codeadr;
+				curlabel.fileidx=ae->wl[ae->idx+2].ifile;
+
 				if (!ae->getstruct) {
 					if (ae->wl[ae->idx+2].w[0]=='@') curlabel.name=MakeLocalLabel(ae,ae->wl[ae->idx+2].w,NULL); else curlabel.name=TxtStrDup(ae->wl[ae->idx+2].w);
 					curlabel.crc=GetCRC(curlabel.name);
@@ -11625,6 +15193,7 @@ printf("create subfields\n");
 #endif
 				curlabel.iw=-1;
 				curlabel.ptr=ae->codeadr;
+				curlabel.ibank=ae->activebank<BANK_MAX_NUMBER?ae->activebank:0;
 				for (i=0;i<ae->rasmstruct[irs].irasmstructfield;i++) {
 					curlabel.ptr=ae->codeadr+ae->rasmstruct[irs].rasmstructfield[i].offset;
 					if (!ae->getstruct) {
@@ -11654,6 +15223,9 @@ printf("create subfields\n");
 						curlabel.crc=GetCRC(curlabel.name);
 						PushLabelLight(ae,&curlabel);
 					}					
+#if TRACE_STRUCT
+printf("pushLight [%s] %d:%X\n",curlabel.name,curlabel.ibank,curlabel.ptr);
+#endif
 				}
 
 				/* is there any filler in the declaration? */
@@ -11749,23 +15321,35 @@ void __ENDSTRUCT(struct s_assenv *ae) {
 			curlabel.crc=ae->rasmstruct[ae->irasmstruct-1].crc;
 			curlabel.iw=-1;
 			curlabel.ptr=ae->rasmstruct[ae->irasmstruct-1].size;
+			//curlabel.fileidx wont be used
 			PushLabelLight(ae,&curlabel);
 			
 			/* compute size for each field */
+#if TRACE_STRUCT
+	printf("compute field size\n");
+#endif
 			newlen=strlen(ae->rasmstruct[ae->irasmstruct-1].name)+2;
-			for (i=0;i<ae->rasmstruct[ae->irasmstruct-1].irasmstructfield-1;i++) {
-				ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].size=ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i+1].offset-ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].offset;
+			if (ae->rasmstruct[ae->irasmstruct-1].irasmstructfield) {
+				for (i=0;i<ae->rasmstruct[ae->irasmstruct-1].irasmstructfield-1;i++) {
+					ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].size=ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i+1].offset-ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].offset;
+					ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].fullname=MemMalloc(newlen+strlen(ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].name));
+					sprintf(ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].fullname,"%s.%s",ae->rasmstruct[ae->irasmstruct-1].name,ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].name);
+					ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].crc=GetCRC(ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].fullname);
+				}
+				ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].size=ae->rasmstruct[ae->irasmstruct-1].size-ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].offset;
 				ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].fullname=MemMalloc(newlen+strlen(ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].name));
 				sprintf(ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].fullname,"%s.%s",ae->rasmstruct[ae->irasmstruct-1].name,ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].name);
 				ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].crc=GetCRC(ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].fullname);
+			} else {
+				rasm_printf(ae,KWARNING"[%s:%d] Warning: empty structure [%s]\n",GetCurrentFile(ae),ae->wl[ae->idx].l,curlabel.name);
+				if (ae->erronwarn) MaxError(ae);
 			}
-			ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].size=ae->rasmstruct[ae->irasmstruct-1].size-ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].offset;
-			ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].fullname=MemMalloc(newlen+strlen(ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].name));
-			sprintf(ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].fullname,"%s.%s",ae->rasmstruct[ae->irasmstruct-1].name,ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].name);
-			ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].crc=GetCRC(ae->rasmstruct[ae->irasmstruct-1].rasmstructfield[i].fullname);
 
 			/* unwrap data capture */
-			if (ae->as80==1) {/* not for UZ80 */
+#if TRACE_STRUCT
+	printf("unwrap data capture\n");
+#endif
+			if (ae->as80==1 || ae->pasmo) {/* not for UZ80 */
 				instruction[ICRC_DEFB].makemnemo=_DEFB_as80;instruction[ICRC_DB].makemnemo=_DEFB_as80;
 				instruction[ICRC_DEFW].makemnemo=_DEFW_as80;instruction[ICRC_DW].makemnemo=_DEFW_as80;
 				instruction[ICRC_DEFI].makemnemo=_DEFI_as80;
@@ -11774,6 +15358,7 @@ void __ENDSTRUCT(struct s_assenv *ae) {
 				instruction[ICRC_DEFW].makemnemo=_DEFW;instruction[ICRC_DW].makemnemo=_DEFW;
 				instruction[ICRC_DEFI].makemnemo=_DEFI;
 			}
+			instruction[ICRC_DEFF].makemnemo=_DEFF;instruction[ICRC_DF].makemnemo=_DEFF;
 			instruction[ICRC_DEFR].makemnemo=_DEFR;instruction[ICRC_DR].makemnemo=_DEFR;
 			instruction[ICRC_DEFS].makemnemo=_DEFS;instruction[ICRC_DS].makemnemo=_DEFS;
 
@@ -11802,34 +15387,45 @@ int (*_internal_getsample)(unsigned char *data, int *idx);
 #define FUNC "_internal_AudioGetSampleValue"
 
 int __internal_getsample8(unsigned char *data, int *idx) {
-	unsigned char v;
+	int v;
 	v=data[*idx]-128;*idx=*idx+1;return v;
 }
 int __internal_getsample16little(unsigned char *data, int *idx) {
 	int cursample;
-	cursample=data[*idx+1]-0x80;*idx=*idx+2;
+	char *sdata=(char *)data;
+	cursample=sdata[*idx+1];*idx=*idx+2;
 	return cursample;
 }
 int __internal_getsample24little(unsigned char *data, int *idx) {
 	int cursample;
-	cursample=data[*idx+2-0x80];*idx=*idx+3;
+	char *sdata=(char *)data;
+	cursample=sdata[*idx+2];*idx=*idx+3;
 	return cursample;
 }
 /* big-endian */
 int __internal_getsample16big(unsigned char *data, int *idx) {
 	int cursample;
-	cursample=data[*idx]-0x80;*idx=*idx+2;
+	char *sdata=(char *)data;
+	cursample=sdata[*idx];*idx=*idx+2;
 	return cursample;
 }
 int __internal_getsample24big(unsigned char *data, int *idx) {
 	int cursample;
-	cursample=data[*idx]-0x80;*idx=*idx+3;
+	char *sdata=(char *)data;
+	cursample=sdata[*idx];*idx=*idx+3;
 	return cursample;
 }
 /* float & endian shit */
 int _isLittleEndian() /* from lz4.h */
 {
-    const union { U32 u; BYTE c[4]; } one = { 1 };
+#ifdef NO_3RD_PARTIES
+	#if defined(__cplusplus) || (defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L) /* C99 */)
+		typedef uint32_t U32;
+	#else
+		typedef unsigned int        U32;
+	#endif
+#endif
+    const union { U32 u; unsigned char c[4]; } one = { 1 };
     return one.c[0];
 }
 
@@ -11863,7 +15459,7 @@ int __internal_getsample32biglittle(unsigned char *data, int *idx) {
 #define __internal_getsample32littlebig __internal_getsample32biglittle
 
 
-void _AudioLoadSample(struct s_assenv *ae, unsigned char *data, int filesize, enum e_audio_sample_type sample_type, float normalize)
+void _AudioLoadSample(struct s_assenv *ae, unsigned char *data, unsigned int filesize, enum e_audio_sample_type sample_type, float normalize)
 {
 	#undef FUNC
 	#define FUNC "AudioLoadSample"
@@ -11871,10 +15467,11 @@ void _AudioLoadSample(struct s_assenv *ae, unsigned char *data, int filesize, en
 	struct s_wav_header *wav_header;
 	int i,j,n,idx,controlsize;
 	int nbchannel,bitspersample,nbsample;
-	int bigendian=0,cursample;
+	int bigendian=0,cursample,wFormat;
+	double frequency;
 	double accumulator;
 	unsigned char samplevalue=0, sampleprevious=0;
-	int samplerepeat=0,ipause;
+	int samplerepeat=0,ipause,mypsgreg;
 
 	unsigned char *subchunk;
 	int subchunksize;
@@ -11915,7 +15512,7 @@ printf("AudioLoadSample filesize=%d st=%d normalize=%.2lf\n",filesize,sample_typ
 printf("AudioLoadSample getsubchunk\n");
 #endif
 	subchunk=(unsigned char *)&wav_header->SubChunk2ID;
-	while (strncmp(subchunk,"data",4)) {
+	while (strncmp((char *)subchunk,"data",4)) {
 		subchunksize=8+subchunk[4]+subchunk[5]*256+subchunk[6]*65536+subchunk[7]*256*65536;
 		if (subchunksize>=filesize) {
 			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"WAV import - data subchunk not found\n");
@@ -11931,28 +15528,54 @@ printf("AudioLoadSample getsubchunk\n");
 		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"WAV import - invalid number of audio channel\n");
 		return;
 	}
+
+	wFormat=wav_header->AudioFormat[0]+wav_header->AudioFormat[1]*256;
+	if (wFormat!=1 && wFormat!=3) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"WAV import - invalid or unsupported wFormatTag (%04X)\n",wFormat);
+		return;
+	}
+
+	frequency=wav_header->SampleRate[0]+wav_header->SampleRate[1]*256+wav_header->SampleRate[2]*65536+wav_header->SampleRate[3]*256*65536;
+	switch (sample_type) {
+		case AUDIOSAMPLE_DMAA:
+		case AUDIOSAMPLE_DMAB:
+		case AUDIOSAMPLE_DMAC:
+			if (fabs(frequency/15125.0-1.0)>0.2) {
+				if (!ae->nowarning) {
+					rasm_printf(ae,KWARNING"[%s:%d] Warning: WAV sample frequency (%dHz) is very different from 15KHz DMA frequency\n",GetCurrentFile(ae),ae->wl[ae->idx].l,(int)frequency);
+					if (ae->erronwarn) MaxError(ae);
+				}
+			}
+		default:break;
+	}
+
 	bitspersample=wav_header->BitsPerSample[0]+wav_header->BitsPerSample[1]*256;
 #if TRACE_HEXBIN
-printf("AudioLoadSample bitpersample=%d\n",bitspersample);
+printf("AudioLoadSample bitpersample=%d | Format=%s\n",bitspersample,wFormat==1?"PCM":"IEEE Float");
 #endif
 	switch (bitspersample) {
 		case 8:_internal_getsample=__internal_getsample8;break;
 		case 16:if (!bigendian) _internal_getsample=__internal_getsample16little; else _internal_getsample=__internal_getsample16big;break;
 		case 24:if (!bigendian) _internal_getsample=__internal_getsample24little; else _internal_getsample=__internal_getsample24big;break;
-		case 32:if (!bigendian) {
-					if (_isLittleEndian()) {
-						_internal_getsample=__internal_getsample32littlelittle;
+		case 32:if (wFormat==3) {
+				if (!bigendian) {
+						if (_isLittleEndian()) {
+							_internal_getsample=__internal_getsample32littlelittle;
+						} else {
+							_internal_getsample=__internal_getsample32littlebig;
+						}
 					} else {
-						_internal_getsample=__internal_getsample32littlebig;
+						if (_isLittleEndian()) {
+							_internal_getsample=__internal_getsample32biglittle;
+						} else {
+							_internal_getsample=__internal_getsample32bigbig;
+						}
 					}
-				} else {
-					if (_isLittleEndian()) {
-						_internal_getsample=__internal_getsample32biglittle;
-					} else {
-						_internal_getsample=__internal_getsample32bigbig;
-					}
-				}
-				break;
+			} else {
+				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"WAV import - unsupported 32bits PCM\n",wFormat);
+				return;
+			}
+			break;
 		default:
 			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"WAV import - unsupported bits per sample (%d)\n",bitspersample);
 			return;
@@ -11965,7 +15588,7 @@ printf("AudioLoadSample bitpersample=%d\n",bitspersample);
 	}
 
 #if TRACE_HEXBIN
-printf("nbsample=%d (sze=%d,chn=%d,bps=%d) st=%c\n",nbsample,controlsize,nbchannel,bitspersample,sample_type);
+printf("nbsample=%d (sze=%d,chn=%d,bps=%d) st=%d\n",nbsample,controlsize,nbchannel,bitspersample,sample_type);
 #endif
 	
 	idx=subchunk-data;
@@ -12033,9 +15656,25 @@ printf("nbsample=%d (sze=%d,chn=%d,bps=%d) st=%c\n",nbsample,controlsize,nbchann
 				___output(ae,samplevalue);
 			}
 			break;
-		case AUDIOSAMPLE_DMA:
-			sampleprevious=255;
-			for (i=0;i<nbsample;i++) {
+		case AUDIOSAMPLE_DMAA:
+		case AUDIOSAMPLE_DMAB:
+		case AUDIOSAMPLE_DMAC:
+			switch (sample_type) {
+				case AUDIOSAMPLE_DMAA:mypsgreg=0x8;break;
+				case AUDIOSAMPLE_DMAB:mypsgreg=0x9;break;
+				case AUDIOSAMPLE_DMAC:mypsgreg=0xA;break;
+				default:printf("warning remover\n");
+			}
+			/* downmixing */
+			accumulator=0.0;
+			for (n=0;n<nbchannel;n++) {
+				accumulator+=_internal_getsample(data,&idx);
+			}
+			/* normalize */
+			cursample=MinMaxInt(floor(((accumulator/nbchannel)*normalize)+0.5)+128,0,255);
+			/* PSG levels */
+			sampleprevious=ae->psgtab[cursample];
+			for (i=1;i<nbsample;i++) {
 				/* downmixing */
 				accumulator=0.0;
 				for (n=0;n<nbchannel;n++) {
@@ -12047,17 +15686,17 @@ printf("nbsample=%d (sze=%d,chn=%d,bps=%d) st=%c\n",nbsample,controlsize,nbchann
 				/* PSG levels */
 				samplevalue=ae->psgtab[cursample];
 				
-				if (samplevalue==sampleprevious) {
+				if (samplevalue==sampleprevious && i+1<nbsample) {
 					samplerepeat++;
 				} else {
 					if (!samplerepeat) {
 						/* DMA output */
 						___output(ae,sampleprevious);
-						___output(ae,0x0A); /* volume canal C */
+						___output(ae,mypsgreg); /* volume canal A/B/C */
 					} else {
 						/* DMA pause */
 						___output(ae,sampleprevious);
-						___output(ae,0x0A); /* volume canal C */
+						___output(ae,mypsgreg); /* volume canal A/B/C */
 						while (samplerepeat) {
 							ipause=samplerepeat<4096?samplerepeat:4095;
 							___output(ae,ipause&0xFF);
@@ -12070,31 +15709,61 @@ printf("nbsample=%d (sze=%d,chn=%d,bps=%d) st=%c\n",nbsample,controlsize,nbchann
 					sampleprevious=samplevalue;
 				}
 			}
-			if (samplerepeat) {
-				/* DMA pause */
+			/* if last sample is alone */
+			if (!samplerepeat) {
 				___output(ae,sampleprevious);
-				___output(ae,0x0A); /* volume canal C */
-				while (samplerepeat) {
-					ipause=samplerepeat<4096?samplerepeat:4095;
-					___output(ae,ipause&0xFF);
-					___output(ae,0x10 | ((ipause>>8) &0xF)); /* pause */
-					
-					samplerepeat-=4096;
-					if (samplerepeat<0) samplerepeat=0;
-				}
+				___output(ae,mypsgreg); /* volume canal A/B/C */
 			}
-			___output(ae,0);
-			___output(ae,0x0A); /* volume canal C */
-			___output(ae,0x20);
-			___output(ae,0x40); /* stop or reloop? */
 			break;
 	}
 }
 
+
+#ifdef NOAPULTRA
+  int LZSA_crunch(unsigned char *input_data,int input_size,unsigned char **lzdata,int *lzlen) {
+	  lzdata=MemMalloc(4);
+	  *lzlen=0;
+
+printf("no LZSA support in this version!\n");
+fprintf(stderr,"no LZSA support in this version!\n");
+
+	  return 0;
+  }
+  int APULTRA_crunch(unsigned char *input_data,int input_size,unsigned char **lzdata,int *lzlen) {
+	  lzdata=MemMalloc(4);
+	  *lzlen=0;
+
+printf("no AP-Ultra support in this version!\n");
+fprintf(stderr,"no AP-Ultra support in this version!\n");
+
+	  return 0;
+  }
+#endif
+
 /*
 	meta fonction qui gère le INCBIN standard plus les variantes SMP et DMA
 */
+void __READ(struct s_assenv *ae) {
+	if (!ae->wl[ae->idx].t) {
+		int idx;
+
+		idx=atoi(ae->wl[ae->idx+1].w);
+		ae->idx++;
+
+		if (idx>=0 && idx<ae->ih) {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"File to include was not found [%s]\n",ae->hexbin[idx].filename);
+		} else {
+			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"internal error with text file import (index out of bounds)\n");
+		}
+	} else {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"READ directive need a proper filename as argument\n");
+	}
+}
+
 void __HEXBIN(struct s_assenv *ae) {
+	#undef FUNC
+	#define FUNC "__HEXBIN"
+
 	int hbinidx,overwritecheck=1,crc;
 	struct s_expr_dico *rvar;
 	unsigned int idx;
@@ -12102,12 +15771,15 @@ void __HEXBIN(struct s_assenv *ae) {
 	float amplification=1.0;
 	int deload=0;
 	int vtiles=0,remap=0,revert=0;
-	int itiles=0,tilex;
+	int itiles=0,tilex=0,gtiles=0;
+	struct s_hexbin *curhexbin;
+	unsigned char *newdata=NULL;
+	int fileok=0,incwav=0;
 	
 	if (!ae->wl[ae->idx].t) {
 		ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,1);
 		hbinidx=RoundComputeExpressionCore(ae,ae->wl[ae->idx+1].w,ae->codeadr,0);
-		if (hbinidx>ae->ih) {
+		if (hbinidx>=ae->ih) {
 			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"internal error with binary file import (index out of bounds)\n");
 			return;
 		}
@@ -12118,29 +15790,12 @@ printf("Hexbin idx=[%s] filename=[%s]\n",ae->wl[ae->idx+1].w,ae->hexbin[hbinidx]
 		if (!ae->wl[ae->idx+1].t) {
 			if (strcmp("DSK",ae->wl[ae->idx+2].w)==0) {
 				/* import binary from DSK */
-			} else if (strchr("SD",ae->wl[ae->idx+2].w[0]) && ae->wl[ae->idx+2].w[1]=='M' &&
-					strchr("P24A",ae->wl[ae->idx+2].w[2]) && !ae->wl[ae->idx+2].w[3]) {
+			} else if (strchr("SD",ae->wl[ae->idx+2].w[0]) && ae->wl[ae->idx+2].w[1]=='M' && strchr("P24A",ae->wl[ae->idx+2].w[2]) && !ae->wl[ae->idx+2].w[3]) {
 				/* SMP,SM2,SM4,DMA */
-
 #if TRACE_HEXBIN
-printf("Hexbin -> %s\n",ae->wl[ae->idx+2].w);
+printf("Hexbin for WAV-> %s (no operation until delayed load)\n",ae->wl[ae->idx+2].w);
 #endif
-				if (!ae->wl[ae->idx+2].t) {
-					amplification=ComputeExpressionCore(ae,ae->wl[ae->idx+3].w,ae->codeadr,0);
-#if TRACE_HEXBIN
-printf("sample amplification=%.2lf\n",amplification);
-#endif
-				}
-
-				switch (ae->wl[ae->idx+2].w[2]) {
-					case 'P':_AudioLoadSample(ae,ae->hexbin[hbinidx].data,ae->hexbin[hbinidx].datalen, AUDIOSAMPLE_SMP,amplification);break;
-					case '2':_AudioLoadSample(ae,ae->hexbin[hbinidx].data,ae->hexbin[hbinidx].datalen, AUDIOSAMPLE_SM2,amplification);break;
-					case '4':_AudioLoadSample(ae,ae->hexbin[hbinidx].data,ae->hexbin[hbinidx].datalen, AUDIOSAMPLE_SM4,amplification);break;
-					case 'A':_AudioLoadSample(ae,ae->hexbin[hbinidx].data,ae->hexbin[hbinidx].datalen, AUDIOSAMPLE_DMA,amplification);break;
-					default:printf("warning remover\n");break;
-				}
-				ae->idx+=2;
-				return;
+				incwav=1;
 			} else {
 				/* legacy binary file */
 #if TRACE_HEXBIN
@@ -12172,6 +15827,21 @@ printf(" -> REMAP loading\n");
 					offset=size=0; // full file
 					ae->idx+=2;
 
+				} else if (strcmp("GTILES",ae->wl[ae->idx+2].w)==0) {
+					/*** entrelace les tiles, besoin de hauteur et largeur de la tile ***/
+					if (!ae->wl[ae->idx+2].t) {
+						ExpressionFastTranslate(ae,&ae->wl[ae->idx+3].w,1);
+						tilex=RoundComputeExpressionCore(ae,ae->wl[ae->idx+3].w,ae->codeadr,0);
+						gtiles=1;
+					} else {
+						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is INCBIN'file',GTILES,width\n");
+						tilex=0;
+					}
+#if TRACE_HEXBIN
+printf(" -> GTILES loading\n");
+#endif
+					offset=size=0; // full file
+					ae->idx+=2;
 				} else if (strcmp("ITILES",ae->wl[ae->idx+2].w)==0) {
 					/*** entrelace les tiles, besoin de hauteur et largeur de la tile ***/
 					if (!ae->wl[ae->idx+2].t) {
@@ -12180,6 +15850,7 @@ printf(" -> REMAP loading\n");
 						itiles=1;
 					} else {
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is INCBIN'file',ITILES,width\n");
+						tilex=0;
 					}
 #if TRACE_HEXBIN
 printf(" -> ITILES loading\n");
@@ -12249,7 +15920,7 @@ printf(" -> VTILES loading\n");
 										rvar->v=ae->hexbin[hbinidx].rawlen;
 									} else {
 										/* mais ne peut être un label ou un alias */
-										ExpressionSetDicoVar(ae,ae->wl[ae->idx+6].w,ae->hexbin[hbinidx].rawlen);
+										ExpressionSetDicoVar(ae,ae->wl[ae->idx+6].w,ae->hexbin[hbinidx].rawlen,0);
 									}
 									ae->idx+=6;
 								} else {
@@ -12270,18 +15941,17 @@ printf(" -> VTILES loading\n");
 			ae->idx++;
 		}
 
+		curhexbin=&ae->hexbin[hbinidx];
+
 		/* preprocessor cannot manage variables so here is the delayed load */
 		if (ae->hexbin[hbinidx].datalen<0) {
-			struct s_hexbin *curhexbin;
 			char *newfilename;
 			int lm,touched;
-			unsigned char *newdata=NULL;
 			
 #if TRACE_HEXBIN
 printf("Hexbin -> as only the assembler know how to deal with var,\n");
 printf("we look for tags in the name of a file which were not found\n");
 #endif
-			curhexbin=&ae->hexbin[hbinidx];
 			
 			newfilename=TxtStrDup(curhexbin->filename);
 
@@ -12291,8 +15961,26 @@ printf("we look for tags in the name of a file which were not found\n");
 			}
 			/* on essaie d'interpréter le nom du fichier en dynamique */
 			newfilename=TranslateTag(ae,newfilename,&touched,1,E_TAGOPTION_REMOVESPACE);
-			/* load */
-			if (FileExists(newfilename)) {
+
+			/* Where is the file to load? */
+			if (!FileExists(newfilename)) {
+				int ilookfile;
+				char *filename_toread;
+
+				/* on cherche dans les include */
+				for (ilookfile=0;ilookfile<ae->ipath && !fileok;ilookfile++) {
+					filename_toread=MergePath(ae,ae->includepath[ilookfile],newfilename);
+					if (FileExists(filename_toread)) {
+						fileok=1;
+						MemFree(newfilename);
+						newfilename=TxtStrDup(filename_toread); // Merge renvoie un static
+					}
+				}
+			} else {
+				fileok=1;
+			}
+
+			if (fileok) {
 #if TRACE_HEXBIN
 printf("Hexbin -> surprise! we found the file!\n");
 #endif
@@ -12300,70 +15988,104 @@ printf("Hexbin -> surprise! we found the file!\n");
 				curhexbin->data=MemMalloc(curhexbin->datalen*1.3+10);
 				if (FileReadBinary(newfilename,(char*)curhexbin->data,curhexbin->datalen)!=curhexbin->datalen) {
 					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"read error on file [%s]\n",newfilename);
+					MemFree(curhexbin->data);
+					MemFree(newfilename);
 					return;
 				}
 				FileReadBinaryClose(newfilename);
-
-				switch (curhexbin->crunch) {
-					#ifndef NO_3RD_PARTIES
-					case 4:
-						newdata=LZ4_crunch(curhexbin->data,curhexbin->datalen,&curhexbin->datalen);
-						MemFree(curhexbin->data);
-						curhexbin->data=newdata;
-						#if TRACE_PREPRO
-						rasm_printf(ae,KVERBOSE"crunched with LZ4 into %d byte(s)\n",curhexbin->datalen);
-						#endif
-						break;
-					case 7:
-						{
-						size_t slzlen;
-						newdata=ZX7_compress(optimize(curhexbin->data, curhexbin->datalen), curhexbin->data, curhexbin->datalen, &slzlen);
-						curhexbin->datalen=slzlen;
-						MemFree(curhexbin->data);
-						curhexbin->data=newdata;
-						#if TRACE_PREPRO
-						rasm_printf(ae,KVERBOSE"crunched with ZX7 into %d byte(s)\n",curhexbin->datalen);
-						#endif
-						}
-						break;
-					case 8:
-						rasm_printf(ae,KWARNING"Exomizer is crunching %.1fkb this may take a while, be patient...\n",curhexbin->datalen/1024.0);
-						newdata=Exomizer_crunch(curhexbin->data,curhexbin->datalen,&curhexbin->datalen);
-						MemFree(curhexbin->data);
-						curhexbin->data=newdata;
-						#if TRACE_PREPRO
-						rasm_printf(ae,KVERBOSE"crunched with Exomizer into %d byte(s)\n",curhexbin->datalen);
-						#endif
-						break;
-					#endif
-					case 48:
-						newdata=LZ48_crunch(curhexbin->data,curhexbin->datalen,&curhexbin->datalen);
-						MemFree(curhexbin->data);
-						curhexbin->data=newdata;
-						#if TRACE_PREPRO
-						rasm_printf(ae,KVERBOSE"crunched with LZ48 into %d byte(s)\n",curhexbin->datalen);
-						#endif
-						break;
-					case 49:
-						newdata=LZ49_crunch(curhexbin->data,curhexbin->datalen,&curhexbin->datalen);
-						MemFree(curhexbin->data);
-						curhexbin->data=newdata;
-						#if TRACE_PREPRO
-						rasm_printf(ae,KVERBOSE"crunched with LZ49 into %d byte(s)\n",curhexbin->datalen);
-						#endif
-						break;
-					default:break;
-				}
 				deload=1;
 			} else {
 				/* still not found */
 				MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"file not found [%s]\n",newfilename);
+				MemFree(newfilename);
 				return;
 			}
+			MemFree(newfilename);
 		} 
+
+		if (incwav) {
+			/* SMP,SM2,SM4,DMA */
+			int dma_args=3;
+			int dma_channel=AUDIOSAMPLE_DMAC;
+			int dma_int=0,dma_repeat=0;
+			int mypsgreg=0xA;
+#if TRACE_HEXBIN
+printf("Hexbin -> %s\n",ae->wl[ae->idx+2].w);
+#endif
+			switch (ae->wl[ae->idx+2].w[2]) {
+				case 'P':case '2':case '4':
+				if (!ae->wl[ae->idx+2].t) {
+					amplification=ComputeExpressionCore(ae,ae->wl[ae->idx+3].w,ae->codeadr,0);
+#if TRACE_HEXBIN
+	printf("sample amplification=%.2lf\n",amplification);
+#endif
+				}
+				default:break;
+			}
+
+			switch (ae->wl[ae->idx+2].w[2]) {
+				case 'P':_AudioLoadSample(ae,ae->hexbin[hbinidx].data,ae->hexbin[hbinidx].datalen, AUDIOSAMPLE_SMP,amplification);break;
+				case '2':_AudioLoadSample(ae,ae->hexbin[hbinidx].data,ae->hexbin[hbinidx].datalen, AUDIOSAMPLE_SM2,amplification);break;
+				case '4':_AudioLoadSample(ae,ae->hexbin[hbinidx].data,ae->hexbin[hbinidx].datalen, AUDIOSAMPLE_SM4,amplification);break;
+				case 'A':/* DMA options */
+					if (!ae->wl[ae->idx+2].t) {
+						while (!ae->wl[ae->idx+dma_args].t) {
+							dma_args++;
+							if (strcmp(ae->wl[ae->idx+dma_args].w,"DMA_INT")==0) {
+								dma_int=1;
+							} else if (strcmp(ae->wl[ae->idx+dma_args].w,"DMA_REPEAT")==0) {
+								if (!ae->wl[ae->idx+dma_args].t) {
+									dma_args++;
+									dma_repeat=ComputeExpressionCore(ae,ae->wl[ae->idx+dma_args].w,ae->codeadr,0);
+									if (dma_repeat<1 || dma_repeat>4095) {
+										MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"DMA_REPEAT value out of bounds (1-4095)\n");
+										dma_repeat=0;
+									}
+								} else {
+									MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"DMA_REPEAT must be followed by another parameter\n");
+								}
+							} else if (strcmp(ae->wl[ae->idx+dma_args].w,"DMA_CHANNEL_A")==0) {
+								dma_channel=AUDIOSAMPLE_DMAA;
+								mypsgreg=0x8;
+							} else if (strcmp(ae->wl[ae->idx+dma_args].w,"DMA_CHANNEL_B")==0) {
+								dma_channel=AUDIOSAMPLE_DMAB;
+								mypsgreg=0x9;
+							} else if (strcmp(ae->wl[ae->idx+dma_args].w,"DMA_CHANNEL_C")==0) {
+								dma_channel=AUDIOSAMPLE_DMAC;
+								mypsgreg=0xA;
+							} else {
+								MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Unrecognized DMA option [%s]\n",ae->wl[ae->idx+dma_args].w);
+							}
+						}
+					}
+					if (dma_repeat) {
+						___output(ae,dma_repeat&0xFF);
+						___output(ae,0x20|((dma_repeat>>8)&0xF));
+					}
+					_AudioLoadSample(ae,ae->hexbin[hbinidx].data,ae->hexbin[hbinidx].datalen, dma_channel,amplification);
+					if (dma_repeat) {
+						___output(ae,0x01);
+						___output(ae,0x40); /* LOOP */
+					}
+					___output(ae,0);
+					___output(ae,mypsgreg); /* volume to zero */
+					if (dma_int) {
+						___output(ae,0x10);
+						___output(ae,0x40); /* INT */
+					}
+					___output(ae,0x20);
+					___output(ae,0x40); /* Mandatory STOP */
+					break;
+
+				default:printf("warning remover\n");break;
+			}
+			ae->idx+=2;
+			return;
+		}
 		
 		if (ae->hexbin[hbinidx].datalen>0) {
 			if (hbinidx<ae->ih && hbinidx>=0) {
+				/* pre-parametres OK (longueur+IDX struct) */
 				if (size<0) {
 #if TRACE_HEXBIN
 printf("taille négative %d -> conversion en %d\n",size,ae->hexbin[hbinidx].datalen+size);
@@ -12396,35 +16118,60 @@ printf("taille nulle et offset=%d -> conversion en %d\n",offset,size);
 					if (size+offset>ae->hexbin[hbinidx].datalen) {
 						MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN size+offset is greater than filesize\n");
 					} else {
+						/* OUTPUT DATA */
+						unsigned char *outputdata;
+						int outputidx=0;
+						outputdata=MemMalloc(ae->hexbin[hbinidx].datalen);
+#if TRACE_HEXBIN
+printf("output fictif pour réorganiser les données\n");
+#endif
+
 						if (revert) {
 							int p;
 							p=size-1;
 							while (p>=0) {
-								___output(ae,ae->hexbin[hbinidx].data[p--]);
+								outputdata[outputidx++]=ae->hexbin[hbinidx].data[p--];
 							}
-						} else if (itiles) {
+						} else if (itiles || gtiles) {
 							/* tiles data reordering */
-							int tx,ty,it,width;
+							int tx,it;
 
 							if (size % (tilex*8)) {
-								MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN ITILES cannot reorder tiles %d bytewidth with file of size %d\n",tilex,size);
+								MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN ITILES/GTILES cannot reorder tiles %d bytewidth with file of size %d\n",tilex,size);
 							} else {
-								it=0;
-								while (it<size) {
-									for (tx=0;tx<tilex;tx++)    ___output(ae,ae->hexbin[hbinidx].data[it+tx+0*tilex]);
-									for (tx=tilex-1;tx>=0;tx--) ___output(ae,ae->hexbin[hbinidx].data[it+tx+1*tilex]);
-									for (tx=0;tx<tilex;tx++)    ___output(ae,ae->hexbin[hbinidx].data[it+tx+3*tilex]);
-									for (tx=tilex-1;tx>=0;tx--) ___output(ae,ae->hexbin[hbinidx].data[it+tx+2*tilex]);
-									for (tx=0;tx<tilex;tx++)    ___output(ae,ae->hexbin[hbinidx].data[it+tx+6*tilex]);
-									for (tx=tilex-1;tx>=0;tx--) ___output(ae,ae->hexbin[hbinidx].data[it+tx+7*tilex]);
-									for (tx=0;tx<tilex;tx++)    ___output(ae,ae->hexbin[hbinidx].data[it+tx+5*tilex]);
-									for (tx=tilex-1;tx>=0;tx--) ___output(ae,ae->hexbin[hbinidx].data[it+tx+4*tilex]);
-									it+=tilex*8;
+								if (itiles) {
+									/* zigzag with regular gray coding */
+									it=0;
+									while (it<size) {
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+0*tilex];
+										for (tx=tilex-1;tx>=0;tx--) outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+1*tilex];
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+3*tilex];
+										for (tx=tilex-1;tx>=0;tx--) outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+2*tilex];
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+6*tilex];
+										for (tx=tilex-1;tx>=0;tx--) outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+7*tilex];
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+5*tilex];
+										for (tx=tilex-1;tx>=0;tx--) outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+4*tilex];
+										it+=tilex*8;
+									}
+								} else {
+									/* only reorder lines with regular gray coding */
+									it=0;
+									while (it<size) {
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+0*tilex];
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+1*tilex];
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+3*tilex];
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+2*tilex];
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+6*tilex];
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+7*tilex];
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+5*tilex];
+										for (tx=0;tx<tilex;tx++)    outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx+4*tilex];
+										it+=tilex*8;
+									}
 								}
 							}
 						} else if (remap) {
 							/* tiles data reordering */
-							int tx,ty,it,width;
+							int tx,it,width;
 
 							width=size/remap;
 
@@ -12433,7 +16180,7 @@ printf("taille nulle et offset=%d -> conversion en %d\n",offset,size);
 							} else {
 								for (it=0;it<remap;it++) {
 									for (tx=0;tx<width;tx++) {
-										___output(ae,ae->hexbin[hbinidx].data[it+tx*remap]);
+										outputdata[outputidx++]=ae->hexbin[hbinidx].data[it+tx*remap];
 									}
 								}
 							}
@@ -12451,7 +16198,7 @@ printf("taille nulle et offset=%d -> conversion en %d\n",offset,size);
 printf("Hexbin -> re-tiling MAP! width=%d\n",width);
 #endif
 								for (idx=tilex=tiley=0;idx<size;idx++) {
-									___output(ae,ae->hexbin[hbinidx].data[tilex+tiley*width]);
+									outputdata[outputidx++]=ae->hexbin[hbinidx].data[tilex+tiley*width];
 									tiley++;
 									if (tiley>=vtiles) {
 										tiley=0;
@@ -12460,23 +16207,147 @@ printf("Hexbin -> re-tiling MAP! width=%d\n",width);
 								}
 							}
 						} else {
-							/* legacy HEXBIN */
-							if (overwritecheck) {
-								for (idx=offset;idx<size+offset;idx++) {
-									___output(ae,ae->hexbin[hbinidx].data[idx]);
-								}
-							} else {
-								___org_close(ae);
-								___org_new(ae,0);
-								for (idx=offset;idx<size+offset;idx++) {
-									___output(ae,ae->hexbin[hbinidx].data[idx]);
-								}
-								/* hack to disable overwrite check */
-								ae->orgzone[ae->io-1].nocode=2;
-								___org_close(ae);
-								___org_new(ae,0);
+#if TRACE_HEXBIN
+printf("Hexbin -> Legacy output from %d to %d\n",offset,size+offset);
+if (curhexbin->crunch) printf("CRUNCHED! (%d)\n",curhexbin->crunch);
+#endif
+							/* only from offset to size+offset */
+							for (idx=offset;idx<size+offset;idx++) {
+								outputdata[outputidx++]=ae->hexbin[hbinidx].data[idx];
+							}
+
+							switch (curhexbin->crunch) {
+								#ifndef NO_3RD_PARTIES
+								case 4:
+									newdata=LZ4_crunch(outputdata,outputidx,&outputidx);
+									MemFree(outputdata);
+									outputdata=newdata;
+									#if TRACE_PREPRO
+									rasm_printf(ae,KVERBOSE"crunched with LZ4 into %d byte(s)\n",outputidx);
+									#endif
+									break;
+
+								case 70:
+									{
+									int delta,slzlen;
+
+									if (outputidx>=1024 && MAX_OFFSET_ZX0>5000) rasm_printf(ae,KWARNING"ZX0 is crunching %.1fkb this may take a while, be patient...\n",outputidx/1024.0);
+									newdata=zx0_compress(zx0_optimize(outputdata, outputidx, 0, MAX_OFFSET_ZX0), outputdata, outputidx, 0, 0, 1, &slzlen, &delta);
+									outputidx=slzlen;
+									MemFree(outputdata);
+									outputdata=newdata;
+									#if TRACE_PREPRO
+									rasm_printf(ae,KVERBOSE"crunched with ZX0 into %d byte(s) delta=%d\n",outputidx,delta);
+									#endif
+									}
+									break;
+								case 71:
+									{
+									int delta,slzlen;
+
+									if (outputidx>=1024 && MAX_OFFSET_ZX0>5000) rasm_printf(ae,KWARNING"ZX0 is crunching %.1fkb this may take a while, be patient...\n",outputidx/1024.0);
+									zx0_reverse(outputdata,outputdata+outputidx-1);
+									newdata=zx0_compress(zx0_optimize(outputdata, outputidx, 0, MAX_OFFSET_ZX0), outputdata, outputidx, 0, 1, 0,&slzlen, &delta);
+        								zx0_reverse(newdata,newdata+slzlen-1);
+									outputidx=slzlen;
+									MemFree(outputdata);
+									outputdata=newdata;
+									#if TRACE_PREPRO
+									rasm_printf(ae,KVERBOSE"crunched with ZX0 backward into %d byte(s) delta=%d\n",outputidx,delta);
+									#endif
+									}
+									break;
+								case 7:
+									{
+									int slzlen;
+									newdata=ZX7_compress(zx7_optimize(outputdata, outputidx), outputdata, outputidx, &slzlen);
+									outputidx=slzlen;
+									MemFree(outputdata);
+									outputdata=newdata;
+									#if TRACE_PREPRO
+									rasm_printf(ae,KVERBOSE"crunched with ZX7 into %d byte(s)\n",outputidx);
+									#endif
+									}
+									break;
+								case 8:
+									if (outputidx>=1024) rasm_printf(ae,KWARNING"Exomizer is crunching %.1fkb this may take a while, be patient...\n",outputidx/1024.0);
+									newdata=Exomizer_crunch(outputdata,outputidx,&outputidx);
+									MemFree(outputdata);
+									outputdata=newdata;
+									#if TRACE_PREPRO
+									rasm_printf(ae,KVERBOSE"crunched with Exomizer into %d byte(s)\n",outputidx);
+									#endif
+									break;
+								case 17:
+									if (outputidx>=1024) rasm_printf(ae,KWARNING"AP-Ultra is crunching %.1fkb this may take a while, be patient...\n",outputidx/1024.0);
+									{
+									int nnewlen;
+									APULTRA_crunch(outputdata,outputidx,&newdata,&nnewlen);
+									outputidx=nnewlen;
+									}
+									MemFree(outputdata);
+									outputdata=newdata;
+									#if TRACE_PREPRO
+									rasm_printf(ae,KVERBOSE"crunched with AP-Ultra into %d byte(s)\n",outputidx);
+									#endif
+									break;
+								case 18:
+									if (outputidx>=16384 && curhexbin->version==2) rasm_printf(ae,KWARNING"LZSA2 is crunching %.1fkb this may take a while, be patient...\n",outputidx/1024.0);
+									{
+									int nnewlen;
+									LZSA_crunch(outputdata,outputidx,&newdata,&nnewlen,curhexbin->version,curhexbin->minmatch);
+									outputidx=nnewlen;
+									}
+									MemFree(outputdata);
+									outputdata=newdata;
+									#if TRACE_PREPRO
+									rasm_printf(ae,KVERBOSE"crunched with LZSA%d into %d byte(s)\n",curhexbin->version,outputidx);
+									#endif
+									break;
+								#endif
+								case 48:
+									newdata=LZ48_crunch(outputdata,outputidx,&outputidx);
+									MemFree(outputdata);
+									outputdata=newdata;
+									#if TRACE_PREPRO
+									rasm_printf(ae,KVERBOSE"crunched with LZ48 into %d byte(s)\n",outputidx);
+									#endif
+									break;
+								case 49:
+									newdata=LZ49_crunch(outputdata,outputidx,&outputidx);
+									MemFree(outputdata);
+									outputdata=newdata;
+									#if TRACE_PREPRO
+									rasm_printf(ae,KVERBOSE"crunched with LZ49 into %d byte(s)\n",outputidx);
+									#endif
+									break;
+								default:break;
+							}
+
+
+							if (!overwritecheck) {
+								rasm_printf(ae,KWARNING"INCBIN without overwrite check still not working...\n");
+								if (ae->erronwarn) MaxError(ae);
 							}
 						}
+
+						if (overwritecheck) {
+							for (idx=0;idx<outputidx;idx++) {
+								___output(ae,outputdata[idx]);
+							}
+						} else {
+							___org_close(ae);
+							___org_new(ae,0);
+							/* hack to disable overwrite check */
+							for (idx=0;idx<outputidx;idx++) {
+								___output(ae,outputdata[idx]);
+							}
+							ae->orgzone[ae->io-1].nocode=2;
+							___org_close(ae);
+							___org_new(ae,0);
+						}
+
+						MemFree(outputdata);
 					}
 				}
 			} else {
@@ -12500,7 +16371,7 @@ printf("Hexbin -> re-tiling MAP! width=%d\n",width);
 
 /*
 save "nom",start,size -> save binary
-save "nom",start,size,TAPE -> save tape file
+save "nom",start,size,TAPE,"cdtname" -> save tape file
 save "nom",start,size,AMSDOS -> save binary with Amsdos header
 save "nom",start,size,DSK,"dskname" -> save binary on DSK data format
 save "nom",start,size,DSK,"dskname",B -> select face
@@ -12508,9 +16379,12 @@ save "nom",start,size,DSK,B -> current DSK, choose face
 save "nom",start,size,DSK -> current DSK, current face
 */
 void __SAVE(struct s_assenv *ae) {
+	#undef FUNC
+	#define FUNC "__SAVE"
+
 	struct s_save cursave={0};
-	unsigned int offset=0,size=0;
-	int ko=1;
+	int ko=1,touched,lm;
+	char *filename;
 
 	if (!ae->wl[ae->idx].t) {
 		/* nom de fichier entre quotes ou bien mot clef DSK */
@@ -12519,17 +16393,31 @@ void __SAVE(struct s_assenv *ae) {
 			ko=0;
 		} else {
 			if (!ae->wl[ae->idx+1].t) {
+				filename=TxtStrDup(ae->wl[ae->idx+1].w);
+				/* need to upper case tags */
+				for (lm=touched=0;filename[lm];lm++) {
+					if (filename[lm]=='{') touched++; else if (filename[lm]=='}') touched--; else if (touched) filename[lm]=toupper(filename[lm]);
+				}
+				filename=TranslateTag(ae,filename,&touched,1,E_TAGOPTION_REMOVESPACE);
+				if (!touched) MemFree(filename);
+
 				if (!ae->wl[ae->idx+2].t && ae->wl[ae->idx+3].t!=2) {
 					cursave.ibank=ae->activebank;
 					cursave.ioffset=ae->idx+2;
 					ExpressionFastTranslate(ae,&ae->wl[ae->idx+2].w,1); // si on utilise des variables ça évite la grouille post traitement...
 					cursave.isize=ae->idx+3;
 					ExpressionFastTranslate(ae,&ae->wl[ae->idx+3].w,1); // idem
-					cursave.iw=ae->idx+1;
+					if (!touched) cursave.iw=ae->idx+1; else cursave.filename=filename;
 					cursave.irun=ae->current_run_idx;
 					if (!ae->wl[ae->idx+3].t) {
 						if (strcmp(ae->wl[ae->idx+4].w,"TAPE")==0) {
 							cursave.tape=1;
+							if (!ae->wl[ae->idx+4].t) {
+								cursave.iwdskname=ae->idx+5;
+							} else {
+								cursave.iwdskname=-1;
+								MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"cannot autoselect TAPE, please specify a filename after TAPE arg\n");
+							}
 						} else if (strcmp(ae->wl[ae->idx+4].w,"AMSDOS")==0) {
 							cursave.amsdos=1;
 						} else if (strcmp(ae->wl[ae->idx+4].w,"HOBETA")==0) {
@@ -12583,28 +16471,217 @@ void __SAVE(struct s_assenv *ae) {
 
 
 void __MODULE(struct s_assenv *ae) {
+	#undef FUNC
+	#define FUNC "__MODULE"
+
 	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
-		if (StringIsQuote(ae->wl[ae->idx+1].w)) {
+		if (strcmp(ae->wl[ae->idx+1].w,"OFF")==0) {
+			if (ae->module || ae->modulen) MemFree(ae->module);
+			ae->module=NULL;
+			ae->modulen=0;
+		} else {
 			if (ae->modulen || ae->module) {
 				MemFree(ae->module);
 			}
 			ae->modulen=strlen(ae->wl[ae->idx+1].w);
-			ae->module=MemMalloc(ae->modulen);
-			/* duplicate and remove quotes */
-			strcpy(ae->module,ae->wl[ae->idx+1].w+1);
-			ae->module[--ae->modulen]=0;
-		} else {
-			MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"MODULE directive need one text parameter\n");
+			ae->module=TxtStrDup(ae->wl[ae->idx+1].w);
 		}
 		ae->idx++;
 	} else {
-		if (ae->module) MemFree(ae->module);
+		if (ae->module || ae->modulen) MemFree(ae->module);
 		ae->module=NULL;
+		ae->modulen=0;
+	}
+}
+void __ENDMODULE(struct s_assenv *ae) {
+	#undef FUNC
+	#define FUNC "__ENDMODULE"
+
+	if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t==1) {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"ENDMODULE does not need any parameter\n");
+	} else {
+		__MODULE(ae);
 	}
 }
 
-void __TIMESTR(struct s_assenv *ae) {
+void __SUMMEM(struct s_assenv *ae) {
+	struct s_poker poker={0};
 
+	if (!ae->wl[ae->idx].t && !ae->wl[ae->idx+1].t && ae->wl[ae->idx+2].t==1) {
+		/* no poke in a NOCODE section */
+		if (!ae->nocode) {
+			poker.method=E_POKER_SUM8;
+			poker.istart=ae->idx+1;
+			poker.iend=ae->idx+2;
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,1);
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx+2].w,1);
+			poker.outputadr=ae->outputadr;
+			poker.ibank=ae->activebank;
+			poker.ipoker=ae->idx;
+			ObjectArrayAddDynamicValueConcat((void**)&ae->poker,&ae->nbpoker,&ae->maxpoker,&poker,sizeof(poker));
+		}
+		___output(ae,0);
+	} else {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is SUMMEM start,end\n");
+	}
+}
+
+void __XORMEM(struct s_assenv *ae) {
+	struct s_poker poker={0};
+
+	if (!ae->wl[ae->idx].t && !ae->wl[ae->idx+1].t && ae->wl[ae->idx+2].t==1) {
+		/* no poke in a NOCODE section */
+		if (!ae->nocode) {
+			poker.method=E_POKER_XOR8;
+			poker.istart=ae->idx+1;
+			poker.iend=ae->idx+2;
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,1);
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx+2].w,1);
+			poker.outputadr=ae->outputadr;
+			poker.ibank=ae->activebank;
+			poker.ipoker=ae->idx;
+			ObjectArrayAddDynamicValueConcat((void**)&ae->poker,&ae->nbpoker,&ae->maxpoker,&poker,sizeof(poker));
+		}
+		___output(ae,0);
+	} else {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is XORMEM start,end\n");
+	}
+}
+
+void __CIPHERMEM(struct s_assenv *ae) {
+	struct s_poker poker={0};
+	int ciphermode;
+
+	if (!ae->wl[ae->idx].t && !ae->wl[ae->idx+1].t) {
+		/* cipher memory */
+		if (!ae->nocode) {
+			if (!ae->wl[ae->idx+2].t) {
+				ExpressionFastTranslate(ae,&ae->wl[ae->idx+3].w,1);
+				ciphermode=RoundComputeExpression(ae,ae->wl[ae->idx+3].w,ae->outputadr,0,0);
+				switch (ciphermode) {
+					default:
+					case 0:
+					case 1:poker.method=E_POKER_CIPHER001;break;
+					case 2:poker.method=E_POKER_CIPHER002;break;
+					case 3:poker.method=E_POKER_CIPHER003; break;
+					case 4:poker.method=E_POKER_CIPHER004;
+						if (!ae->wl[ae->idx+3].t) {
+							poker.istring=ae->idx+4;
+						} else {
+							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is CIPHERMEM start,end,4,'keystring'\n");
+						}
+						break;
+				}
+				switch (ciphermode) {
+					default:
+					case 0:
+					case 1:
+					case 2:
+					case 3:
+						if (!ae->wl[ae->idx+3].t) {
+							rasm_printf(ae,KWARNING"[%s:%d] Warning: keystring parameter will be ignored\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+							if (ae->erronwarn) MaxError(ae);
+						}
+					case 4:
+						break;
+				}
+				if (!ae->wl[ae->idx+3].t && !ae->wl[ae->idx+4].t) {
+					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Too many parameters! Usage is CIPHERMEM start,end[,method[,'keystring']]\n");
+				}
+			} else {
+				poker.method=E_POKER_CIPHER001;
+			}
+			poker.istart=ae->idx+1;
+			poker.iend=ae->idx+2;
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,1);
+			ExpressionFastTranslate(ae,&ae->wl[ae->idx+2].w,1);
+			poker.outputadr=ae->outputadr;
+			poker.ibank=ae->activebank;
+			poker.ipoker=ae->idx;
+			ObjectArrayAddDynamicValueConcat((void**)&ae->poker,&ae->nbpoker,&ae->maxpoker,&poker,sizeof(poker));
+		}
+	} else {
+		MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is CIPHERMEM start,end[,method[,'keystring']]\n");
+	}
+}
+
+void __TIMESTAMP(struct s_assenv *ae) {
+	char Ltimestamp[32];
+	char LTMP[64];
+	struct tm *local;
+	char *timestr;
+	time_t now;
+	int idx=0;
+	int cpt;
+
+	time(&now);
+	local=localtime(&now);
+
+	if (!ae->wl[ae->idx].t) {
+		ae->idx++;
+		timestr=ae->wl[ae->idx].w+1;
+	} else {
+		timestr=Ltimestamp;
+		strcpy(timestr,"[Y-M-D h:m]");
+	}
+
+	while (timestr[idx]) {
+		switch (timestr[idx]) {
+			case 'Y':
+				cpt=0;
+				while (timestr[idx]=='Y') {idx++;cpt++;}
+				sprintf(LTMP,"%04d",local->tm_year+1900);
+				switch (cpt) {
+					case 2:	//___output(ae,LTMP[2]);
+						___output(ae,ae->charset[(unsigned int)LTMP[2]]);
+						___output(ae,ae->charset[(unsigned int)LTMP[3]]);
+						break;
+					case 1:
+					case 4:	//___output(ae,LTMP[0]);
+						___output(ae,ae->charset[(unsigned int)LTMP[0]]);
+						___output(ae,ae->charset[(unsigned int)LTMP[1]]);
+						___output(ae,ae->charset[(unsigned int)LTMP[2]]);
+						___output(ae,ae->charset[(unsigned int)LTMP[3]]);
+						break;
+				}
+				break;
+			case 'M':
+				while (timestr[idx]=='M') idx++;
+				sprintf(LTMP,"%02d",local->tm_mon+1);
+				___output(ae,ae->charset[(unsigned int)LTMP[0]]);
+				___output(ae,ae->charset[(unsigned int)LTMP[1]]);
+				break;
+			case 'D':
+				while (timestr[idx]=='D') idx++;
+				sprintf(LTMP,"%02d",local->tm_mday);
+				___output(ae,ae->charset[(unsigned int)LTMP[0]]);
+				___output(ae,ae->charset[(unsigned int)LTMP[1]]);
+				break;
+			case 'h':
+				while (timestr[idx]=='h') idx++;
+				sprintf(LTMP,"%02d",local->tm_hour);
+				___output(ae,ae->charset[(unsigned int)LTMP[0]]);
+				___output(ae,ae->charset[(unsigned int)LTMP[1]]);
+				break;
+			case 'm':
+				while (timestr[idx]=='m') idx++;
+				sprintf(LTMP,"%02d",local->tm_min);
+				___output(ae,ae->charset[(unsigned int)LTMP[0]]);
+				___output(ae,ae->charset[(unsigned int)LTMP[1]]);
+				break;
+			case 's':
+				while (timestr[idx]=='s') idx++;
+				sprintf(LTMP,"%02d",local->tm_sec);
+				___output(ae,ae->charset[(unsigned int)LTMP[0]]);
+				___output(ae,ae->charset[(unsigned int)LTMP[1]]);
+				break;
+			default:
+				if ((timestr[idx]=='\'' || timestr[idx]=='"') && !timestr[idx+1]) {} else ___output(ae,ae->charset[(unsigned int)timestr[idx]&0xFF]);
+				idx++;
+				break;
+
+		}
+	}
 }
 
 struct s_asm_keyword instruction[]={
@@ -12648,9 +16725,11 @@ struct s_asm_keyword instruction[]={
 {"DI",0,_DI},
 {"EI",0,_EI},
 {"NOP",0,_NOP},
+{"DEFF",0,_DEFF},
 {"DEFR",0,_DEFR},
 {"DEFB",0,_DEFB},
 {"DEFM",0,_DEFB},
+{"DF",0,_DEFF},
 {"DR",0,_DEFR},
 {"DM",0,_DEFB},
 {"DB",0,_DEFB},
@@ -12691,6 +16770,7 @@ struct s_asm_keyword instruction[]={
 {"INDR",0,_INDR},
 {"INIR",0,_INIR},
 {"REPEAT",0,__REPEAT},
+{"STARTINGINDEX",0,__STARTINGINDEX},
 {"REND",0,__REND},
 {"ENDREPEAT",0,__REND},
 {"ENDREP",0,__REND},
@@ -12699,8 +16779,11 @@ struct s_asm_keyword instruction[]={
 {"PROTECT",0,__PROTECT},
 {"WHILE",0,__WHILE},
 {"WEND",0,__WEND},
+{"READ",0,__READ},
+{"INCLUDE",0,__READ}, // anti-label
 {"HEXBIN",0,__HEXBIN},
 {"ALIGN",0,__ALIGN},
+{"CONFINE",0,__CONFINE},
 {"ELSEIF",0,__ELSEIF},
 {"ELSE",0,__ELSE},
 {"IF",0,__IF},
@@ -12732,6 +16815,7 @@ struct s_asm_keyword instruction[]={
 {"LIST",0,__LIST},
 {"STOP",0,__STOP},
 {"PRINT",0,__PRINT},
+{"DELAYED_PRINT",0,__DELAYED_PRINT},
 {"FAIL",0,__FAIL},
 {"BREAKPOINT",0,__BREAKPOINT},
 {"BANK",0,__BANK},
@@ -12740,11 +16824,19 @@ struct s_asm_keyword instruction[]={
 {"LIMIT",0,__LIMIT},
 {"LZEXO",0,__LZEXO},
 {"LZX7",0,__LZX7},
+{"LZX0",0,__LZX0},
+{"LZX0B",0,__LZX0B},
+{"LZAPU",0,__LZAPU},
+{"LZSA1",0,__LZSA1},
+{"LZSA2",0,__LZSA2},
 {"LZ4",0,__LZ4},
 {"LZ48",0,__LZ48},
 {"LZ49",0,__LZ49},
 {"LZCLOSE",0,__LZCLOSE},
+{"SNASET",0,__SNASET},
+{"SNAPINIT",0,__SNAPINIT},
 {"BUILDZX",0,__BUILDZX},
+{"BUILDOBJ",0,__BUILDOBJ},
 {"BUILDCPR",0,__BUILDCPR},
 {"BUILDSNA",0,__BUILDSNA},
 {"BUILDROM",0,__BUILDROM},
@@ -12761,8 +16853,27 @@ struct s_asm_keyword instruction[]={
 {"ENDS",0,__ENDSTRUCT},
 {"NOEXPORT",0,__NOEXPORT},
 {"ENOEXPORT",0,__ENOEXPORT},
+{"MODULE",0,__MODULE},
+{"ENDMODULE",0,__ENDMODULE},
+{"TIMESTAMP",0,__TIMESTAMP},
+{"SUMMEM",0,__SUMMEM},
+{"XORMEM",0,__XORMEM},
+{"CIPHERMEM",0,__CIPHERMEM},
+{"EXTERNAL",0,__EXTERNAL},
+{"PROCEDURE",0,__PROCEDURE},
 {"",0,NULL}
 };
+
+int IsDirective(char *zeexpression)
+{
+	int i,crc;
+
+	crc=GetCRC(zeexpression);
+
+	for (i=0;instruction[i].mnemo[0];i++) if (instruction[i].crc==crc && !strcmp(instruction[i].mnemo,zeexpression)) return 1;
+
+	return 0;
+}
 
 int Assemble(struct s_assenv *ae, unsigned char **dataout, int *lenout, struct s_rasm_info **debug)
 {
@@ -12772,16 +16883,17 @@ int Assemble(struct s_assenv *ae, unsigned char **dataout, int *lenout, struct s
 	unsigned char *AmsdosHeader;
 	struct s_expression curexp={0};
 	struct s_wordlist *wordlist;
-	struct s_expr_dico curdico={0};
 	struct s_label *curlabel;
 	int icrc,curcrc,i,j,k;
 	unsigned char *lzdata=NULL;
 	int lzlen,lzshift,input_size;
-	size_t slzlen;
+	int slzlen,delta;
 	unsigned char *input_data;
 	struct s_orgzone orgzone={0};
-	int iorgzone,ibank,offset,endoffset;
-	int il,maxrom;
+	int iorgzone,ibank,offset,endoffset,morgzone,saveorgzone;
+	int AutomateCharStop[256];
+	int AutomateChar[256];
+	int il,jl,maxrom;
 	char *TMP_filename=NULL;
 	int minmem=65536,maxmem=0,lzmove;
 	char symbol_line[1024];
@@ -12790,9 +16902,17 @@ int Assemble(struct s_assenv *ae, unsigned char **dataout, int *lenout, struct s
 	int curii,inhibe;
 	int ok;
 
+
+	for (i=0;i<256;i++) {
+		if (i==0 || (i>='a' && i<='z') || (i>='A' && i<='Z')) AutomateCharStop[i]=1; else AutomateCharStop[i]=0;
+		if ((i>='a' && i<='z') || (i>='A' && i<='Z')) AutomateChar[i]=1; else AutomateChar[i]=0;
+	}
+	AutomateChar['@']=AutomateCharStop['@']=1;
+	AutomateChar['_']=AutomateCharStop['_']=1;
+
 	rasm_printf(ae,KAYGREEN"Assembling\n");
 #if TRACE_ASSEMBLE
-printf("assembling\n");
+printf("assembling (nberr=%d)\n",ae->nberr);
 #endif
 #if TRACE_GENERALE
 printf("*** assembling ***\n");
@@ -12809,16 +16929,17 @@ printf("*** assembling ***\n");
 	
 	/* default orgzone */
 	orgzone.ibank=BANK_MAX_NUMBER;
+	orgzone.inplace=1;
 	ObjectArrayAddDynamicValueConcat((void**)&ae->orgzone,&ae->io,&ae->mo,&orgzone,sizeof(orgzone));
 	___output=___internal_output;
 	/* init des automates */
-	InitAutomate(ae->AutomateHexa,AutomateHexaDefinition);
-	InitAutomate(ae->AutomateDigit,AutomateDigitDefinition);
-	InitAutomate(ae->AutomateValidLabel,AutomateValidLabelDefinition);
-	InitAutomate(ae->AutomateValidLabelFirst,AutomateValidLabelFirstDefinition);
-	InitAutomate(ae->AutomateExpressionValidCharExtended,AutomateExpressionValidCharExtendedDefinition);
-	InitAutomate(ae->AutomateExpressionValidCharFirst,AutomateExpressionValidCharFirstDefinition);
-	InitAutomate(ae->AutomateExpressionValidChar,AutomateExpressionValidCharDefinition);
+	InitAutomate(ae->AutomateHexa,(unsigned char *)AutomateHexaDefinition);
+	InitAutomate(ae->AutomateDigit,(unsigned char *)AutomateDigitDefinition);
+	InitAutomate(ae->AutomateValidLabel,(unsigned char *)AutomateValidLabelDefinition);
+	InitAutomate(ae->AutomateValidLabelFirst,(unsigned char *)AutomateValidLabelFirstDefinition);
+	InitAutomate(ae->AutomateExpressionValidCharExtended,(unsigned char *)AutomateExpressionValidCharExtendedDefinition);
+	InitAutomate(ae->AutomateExpressionValidCharFirst,(unsigned char *)AutomateExpressionValidCharFirstDefinition);
+	InitAutomate(ae->AutomateExpressionValidChar,(unsigned char *)AutomateExpressionValidCharDefinition);
 	ae->AutomateExpressionDecision['<']='<';
 	ae->AutomateExpressionDecision['>']='>';
 	ae->AutomateExpressionDecision['=']='=';
@@ -12829,6 +16950,7 @@ printf("*** assembling ***\n");
 	/* set operator precedence */
 	if (!ae->maxam) {
 		for (i=0;i<256;i++) {
+			ae->AutomateElement[i].string=NULL;
 			switch (i) {
 				/* priority 0 */
 				case '(':ae->AutomateElement[i].operator=E_COMPUTE_OPERATION_OPEN;ae->AutomateElement[i].priority=0;break;
@@ -12867,6 +16989,7 @@ printf("*** assembling ***\n");
 		}
 	} else {
 		for (i=0;i<256;i++) {
+			ae->AutomateElement[i].string=NULL;
 			switch (i) {
 				/* priority 0 */
 				case '(':ae->AutomateElement[i].operator=E_COMPUTE_OPERATION_OPEN;ae->AutomateElement[i].priority=0;break;
@@ -12930,8 +17053,8 @@ printf("*** assembling ***\n");
 	}
 	/* default var */
 	ae->autorise_export=1;
-	ExpressionSetDicoVar(ae,"PI",3.1415926545);
-	ExpressionSetDicoVar(ae,"ASSEMBLER_RASM",1);
+	ExpressionSetDicoVar(ae,"PI",3.1415926545,0);
+	ExpressionSetDicoVar(ae,"ASSEMBLER_RASM",1,0);
 	
 	/* add a fictive expression to simplify test when parsing expressions */
 	ObjectArrayAddDynamicValueConcat((void **)&ae->expression,&ae->ie,&ae->me,&curexp,sizeof(curexp));
@@ -12940,7 +17063,7 @@ printf("*** assembling ***\n");
 	for (icrc=0;instruction[icrc].mnemo[0];icrc++) instruction[icrc].crc=GetCRC(instruction[icrc].mnemo);
 	for (icrc=0;math_keyword[icrc].mnemo[0];icrc++) math_keyword[icrc].crc=GetCRC(math_keyword[icrc].mnemo);
 
-	if (ae->as80==1) { /* not for UZ80 */
+	if (ae->as80==1 || ae->pasmo) { /* not for UZ80 */
 		for (icrc=0;instruction[icrc].mnemo[0];icrc++) {
 			if (strcmp(instruction[icrc].mnemo,"DEFB")==0 || strcmp(instruction[icrc].mnemo,"DB")==0) {
 				instruction[icrc].makemnemo=_DEFB_as80;
@@ -12948,6 +17071,17 @@ printf("*** assembling ***\n");
 				instruction[icrc].makemnemo=_DEFW_as80;
 			} else if (strcmp(instruction[icrc].mnemo,"DEFI")==0) {
 				instruction[icrc].makemnemo=_DEFI_as80;
+			}
+		}
+	} else {
+		/* for multiple configurations with rasm embedded */
+		for (icrc=0;instruction[icrc].mnemo[0];icrc++) {
+			if (strcmp(instruction[icrc].mnemo,"DEFB")==0 || strcmp(instruction[icrc].mnemo,"DB")==0) {
+				instruction[icrc].makemnemo=_DEFB;
+			} else if (strcmp(instruction[icrc].mnemo,"DEFW")==0 || strcmp(instruction[icrc].mnemo,"DW")==0) {
+				instruction[icrc].makemnemo=_DEFW;
+			} else if (strcmp(instruction[icrc].mnemo,"DEFI")==0) {
+				instruction[icrc].makemnemo=_DEFI;
 			}
 		}
 	}
@@ -12962,6 +17096,10 @@ printf("*** assembling ***\n");
 			ICRC_DEFW=icrc;
 		} else if (strcmp(instruction[icrc].mnemo,"DW")==0) {
 			ICRC_DW=icrc;
+		} else if (strcmp(instruction[icrc].mnemo,"DEFF")==0) {
+			ICRC_DEFF=icrc;
+		} else if (strcmp(instruction[icrc].mnemo,"DF")==0) {
+			ICRC_DF=icrc;
 		} else if (strcmp(instruction[icrc].mnemo,"DEFR")==0) {
 			ICRC_DEFR=icrc;
 		} else if (strcmp(instruction[icrc].mnemo,"DR")==0) {
@@ -13099,22 +17237,43 @@ printf("-loop\n");
 				}				
 			}
 		}
+		/*****************************************
+		  m a c r o   p o s i t i o n s
+		*****************************************/
 		if (ae->imacropos) {
+			int icheckm;
+
+			/*
+			printf("===== Macro positions idx=%d =====\n",ae->idx);
+			for (icheckm=0;icheckm<ae->imacropos;icheckm++) {
+				printf("macro[%d] start=%3d end=%3d level=%d \n",icheckm,ae->macropos[icheckm].start,ae->macropos[icheckm].end,ae->macropos[icheckm].level);
+			}
+			printf("---------------------------\n");
+			*/
+
+			/* we must close */
+			for (icheckm=0;icheckm<ae->imacropos;icheckm++) {
+				if (ae->idx==ae->macropos[icheckm].end) {
+					/* contiguous macro management... */
+					if (ae->macropos[icheckm].pushed) {
+						PopGlobal(ae);
+						ae->macropos[icheckm].pushed=0;
+					}
+				}
+			}
+			/* before opening */
+			for (icheckm=0;icheckm<ae->imacropos;icheckm++) {
+				if (ae->idx==ae->macropos[icheckm].start) {
+					PushGlobal(ae);
+					ae->macropos[icheckm].pushed=1;
+				}
+			}
+
 			/* are we still in a macro? */
 			if (ae->idx>=ae->macropos[0].end) {
 				/* are we out of all repetition blocks? */
 				if (!ae->ir && !ae->iw) {
 					ae->imacropos=0;
-
-					/* quand on sort du local, on récupère le dernier label global */
-					if (ae->lastsuperglobal!=ae->lastgloballabel && ae->lastsuperglobal) {
-						if (ae->lastglobalalloc) {
-							MemFree(ae->lastgloballabel);
-							ae->lastglobalalloc=0;
-						}
-						ae->lastgloballabel=ae->lastsuperglobal;
-						ae->lastgloballabellen=strlen(ae->lastgloballabel);
-					}
 				}
 			}
 		}
@@ -13228,102 +17387,254 @@ printf("-check ORG\n");
 		}
 	}
 #if TRACE_ASSEMBLE
-printf("crunch if any\n");
+printf("crunch if any %d blocks\n",ae->ilz);
 #endif
 	/***************************************************
 	         c r u n c h   L Z   s e c t i o n s
 	***************************************************/
 	if (!ae->stop || !ae->nberr) {
+
+		/* all EQU values are computed in order to be STATIC values until the end 
+		 * at this point, there is a lot of expressions (in or outside lz sections)
+		 * to be computed.
+		*/
+		for (i=0;i<ae->ialias;i++) {
+			char alias_value[128];
+			double v;
+			// compute EQU defined in crunched sections
+			if (ae->alias[i].lz>=0) {
+				ae->idx=ae->alias[i].iw; // expression core hack
+				v=ComputeExpressionCore(ae,ae->alias[i].translation,ae->alias[i].ptr,0);
+				sprintf(alias_value,"%.8lf",v);
+				MemFree(ae->alias[i].translation);
+				ae->alias[i].translation=TxtStrDup(alias_value);
+				ae->alias[i].len=strlen(ae->alias[i].translation);
+			}
+		}
+
 		for (i=0;i<ae->ilz;i++) {
-			/* compute labels and expression inside crunched blocks */
-			PopAllExpression(ae,i);
-			
-			ae->curlz=i;
-			iorgzone=ae->lzsection[i].iorgzone;
-			ibank=ae->lzsection[i].ibank;
-			input_data=&ae->mem[ae->lzsection[i].ibank][ae->lzsection[i].memstart];
-			input_size=ae->lzsection[i].memend-ae->lzsection[i].memstart;
-//printf("grouik (%d) %s\n",ae->lzsection[i].lzversion,ae->lzsection[i].lzversion==8?"mizou":"");
-			if (!input_size) {
-				rasm_printf(ae,KWARNING"[%s:%d] Warning: crunched section is empty\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
-			} else {
-				switch (ae->lzsection[i].lzversion) {
-					case 7:
-						#ifndef NO_3RD_PARTIES
-						lzdata=ZX7_compress(optimize(input_data, input_size), input_data, input_size, &slzlen);
-						lzlen=slzlen;
-						#endif
-						break;
-					case 4:
-						#ifndef NO_3RD_PARTIES
-						lzdata=LZ4_crunch(input_data,input_size,&lzlen);
-						#endif
-						break;
-					case 8:
-						#ifndef NO_3RD_PARTIES
-						rasm_printf(ae,KWARNING"Exomizer is crunching %.1fkb this may take a while, be patient...\n",input_size/1024.0);
+			/* on dépile les symboles dans l'ordre mais on ne reloge pas sur les zones intermédiaires ou post-crunched */
+			if (ae->lzsection[i].lzversion!=0) {
+#if TRACE_ASSEMBLE
+printf("Crunch LZ[%d] (%d) %s\n",i,ae->lzsection[i].lzversion,ae->lzsection[i].lzversion==8?"mizou":"");
+#endif
 
-						lzdata=Exomizer_crunch(input_data,input_size,&lzlen);
-						#endif
-						break;
-					case 48:
-						lzdata=LZ48_crunch(input_data,input_size,&lzlen);
-						break;
-					case 49:
-						lzdata=LZ49_crunch(input_data,input_size,&lzlen);
-						break;
-					default:
-						rasm_printf(ae,"Internal error - unknown crunch method %d\n",ae->lzsection[i].lzversion);
-						exit(-12);
+				if (ae->lzsection[i].memend==-1) {
+					/* patch idx */
+					ae->idx=ae->lzsection[i].iw;
+					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"Crunched section was not closed\n");
+					continue;
+				}
+
+				/* compute labels and expression inside crunched blocks */
+				PopAllExpression(ae,i);
+
+				ae->curlz=i;
+				iorgzone=ae->lzsection[i].iorgzone;
+				ibank=ae->lzsection[i].ibank;
+				input_data=&ae->mem[ae->lzsection[i].ibank][ae->lzsection[i].memstart];
+				input_size=ae->lzsection[i].memend-ae->lzsection[i].memstart;
+				if (!input_size) {
+					rasm_printf(ae,KWARNING"[%s:%d] Warning: crunched section is empty\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+					if (ae->erronwarn) MaxError(ae);
+				} else {
+					switch (ae->lzsection[i].lzversion) {
+
+						case 70:
+							#ifndef NO_3RD_PARTIES
+							if (input_size>=1024 && MAX_OFFSET_ZX0>5000) rasm_printf(ae,KWARNING"ZX0 is crunching %.1fkb this may take a while, be patient...\n",input_size/1024.0);
+							lzdata=zx0_compress(zx0_optimize(input_data, input_size, 0, MAX_OFFSET_ZX0), input_data, input_size, 0, 0, 1,&slzlen, &delta);
+							lzlen=slzlen;
+							#endif
+							break;
+						case 71:
+							#ifndef NO_3RD_PARTIES
+							if (input_size>=1024 && MAX_OFFSET_ZX0>5000) rasm_printf(ae,KWARNING"ZX0 is crunching %.1fkb this may take a while, be patient...\n",input_size/1024.0);
+							zx0_reverse(input_data,input_data+input_size-1);
+							lzdata=zx0_compress(zx0_optimize(input_data, input_size, 0, MAX_OFFSET_ZX0), input_data, input_size, 0, 1, 0,&slzlen, &delta);
+       							zx0_reverse(lzdata,lzdata+slzlen-1);
+							lzlen=slzlen;
+							#endif
+							break;
+						case 7:
+							#ifndef NO_3RD_PARTIES
+							lzdata=ZX7_compress(zx7_optimize(input_data, input_size), input_data, input_size, &slzlen);
+							lzlen=slzlen;
+							#endif
+							break;
+						case 4:
+							#ifndef NO_3RD_PARTIES
+							lzdata=LZ4_crunch(input_data,input_size,&lzlen);
+							#endif
+							break;
+						case 8:
+							#ifndef NO_3RD_PARTIES
+							if (input_size>=1024) rasm_printf(ae,KWARNING"Exomizer is crunching %.1fkb this may take a while, be patient...\n",input_size/1024.0);
+							lzdata=Exomizer_crunch(input_data,input_size,&lzlen);
+							#endif
+							break;
+						case 17:
+							#ifndef NO_3RD_PARTIES
+							if (input_size>=1024) rasm_printf(ae,KWARNING"AP-Ultra is crunching %.1fkb this may take a while, be patient...\n",input_size/1024.0);
+							APULTRA_crunch(input_data,input_size,&lzdata,&lzlen);
+							#endif
+							break;
+						case 18:
+#if TRACE_ASSEMBLE
+							printf("crunching bank %d ptr=%d lng=%d version=%d minmatch=%d\n",ae->lzsection[i].ibank,ae->lzsection[i].memstart,input_size,ae->lzsection[i].version,ae->lzsection[i].minmatch);
+#endif
+							#ifndef NO_3RD_PARTIES
+							if (input_size>=16384 && ae->lzsection[i].version==2) rasm_printf(ae,KWARNING"LZSA is crunching %.1fkb this may take a while, be patient...\n",input_size/1024.0);
+							LZSA_crunch(input_data,input_size,&lzdata,&lzlen,ae->lzsection[i].version,ae->lzsection[i].minmatch);
+							#endif
+							break;
+						case 48:
+							lzdata=LZ48_crunch(input_data,input_size,&lzlen);
+							break;
+						case 49:
+							lzdata=LZ49_crunch(input_data,input_size,&lzlen);
+							break;
+						default:
+							rasm_printf(ae,"Internal error - unknown crunch method %d\n",ae->lzsection[i].lzversion);
+							exit(-12);
+					}
+				}
+
+#if TRACE_ASSEMBLE
+				printf("lzsection[%d] type=%d start=%04X end=%04X crunched size=%d\n",i,ae->lzsection[i].lzversion,ae->lzsection[i].memstart,ae->lzsection[i].memend,lzlen);
+#endif
+
+				if (input_size<lzlen) {
+					//MakeError(ae,ae->filename[ae->wl[ae->lzsection[i].iw].ifile],ae->wl[ae->lzsection[i].iw].l,"As the LZ section cannot crunch data, Rasm may not guarantee assembled file!\n");
+					rasm_printf(ae,KWARNING"Warning: LZ section is bigger than original\n");
+					if (ae->erronwarn) MaxError(ae);
+				}
+
+				lzshift=lzlen-(ae->lzsection[i].memend-ae->lzsection[i].memstart);
+#if TRACE_ASSEMBLE
+printf("lzshift=%d\n",lzshift);
+#endif
+
+				/*******************************************************************************
+				  r e l o c a t e   d a t a   u n t i l   n o n   c o n t i g u o u s   O R G
+				*******************************************************************************/
+				morgzone=iorgzone;
+				if (lzshift>0) {
+					/* positif => plus gros @@TODO */
+					//MemMove(ae->mem[ae->lzsection[i].ibank]+ae->lzsection[i].memend+lzshift,ae->mem[ae->lzsection[i].ibank]+ae->lzsection[i].memend,65536-ae->lzsection[i].memend-lzshift);
+				} else if (lzshift<0) {
+					/* when crunched we may have to move more than 1 ORG */
+					while (morgzone+1<ae->io) {
+						/* if next ORG zone is contiguous */
+						if (ae->orgzone[morgzone+1].memstart==ae->orgzone[morgzone].memend && ae->orgzone[morgzone+1].ibank==ae->orgzone[morgzone].ibank) {
+							morgzone++;
+						} else break;
+					}
+					lzmove=ae->orgzone[morgzone].memend-ae->lzsection[i].memend;
+#if TRACE_ASSEMBLE
+printf("include %d other ORG for the memove size=%d\n",morgzone-iorgzone,lzmove);
+#endif
+					if (lzmove) {
+						MemMove(ae->mem[ae->lzsection[i].ibank]+ae->lzsection[i].memend+lzshift,ae->mem[ae->lzsection[i].ibank]+ae->lzsection[i].memend,lzmove);
+					}
+				}
+				memcpy(ae->mem[ae->lzsection[i].ibank]+ae->lzsection[i].memstart,lzdata,lzlen);
+				MemFree(lzdata);
+				/*******************************************************************
+				  l a b e l    a n d    e x p r e s s i o n    r e l o c a t i o n
+				*******************************************************************/
+				/* relocate labels in the same ORG zone AND contiguous ORG when they are "in place" */
+				il=ae->lzsection[i].ilabel;
+				saveorgzone=iorgzone;
+				do {
+					while (il<ae->il && ae->label[il].iorgzone<iorgzone) il++;
+
+					while (il<ae->il && ae->label[il].iorgzone==iorgzone) {
+						curlabel=SearchLabel(ae,ae->label[il].iw!=-1?wordlist[ae->label[il].iw].w:ae->label[il].name,ae->label[il].crc);
+						/* CANNOT be NULL */
+						curlabel->ptr+=lzshift;
+#if TRACE_ASSEMBLE
+	printf("label [%s] shifte de %d valeur #%04X -> #%04X\n",curlabel->iw!=-1?wordlist[curlabel->iw].w:curlabel->name,lzshift,curlabel->ptr-lzshift,curlabel->ptr);
+#endif
+						il++;
+					}
+					iorgzone++;
+					/* jump over contiguous ORG not "in place" */
+					while (iorgzone<ae->io && !ae->orgzone[iorgzone].inplace && iorgzone<=morgzone) {
+						//printf("label reallocation jump over ORG %d\n",iorgzone);
+						iorgzone++;
+					}
+				} while (iorgzone<=morgzone);
+
+				/* relocate mapping after the same ORG zone and inside contiguous ORG
+				 * there is no check for outside/inside crunched section because this
+				 * was already done during mapping declaration but we must avoid to
+				 * shift before crunched section inside the same ORG */
+				iorgzone=saveorgzone;
+				do {
+					for (il=0;il<ae->nexternal;il++) {
+						for (jl=0;jl<ae->external[il].nmapping;jl++) {
+							if (ae->external[il].mapping[jl].iorgzone==iorgzone && ae->external[il].mapping[jl].ptr>ae->lzsection[i].memstart) {
+				//printf("shift mapping ptr=%d => %d\n",ae->external[il].mapping[jl].ptr,ae->external[il].mapping[jl].ptr+lzshift);
+								ae->external[il].mapping[jl].ptr+=lzshift;
+							}
+						}
+					}
+					iorgzone++;
+				} while (iorgzone<=morgzone);
+
+				/* relocate expressions in the same ORG zone AND contiguous ORG */
+				iorgzone=saveorgzone;
+				il=ae->lzsection[i].iexpr;
+				do {
+					while (il<ae->il && ae->label[il].iorgzone<iorgzone) il++;
+
+					while (il<ae->ie && ae->expression[il].iorgzone==iorgzone) {
+						ae->expression[il].wptr+=lzshift;
+						/* relocate only "in place" contiguous ORG */
+						if (ae->orgzone[iorgzone].inplace) ae->expression[il].ptr+=lzshift;
+#if TRACE_ASSEMBLE
+	printf("expression [%s] shiftee ptr(%s)=#%04X wptr=#%04X\n", ae->expression[il].reference?ae->expression[il].reference:wordlist[ae->expression[il].iw].w, ae->orgzone[iorgzone].inplace?"relocated":"untouched",ae->expression[il].ptr, ae->expression[il].wptr);
+#endif
+						il++;
+					}
+					iorgzone++;
+				} while (iorgzone<=morgzone);
+
+				/* relocate crunched sections in the same ORG zone AND contiguous ORG */
+				iorgzone=saveorgzone;
+				il=i+1;
+				do {
+					while (il<ae->ilz && ae->lzsection[il].iorgzone==iorgzone && ae->lzsection[il].ibank==ibank) {
+
+#if TRACE_ASSEMBLE
+	rasm_printf(ae,"reloger lzsection[%d] O%d B%d shift=%d\n",il,ae->lzsection[il].iorgzone,ae->lzsection[il].ibank,lzshift);
+#endif
+						ae->lzsection[il].memstart+=lzshift;
+						ae->lzsection[il].memend+=lzshift;
+						il++;
+					}
+					iorgzone++;
+				} while (iorgzone<=morgzone);
+
+				iorgzone=saveorgzone;
+				/* relocate ORG zone(s) */
+				ae->orgzone[iorgzone].memend+=lzshift;
+				while (iorgzone<morgzone) {
+					iorgzone++;
+					ae->orgzone[iorgzone].memstart+=lzshift;
+					ae->orgzone[iorgzone].memend+=lzshift;
 				}
 			}
-			//rasm_printf(ae,"lzsection[%d] type=%d start=%04X end=%04X crunched size=%d\n",i,ae->lzsection[i].lzversion,ae->lzsection[i].memstart,ae->lzsection[i].memend,lzlen);
-
-			if (input_size<lzlen) {
-				MakeError(ae,ae->filename[ae->wl[ae->lzsection[i].iw].ifile],ae->wl[ae->lzsection[i].iw].l,"As the LZ section cannot crunch data, Rasm may not guarantee assembled file!\n");
+		}
+		for (i=0;i<ae->ilz;i++) {
+			if (ae->lzsection[i].lzversion==0) {
+#if TRACE_ASSEMBLE
+//printf("PopAllExpr on intermediate section[%d] (%d) %s\n",i,ae->lzsection[i].lzversion,ae->lzsection[i].lzversion==8?"mizou":"");
+#endif
+				/* compute labels and expression outside crunched blocks BUT after crunched */
+				PopAllExpression(ae,i);
 			}
-
-			lzshift=lzlen-(ae->lzsection[i].memend-ae->lzsection[i].memstart);
-			if (lzshift>0) {
-				MemMove(ae->mem[ae->lzsection[i].ibank]+ae->lzsection[i].memend+lzshift,ae->mem[ae->lzsection[i].ibank]+ae->lzsection[i].memend,65536-ae->lzsection[i].memend-lzshift);
-			} else if (lzshift<0) {
-				lzmove=ae->orgzone[iorgzone].memend-ae->lzsection[i].memend;
-				if (lzmove) {
-					MemMove(ae->mem[ae->lzsection[i].ibank]+ae->lzsection[i].memend+lzshift,ae->mem[ae->lzsection[i].ibank]+ae->lzsection[i].memend,lzmove);
-				}
-			}
-			memcpy(ae->mem[ae->lzsection[i].ibank]+ae->lzsection[i].memstart,lzdata,lzlen);
-			MemFree(lzdata);
-			/*******************************************************************
-			  l a b e l    a n d    e x p r e s s i o n    r e l o c a t i o n
-			*******************************************************************/
-			/* relocate labels in the same ORG zone AND after the current crunched section */
-			il=ae->lzsection[i].ilabel;
-			while (il<ae->il && ae->label[il].iorgzone==iorgzone && ae->label[il].ibank==ibank) {
-				curlabel=SearchLabel(ae,ae->label[il].iw!=-1?wordlist[ae->label[il].iw].w:ae->label[il].name,ae->label[il].crc);
-				/* CANNOT be NULL */
-				curlabel->ptr+=lzshift;
-				//printf("label [%s] shifte de %d valeur #%04X -> #%04X\n",curlabel->iw!=-1?wordlist[curlabel->iw].w:curlabel->name,lzshift,curlabel->ptr-lzshift,curlabel->ptr);
-				il++;
-			}
-			/* relocate expressions in the same ORG zone AND after the current crunched section */
-			il=ae->lzsection[i].iexpr;
-			while (il<ae->ie && ae->expression[il].iorgzone==iorgzone && ae->expression[il].ibank==ibank) {
-				ae->expression[il].wptr+=lzshift;
-				ae->expression[il].ptr+=lzshift;
-				//printf("expression [%s] shiftee ptr=#%04X wptr=#%04X\n", ae->expression[il].reference?ae->expression[il].reference:wordlist[ae->expression[il].iw].w, ae->expression[il].ptr, ae->expression[il].wptr);
-				il++;
-			}
-			/* relocate crunched sections in the same ORG zone AND after the current crunched section */
-			il=i+1;
-			while (il<ae->ilz && ae->lzsection[il].iorgzone==iorgzone && ae->lzsection[il].ibank==ibank) {
-				//rasm_printf(ae,"reloger lzsection[%d] O%d B%d\n",il,ae->lzsection[il].iorgzone,ae->lzsection[il].ibank);
-				ae->lzsection[il].memstart+=lzshift;
-				ae->lzsection[il].memend+=lzshift;
-				il++;
-			}
-			/* relocate current ORG zone */
-			ae->orgzone[iorgzone].memend+=lzshift;
 		}
 		if (ae->ilz) {
 			/* compute expression placed after the last crunched block */
@@ -13332,6 +17643,101 @@ printf("crunch if any\n");
 		/* compute expression outside crunched blocks */
 		PopAllExpression(ae,-1);
 	}	
+
+	/*******************************************************************************
+	      p o k e r  
+	*******************************************************************************/
+	for (i=0;i<ae->nbpoker;i++) {
+		int istart=-1,iend=-1;
+		unsigned char xorval,sumval;
+
+		/* start/end */
+		ae->idx=ae->poker[i].istart; /* exp hack */
+		ExpressionFastTranslate(ae,&ae->wl[ae->idx].w,0);
+		istart=RoundComputeExpression(ae,ae->wl[ae->idx].w,0,0,0);
+		ae->idx=ae->poker[i].iend; /* exp hack */
+		ExpressionFastTranslate(ae,&ae->wl[ae->idx].w,0);
+		iend=RoundComputeExpression(ae,ae->wl[ae->idx].w,0,0,0);
+
+		switch (ae->poker[i].method) {
+			case E_POKER_XOR8:
+				xorval=0;
+				for (j=istart;j<iend;j++) {
+					xorval=xorval^ae->mem[ae->poker[i].ibank][j];
+				}
+				ae->mem[ae->poker[i].ibank][ae->poker[i].outputadr]=xorval;
+	//printf("poker XOR from #%04X to #%04X at #%04X\n",istart,iend,ae->poker[i].outputadr);
+				break;
+			case E_POKER_SUM8:
+				sumval=0;
+				for (j=istart;j<iend;j++) {
+					sumval+=ae->mem[ae->poker[i].ibank][j];
+				}
+				ae->mem[ae->poker[i].ibank][ae->poker[i].outputadr]=sumval;
+				break;
+			case E_POKER_CIPHER001:
+			case E_POKER_CIPHER002:
+				if (ae->poker[i].method==E_POKER_CIPHER001) {
+					xorval=ae->mem[ae->poker[i].ibank][istart];
+					istart++;
+				} else if (ae->poker[i].method==E_POKER_CIPHER002) {
+					xorval=istart&0xFF; // xor start value depends on memory location!
+				}
+				for (j=istart;j<iend;j++) {
+					ae->mem[ae->poker[i].ibank][j]=xorval=ae->mem[ae->poker[i].ibank][j]^xorval;
+				}
+				break;
+			case E_POKER_CIPHER003:
+				for (j=istart;j<iend;j++) {
+					xorval=j&0xFF;
+					ae->mem[ae->poker[i].ibank][j]=ae->mem[ae->poker[i].ibank][j]^xorval;
+				}
+				break;
+			case E_POKER_CIPHER004:
+				{
+				char *zekey;
+				int zelen,ikey=0;
+				zekey=TxtStrDup(ae->wl[ae->poker[i].istring].w+1);
+				zelen=strlen(zekey)-1;
+				if (zelen>1) {
+					zekey[zelen]=0;
+					for (j=istart;j<iend;j++) {
+						xorval=zekey[ikey++];if (ikey>=zelen) ikey=0;
+						ae->mem[ae->poker[i].ibank][j]=ae->mem[ae->poker[i].ibank][j]^xorval;
+					}
+				} else {
+					MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"CIPHER needs a string of one char or more to run properly\n");
+				}
+				if (zekey) MemFree(zekey);
+				}
+				break;
+			default:printf("warning remover\n");break;
+		}
+
+		for (j=0;j<ae->nbpoker;j++) {
+			if (ae->poker[i].ibank==ae->poker[j].ibank) {
+				if (ae->poker[j].outputadr>=istart && ae->poker[j].outputadr<iend) {
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: %s poker result is inside another %s poker calculation",GetCurrentFile(ae),ae->wl[ae->idx].l,
+							ae->poker[i].method<E_POKER_END?strpoker[ae->poker[i].method]:"???",
+							ae->poker[j].method<E_POKER_END?strpoker[ae->poker[j].method]:"???");
+						ae->idx=ae->poker[j].istart;
+						rasm_printf(ae,KWARNING"[%s:%d]\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+						if (ae->erronwarn) MaxError(ae);
+					}
+				}
+			}
+		}
+
+	}
+
+	/*******************************************************************************
+	      d e l a y e d      p r i n t s
+	*******************************************************************************/
+	for (i=0;i<ae->idprint;i++) {
+		ae->idx=ae->dprint_idx[i];
+		__PRINT(ae);
+	}
 
 /***************************************************************************************************************************************************************************************
 ****************************************************************************************************************************************************************************************
@@ -13353,40 +17759,104 @@ printf("output files\n");
 		/* enregistrement des fichiers programmes par la commande SAVE */
 		PopAllSave(ae);
 	
-		if (ae->nbsave==0 || ae->forcecpr || ae->forcesnapshot) {
+		if (ae->nbsave==0 || ae->forcecpr || ae->forcesnapshot || ae->forceROM || ae->forcetape) {
+			/*********************************************
+			              ROM LABEL EXPORT
+			*********************************************/
+			char cprinfo_filename[PATH_MAX];
+			char cprinfo_line[1024];
+
+			if (ae->cprinfo_export) {
+				for (i=maxrom=0;i<ae->io;i++) {
+					if (ae->orgzone[i].ibank<256 && ae->orgzone[i].ibank>maxrom) maxrom=ae->orgzone[i].ibank;
+				}
+				if (ae->cprinfo_filename) {
+					sprintf(cprinfo_filename,"%s",ae->cprinfo_filename);
+				} else {
+					sprintf(cprinfo_filename,"%s.rom_labels",ae->outputfilename);
+				}
+				FileRemoveIfExists(cprinfo_filename);
+				rasm_printf(ae,KIO"Write ROM label file %s\n",cprinfo_filename);
+
+				for (i=0;i<=maxrom && i<BANK_MAX_NUMBER;i++) {
+					int lm;
+					if (ae->iwnamebank[i]>0) {
+						lm=strlen(ae->wl[ae->iwnamebank[i]].w)-2;
+						if (lm) {
+							snprintf(cprinfo_line,sizeof(cprinfo_line),"%d: %-*.*s\n",i,lm,lm,ae->wl[ae->iwnamebank[i]].w+1);
+							FileWriteLine(cprinfo_filename,cprinfo_line);
+						}
+					} else {
+						sprintf(cprinfo_line,"%d:\n",i);
+						FileWriteLine(cprinfo_filename,cprinfo_line);
+					}
+				}
+				FileWriteLineClose(cprinfo_filename);
+			}
+
 			/*********************************************
 			**********************************************
-						  C A R T R I D G E
+			               C A R T R I D G E
 			**********************************************
 			*********************************************/
 			if (ae->forcecpr) {
 				char ChunkName[32];
 				int ChunkSize;
-				int do_it=1;
 				unsigned char chunk_endian;
-				
+			
 				if (ae->cartridge_name) {
 					sprintf(TMP_filename,"%s",ae->cartridge_name);
 				} else {
-					sprintf(TMP_filename,"%s.cpr",ae->outputfilename);
+					if (!ae->extendedCPR) sprintf(TMP_filename,"%s.cpr",ae->outputfilename);
+					else sprintf(TMP_filename,"%s.xpr",ae->outputfilename);
 				}
 				FileRemoveIfExists(TMP_filename);
 				
-				rasm_printf(ae,KIO"Write cartridge file %s\n",TMP_filename);
+				rasm_printf(ae,KIO"Write %scartridge file %s\n",ae->extendedCPR?"extended ":"",TMP_filename);
 				for (i=maxrom=0;i<ae->io;i++) {
-					if (ae->orgzone[i].ibank<32 && ae->orgzone[i].ibank>maxrom) maxrom=ae->orgzone[i].ibank;
+					if (ae->orgzone[i].ibank<256 && ae->orgzone[i].ibank>maxrom) maxrom=ae->orgzone[i].ibank;
 				}
 				/* construction du CPR */
 				/* header blablabla */
 				strcpy(ChunkName,"RIFF");
 				FileWriteBinary(TMP_filename,ChunkName,4);
-				ChunkSize=(maxrom+1)*(16384+8)+4;
-				chunk_endian=ChunkSize&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
-				chunk_endian=(ChunkSize>>8)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
-				chunk_endian=(ChunkSize>>16)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
-				chunk_endian=(ChunkSize>>24)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
-				sprintf(ChunkName,"AMS!");
-				FileWriteBinary(TMP_filename,ChunkName,4);
+
+				if (!ae->extendedCPR) {
+					ChunkSize=(maxrom+1)*(16384+8)+4;
+					chunk_endian=ChunkSize&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					chunk_endian=(ChunkSize>>8)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					chunk_endian=(ChunkSize>>16)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					chunk_endian=(ChunkSize>>24)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					sprintf(ChunkName,"AMS!");
+					FileWriteBinary(TMP_filename,ChunkName,4);
+				} else {
+					for (i=0;i<=maxrom;i+=32) {
+						char xproutputname[256];
+						sprintf(xproutputname,"xpr%02d.rom",i>>5);
+						FileRemoveIfExists(xproutputname);
+					}
+
+					ChunkSize=(maxrom+1)*(16384+8)+4+10;
+					chunk_endian=ChunkSize&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					chunk_endian=(ChunkSize>>8)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					chunk_endian=(ChunkSize>>16)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					chunk_endian=(ChunkSize>>24)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					sprintf(ChunkName,"CXME");
+					FileWriteBinary(TMP_filename,ChunkName,4);
+					ChunkName[0]='N';
+					ChunkName[1]='B';
+					ChunkName[2]='B';
+					ChunkName[3]='K';
+					FileWriteBinary(TMP_filename,ChunkName,4);
+					ChunkSize=2;
+					chunk_endian=ChunkSize&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					chunk_endian=(ChunkSize>>8)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					chunk_endian=(ChunkSize>>16)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					chunk_endian=(ChunkSize>>24)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
+					ChunkName[0]=0;
+					ChunkName[1]=32;
+					FileWriteBinary(TMP_filename,ChunkName,2);
+				}
 				
 //				for (j=0;j<ae->io;j++) {
 //printf("ORG[%03d]=B%02d/#%04X/#%04X\n",j,ae->orgzone[j].ibank,ae->orgzone[j].memstart,ae->orgzone[j].memend);
@@ -13407,24 +17877,31 @@ printf("output files\n");
 						if (ae->iwnamebank[i]>0) {
 							lm=strlen(ae->wl[ae->iwnamebank[i]].w)-2;
 						}
-						rasm_printf(ae,KVERBOSE"WriteCPR bank %2d of %5d byte%s start at #%04X",i,endoffset-offset,endoffset-offset>1?"s":" ",offset);
+						if (ae->cprinfo) rasm_printf(ae,KVERBOSE"WriteCPR bank %2d of %5d byte%s start at #%04X",i,endoffset-offset,endoffset-offset>1?"s":" ",offset);
 						if (endoffset-offset>16384) {
-							rasm_printf(ae,"\nROM is too big!!!\n");
+							rasm_printf(ae,"\nROM %d is too big!!!\n",i);
 							FileWriteBinaryClose(TMP_filename);
 							FileRemoveIfExists(TMP_filename);
 							FreeAssenv(ae);
 							exit(ABORT_ERROR);
 						}
-						if (lm) {
-							rasm_printf(ae," (%-*.*s)\n",lm,lm,ae->wl[ae->iwnamebank[i]].w+1);
-						} else {
-							rasm_printf(ae,"\n");
+						if (ae->cprinfo) {
+							if (lm) {
+								rasm_printf(ae," (%-*.*s)\n",lm,lm,ae->wl[ae->iwnamebank[i]].w+1);
+							} else {
+								rasm_printf(ae,"\n");
+							}
 						}
 					} else {
-						rasm_printf(ae,KVERBOSE"WriteCPR bank %2d (empty)\n",i);
+						if (ae->cprinfo) rasm_printf(ae,KVERBOSE"WriteCPR bank %2d (empty)\n",i);
 					}
 					ChunkSize=16384;
-					sprintf(ChunkName,"cb%02d",i);
+					if (ae->extendedCPR) {
+						ChunkName[0]='C';
+						ChunkName[1]='X';
+						ChunkName[2]=i>>8;
+						ChunkName[3]=i&255;
+					} else sprintf(ChunkName,"cb%02d",i);
 					FileWriteBinary(TMP_filename,ChunkName,4);
 					chunk_endian=ChunkSize&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
 					chunk_endian=(ChunkSize>>8)&0xFF;FileWriteBinary(TMP_filename,(char*)&chunk_endian,1);
@@ -13436,12 +17913,91 @@ printf("output files\n");
 						if (ChunkSize) FileWriteBinary(TMP_filename,(char*)ae->mem[i]+offset,ChunkSize);
 						/* ADD zeros until the end of the bank */
 						FileWriteBinary(TMP_filename,(char*)filler,16384-ChunkSize);
+						if (ae->xpr) {
+							char xproutputname[256];
+							sprintf(xproutputname,"xpr%02d.rom",i>>5);
+							if (ChunkSize) FileWriteBinary(xproutputname,(char*)ae->mem[i]+offset,ChunkSize);
+							FileWriteBinary(xproutputname,(char*)filler,16384-ChunkSize);
+						}
 					} else {
 						FileWriteBinary(TMP_filename,(char*)ae->mem[i]+offset,ChunkSize);
+						if (ae->xpr) {
+							char xproutputname[256];
+							sprintf(xproutputname,"xpr%02d.rom",i>>5);
+							FileWriteBinary(xproutputname,(char*)ae->mem[i]+offset,ChunkSize);
+						}
 					}
 				}
 				FileWriteBinaryClose(TMP_filename);
 				rasm_printf(ae,"Total %d bank%s (%dK)\n",maxrom+1,maxrom+1>1?"s":"",(maxrom+1)*16);
+			/*********************************************
+			**********************************************
+						       R O M       
+			**********************************************
+			*********************************************/
+			} else if (ae->forceROM) {
+				unsigned char filler[16384]={0};
+				int noflood=0;
+
+				/* how many ROM? */
+				for (i=maxrom=0;i<ae->io;i++) {
+					if (ae->orgzone[i].ibank<256 && ae->orgzone[i].ibank>maxrom) maxrom=ae->orgzone[i].ibank;
+				}
+
+				for (i=0;i<=maxrom;i++) {
+					/* number the file */
+					if (i==0 || !ae->forceROMconcat) {
+						if (ae->rom_name) {
+							sprintf(TMP_filename,"%s%d.rom",ae->rom_name,i);
+						} else {
+							sprintf(TMP_filename,"%s%d.rom",ae->outputfilename,i);
+						}
+						FileRemoveIfExists(TMP_filename);
+					}
+
+					offset=65536;
+					endoffset=0;
+					for (j=0;j<ae->io;j++) {
+						if (ae->orgzone[j].protect) continue; /* protected zones exclusion */
+						/* bank data may start anywhere (typically #0000 or #C000) */
+						if (ae->orgzone[j].ibank==i && ae->orgzone[j].memstart!=ae->orgzone[j].memend) {
+							if (ae->orgzone[j].memstart<offset) offset=ae->orgzone[j].memstart;
+							if (ae->orgzone[j].memend>endoffset) endoffset=ae->orgzone[j].memend;
+						}
+					}
+					if (endoffset>offset) {
+						/* cannot be bigger than 16K */
+						if (endoffset-offset>16384) {
+							rasm_printf(ae,"\nROM is too big!!!\n");
+							FileRemoveIfExists(TMP_filename);
+							FreeAssenv(ae);
+							exit(ABORT_ERROR);
+						}
+						/* to avoid ROM smaller than 16K at the end of working memory */
+						if (offset>49152) offset=49152;
+
+						if (i<4 || i+4>maxrom) rasm_printf(ae,KVERBOSE"WriteROM bank %3d of %5d byte%s start at #%04X\n",i,endoffset-offset,endoffset-offset>1?"s":" ",offset);
+						else if (!noflood) {rasm_printf(ae,KVERBOSE"[...]\n");noflood=1;}
+
+						FileWriteBinary(TMP_filename,(char *)(ae->mem[i]+offset),endoffset-offset);
+						if (endoffset-offset<16384) FileWriteBinary(TMP_filename,(char*)filler,16384-(endoffset-offset));
+						if (!ae->forceROMconcat) {
+							FileWriteBinaryClose(TMP_filename);
+						}
+					} else {
+						rasm_printf(ae,KVERBOSE"WriteROM bank %3d is empty\n",i);
+						/* with flat output we must fill with zeroes empty banks */
+						if (ae->forceROMconcat) {
+							FileWriteBinary(TMP_filename,(char*)filler,16384);
+						}
+					}
+				}
+				if (ae->forceROMconcat) {
+					FileWriteBinaryClose(TMP_filename);
+				}
+
+				rasm_printf(ae,"Total %d rom%s (%dK)\n",maxrom+1,maxrom+1>1?"s":"",(maxrom+1)*16);
+					
 			/*********************************************
 			**********************************************
 						  S N A P S H O T  
@@ -13488,22 +18044,27 @@ printf("output files\n");
 					unsigned char *rlebank=NULL;
 					char ChunkName[16];
 					int ChunkSize;
-					int do_it=1;
 					int bankset;
 					int noflood=0;
 
-					if (ae->snapshot.version==2 && ae->snapshot.CPCType>2) {
-						if (!ae->nowarning) rasm_printf(ae,KWARNING"[%s:%d] Warning: V2 snapshot cannot select a Plus model (forced to 6128)\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
-						ae->snapshot.CPCType=2; /* 6128 */
+					if (!ae->flux) {
+						if (ae->snapshot.version==2 && ae->snapshot.CPCType>2) {
+							if (!ae->nowarning) {
+								rasm_printf(ae,KWARNING"[%s:%d] Warning: V2 snapshot cannot select a Plus model (forced to 6128)\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+								if (ae->erronwarn) MaxError(ae);
+							}
+							ae->snapshot.CPCType=2; /* 6128 */
+						}
+						
+						if (ae->snapshot_name) {
+							sprintf(TMP_filename,"%s",ae->snapshot_name);
+						} else {
+							sprintf(TMP_filename,"%s.sna",ae->outputfilename);
+						}
+						FileRemoveIfExists(TMP_filename);
 					}
-					
-					if (ae->snapshot_name) {
-						sprintf(TMP_filename,"%s",ae->snapshot_name);
-					} else {
-						sprintf(TMP_filename,"%s.sna",ae->outputfilename);
-					}
-					FileRemoveIfExists(TMP_filename);
-				
+			
+					// we use part of SNAPSHOT code for emulator in-place output	
 					maxrom=-1;	
 					for (i=0;i<ae->io;i++) {
 						if (ae->orgzone[i].ibank<BANK_MAX_NUMBER && ae->orgzone[i].ibank>maxrom && ae->orgzone[i].memstart!=ae->orgzone[i].memend) {
@@ -13511,7 +18072,6 @@ printf("output files\n");
 						}
 					}
 
-	//printf("maxrom=%d\n",maxrom);
 					/* construction du SNA */
 					if (ae->snapshot.version==2) {
 						if (maxrom>=4) {
@@ -13519,14 +18079,21 @@ printf("output files\n");
 						} else if (maxrom>=0) {
 							ae->snapshot.dumpsize[0]=64;
 						}
+					} else {
+						ae->snapshot.dumpsize[0]=0;
 					}
+
+					// enforce snapshot input size (if any) even we do not write everywhere in memory
+					if (ae->snapRAMsize-1>maxrom) maxrom=ae->snapRAMsize-1;
+
 					if (maxrom==-1) {
 						rasm_printf(ae,KWARNING"Warning: No byte were written in snapshot memory\n");
+						if (ae->erronwarn) MaxError(ae);
 					} else {
 						rasm_printf(ae,KIO"Write snapshot v%d file %s\n",ae->snapshot.version,TMP_filename);
 						
 						/* header */
-						FileWriteBinary(TMP_filename,(char *)&ae->snapshot,0x100);
+						if (!ae->flux) FileWriteBinary(TMP_filename,(char *)&ae->snapshot,0x100);
 						/* write all memory crunched */
 						for (i=0;i<=maxrom;i+=4) {
 							bankset=i>>2;
@@ -13549,10 +18116,12 @@ printf("output files\n");
 									}
 									if (endoffset-offset>16384) {
 										rasm_printf(ae,KERROR"\nBANK is too big!!!\n");
-										FileWriteBinaryClose(TMP_filename);
-										FileRemoveIfExists(TMP_filename);
-										FreeAssenv(ae);
-										exit(ABORT_ERROR);
+										if (!ae->flux) {
+											FileWriteBinaryClose(TMP_filename);
+											FileRemoveIfExists(TMP_filename);
+											FreeAssenv(ae);
+											exit(ABORT_ERROR);
+										} //@@TODO renvoyer erreur quand meme?
 									}
 									/* banks are gathered in the 64K block */
 									if (offset>0xC000) {
@@ -13571,10 +18140,12 @@ printf("output files\n");
 										else if (!noflood) {rasm_printf(ae,KVERBOSE"[...]\n");noflood=1;}
 										if (endoffset-offset>16384) {
 											rasm_printf(ae,KERROR"\nRAM block is too big!!!\n");
-											FileWriteBinaryClose(TMP_filename);
-											FileRemoveIfExists(TMP_filename);
-											FreeAssenv(ae);
-											exit(ABORT_ERROR);
+											if (!ae->flux) {
+												FileWriteBinaryClose(TMP_filename);
+												FileRemoveIfExists(TMP_filename);
+												FreeAssenv(ae);
+												exit(ABORT_ERROR);
+											} // @@TODO aussi
 										}
 										if (lm) {
 											if (i<4 || i+4>maxrom) rasm_printf(ae,KVERBOSE" (%-*.*s)\n",lm,lm,ae->wl[ae->iwnamebank[i+k]].w+1);
@@ -13590,7 +18161,7 @@ printf("output files\n");
 							
 							if (ae->snapshot.version==2) {
 								/* snapshot v2 */
-								FileWriteBinary(TMP_filename,(char*)&packed,65536);
+								if (!ae->flux) FileWriteBinary(TMP_filename,(char*)&packed,65536);
 								if (bankset) {
 									/* v2 snapshot is 128K maximum */
 									maxrom=7;
@@ -13609,14 +18180,16 @@ printf("output files\n");
 									MakeError(ae,"(core)",0,"internal error during snapshot write, please report (%d)\n",bankset);
 								}
 								
-								FileWriteBinary(TMP_filename,ChunkName,4);
-								if (rlebank!=NULL) {
+								if (!ae->flux) {
+									FileWriteBinary(TMP_filename,ChunkName,4);
 									FileWriteBinary(TMP_filename,(char*)&ChunkSize,4);
-									FileWriteBinary(TMP_filename,(char*)rlebank,ChunkSize);
-									MemFree(rlebank);
-								} else {
-									ChunkSize=65536;
-									FileWriteBinary(TMP_filename,(char*)&packed,ChunkSize);
+									if (rlebank!=NULL) {
+										FileWriteBinary(TMP_filename,(char*)rlebank,ChunkSize);
+										MemFree(rlebank);
+									} else {
+										// write unpacked data
+										FileWriteBinary(TMP_filename,(char*)&packed,ChunkSize);
+									}
 								}
 							}
 						}
@@ -13624,12 +18197,12 @@ printf("output files\n");
 						/**************************************************************
 								snapshot additional chunks in v3+ only
 						**************************************************************/
-						if (ae->snapshot.version>=3) {
+						if (!ae->flux && ae->snapshot.version>=3) {
 							/* export breakpoint */
 							if (ae->export_snabrk) {
 								/* BRKS chunk for Winape emulator (unofficial) 
 								
-								2 bytes - adress
+								2 bytes - address
 								1 byte  - 0=base 64K / 1=extended
 								2 bytes - condition (zeroed)
 								*/
@@ -13640,13 +18213,13 @@ printf("output files\n");
 								/* add labels and local labels to breakpoint pool (if any) */
 								for (i=0;i<ae->il;i++) {
 									if (!ae->label[i].name) {
-										if (strncmp(ae->wl[ae->label[i].iw].w,"BRK",3)==0) {
+										if (strncmp(ae->wl[ae->label[i].iw].w,"BRK",3)==0 || strncmp(ae->wl[ae->label[i].iw].w,"@BRK",4)==0 || strstr(ae->wl[ae->label[i].iw].w,".BRK")!=NULL) {
 											breakpoint.address=ae->label[i].ptr;
 											if (ae->label[i].ibank>3) breakpoint.bank=1; else breakpoint.bank=0;
 											ObjectArrayAddDynamicValueConcat((void **)&ae->breakpoint,&ae->ibreakpoint,&ae->maxbreakpoint,&breakpoint,sizeof(struct s_breakpoint));
 										}
 									} else {
-										if (strncmp(ae->label[i].name,"@BRK",4)==0 || strstr(ae->label[i].name,".BRK")) {
+										if (strncmp(ae->label[i].name,"BRK",3)==0 || strncmp(ae->label[i].name,"@BRK",4)==0 || strstr(ae->label[i].name,".BRK")) {
 											breakpoint.address=ae->label[i].ptr;
 											if (ae->label[i].ibank>3) breakpoint.bank=1; else breakpoint.bank=0;
 											ObjectArrayAddDynamicValueConcat((void **)&ae->breakpoint,&ae->ibreakpoint,&ae->maxbreakpoint,&breakpoint,sizeof(struct s_breakpoint));								
@@ -13709,7 +18282,7 @@ printf("output files\n");
 								1 byte  - name size
 								n bytes - name (without 0 to end the string)
 								6 bytes - reserved for future use
-								2 bytes - shitty big endian adress for the symbol
+								2 bytes - shitty big endian address for the symbol
 								*/
 							
 								unsigned char *symbchunk=NULL;
@@ -13782,14 +18355,20 @@ printf("output files\n");
 							}
 						} else {
 							if (ae->export_snabrk) {
-								if (!ae->nowarning) rasm_printf(ae,KWARNING"Warning: breakpoint export is not supported with snapshot version 2\n");
+								if (!ae->nowarning) {
+									rasm_printf(ae,KWARNING"Warning: breakpoint export is not supported with snapshot version 2\n");
+									if (ae->erronwarn) MaxError(ae);
+								}
 							}
 							if (ae->export_sna) {
-								if (!ae->nowarning) rasm_printf(ae,KWARNING"Warning: symbol export is not supported with snapshot version 2\n");
+								if (!ae->nowarning) {
+									rasm_printf(ae,KWARNING"Warning: symbol export is not supported with snapshot version 2\n");
+									if (ae->erronwarn) MaxError(ae);
+								}
 							}
 						}
 
-						FileWriteBinaryClose(TMP_filename);
+						if (!ae->flux) FileWriteBinaryClose(TMP_filename);
 						maxrom=(maxrom>>2)*4+4;
 						rasm_printf(ae,KAYGREEN"Total %d bank%s (%dK)\n",maxrom,maxrom>1?"s":"",(maxrom)*16);
 					}
@@ -13828,30 +18407,128 @@ printf("output files\n");
 				}
 				if (maxmem-minmem<=0) {
 					if (!ae->stop) {
-						if (!ae->nowarning) rasm_printf(ae,KWARNING"Warning: Not a single byte to output\n");
+						if (!ae->nowarning) {
+							rasm_printf(ae,KWARNING"Warning: Not a single byte to output\n");
+							if (ae->erronwarn) MaxError(ae);
+						}
 					}
 					if (ae->flux) {
 						*lenout=0;
 					}
 				} else {
 					if (!ae->flux) {
-						rasm_printf(ae,KIO"Write binary file %s (%d byte%s)\n",TMP_filename,maxmem-minmem,maxmem-minmem>1?"s":"");
-						if (ae->amsdos) {
-							AmsdosHeader=MakeAMSDOSHeader(minmem,minmem,maxmem,TMP_filename); //@@TODO
-							FileWriteBinary(TMP_filename,(char *)AmsdosHeader,128);
-						}
-						if (maxmem-minmem>0) {
-							FileWriteBinary(TMP_filename,(char*)ae->mem[lastspaceid]+minmem,maxmem-minmem);
-							FileWriteBinaryClose(TMP_filename);
+						/***************************************************************
+						*      T A P E    o u t p u t                                  *
+						***************************************************************/
+						if (ae->forcetape) {
+							int run;
+							if (ae->tape_name) {
+								sprintf(TMP_filename,"%s",ae->tape_name);
+							} else {
+								sprintf(TMP_filename,"%s.cdt",ae->outputfilename);
+							}
+							run=ae->snapshot.registers.LPC+(ae->snapshot.registers.HPC<<8);
+							if (run<0x100) run=minmem;
+							__output_CDT(ae,TMP_filename,"TAPE.BIN",(char*)ae->mem[lastspaceid]+minmem,maxmem-minmem,minmem,run);
 						} else {
-							if (ae->amsdos) {
+						/***************************************************************
+						*      O B J      o u t p u t                                  *
+						***************************************************************/
+							if (ae->buildobj) {
+								struct s_label *curlabel;
+								char objtmp[1024];
+								int iex,jex;
+
+								sprintf(TMP_filename,"%s.obj",ae->outputfilename);
+								FileRemoveIfExists(TMP_filename);
+								rasm_printf(ae,KIO"Write OBJ file %s\n",TMP_filename,maxmem-minmem);
+
+								for (i=0;i<ae->nprocedurename;i++) {
+									curlabel=SearchLabel(ae,ae->procedurename[i],GetCRC(ae->procedurename[i]));
+									if (!curlabel) {
+										rasm_printf(ae,KERROR" INTERNAL ERROR: procedure [%s] not found in label pool\n");
+										MaxError(ae);
+									} else {
+										strcpy(objtmp,"PROCEDURE ");
+										FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
+										FileWriteBinary(TMP_filename,(char *)ae->procedurename[i],strlen(ae->procedurename[i]));
+										sprintf(objtmp," 0x%04X\n",curlabel->ptr);
+										FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
+									}
+								}
+								for (i=0;i<ae->nexternal;i++) {
+									for (j=0;j<ae->external[i].nmapping;j++) {
+										strcpy(objtmp,"EXTERNAL ");
+										FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
+										FileWriteBinary(TMP_filename,(char *)ae->external[i].name,strlen(ae->external[i].name));
+										sprintf(objtmp," 0x%04X %d\n",ae->external[i].mapping[j].ptr,ae->external[i].mapping[j].size);
+										FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
+									}
+								}
+								for (i=0;i<ae->nrelocation;i++) {
+									if (ae->relocation[i].value>=minmem && ae->relocation[i].value<maxmem) {
+										sprintf(objtmp,"RELOCATION 0x%04X\n",ae->relocation[i].ptr);
+										FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
+									}
+								}
+								for (i=0;i<ae->nrelocation;i++) {
+									if (ae->relocation[i].value>=minmem && ae->relocation[i].value<maxmem) {
+									} else {
+										sprintf(objtmp,"LONGJUMP 0x%04X ; CALL or JP outside scope\n",ae->relocation[i].ptr);
+										FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
+									}
+								}
+								sprintf(objtmp,"DATA START=0x%04X LEN=0x%04X\n",minmem,maxmem-minmem);
+								FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
+								j=0;
+								for (i=minmem;i<maxmem;i++) {
+									if (!j) {
+										strcpy(objtmp,"BYTE ");
+									} else {
+										strcpy(objtmp,",");
+									}
+									FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
+									/* data */
+									sprintf(objtmp,"0x%02X",ae->mem[lastspaceid][i]);
+									FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
+									j++;
+									if (j==16) {
+										strcpy(objtmp,"\n");
+										FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
+										j=0;
+									}
+								}
+								strcpy(objtmp,"\n");
+								FileWriteBinary(TMP_filename,(char *)objtmp,strlen(objtmp));
 								FileWriteBinaryClose(TMP_filename);
+							} else {
+						/***************************************************************
+						*      F I L E    o u t p u t                                  *
+						***************************************************************/
+								rasm_printf(ae,KIO"Write binary file %s (%d byte%s)",TMP_filename,maxmem-minmem,maxmem-minmem>1?"s":"");
+								if (ae->amsdos) {
+									AmsdosHeader=MakeAMSDOSHeader(minmem,minmem,maxmem,TMP_filename); //@@TODO
+									FileWriteBinary(TMP_filename,(char *)AmsdosHeader,128);
+									rasm_printf(ae," (automatic Amsdos header)\n");
+								} else {
+									rasm_printf(ae,"\n");
+								}
+								if (maxmem-minmem>0) {
+									FileWriteBinary(TMP_filename,(char*)ae->mem[lastspaceid]+minmem,maxmem-minmem);
+									FileWriteBinaryClose(TMP_filename);
+								} else {
+									if (ae->amsdos) {
+										FileWriteBinaryClose(TMP_filename);
+									}
+								}
 							}
 						}
 					} else {
-						*dataout=MemMalloc(maxmem-minmem+1);
-						memcpy(*dataout,ae->mem[lastspaceid]+minmem,maxmem-minmem);
-						*lenout=maxmem-minmem;
+						if (dataout) {
+							*dataout=MemMalloc(maxmem-minmem+1);
+							memcpy(*dataout,ae->mem[lastspaceid]+minmem,maxmem-minmem);
+							*lenout=maxmem-minmem;
+						}
 					}
 				}
 			}
@@ -13866,6 +18543,7 @@ printf("output files\n");
 				if (strcmp(ae->alias[i].alias,"IX") && strcmp(ae->alias[i].alias,"IY")) {
 					if (!ae->alias[i].used) {
 						rasm_printf(ae,KWARNING"[%s:%d] Warning: alias %s declared but not used\n",ae->filename[ae->wl[ae->alias[i].iw].ifile],ae->wl[ae->alias[i].iw].l,ae->alias[i].alias);
+						if (ae->erronwarn) MaxError(ae);
 					}
 				}
 			}
@@ -13901,7 +18579,74 @@ printf("output files\n");
 			} else {
 				rasm_printf(ae,KIO"Write symbol file %s\n",TMP_filename);
 			}
-			
+
+			/****************************
+			    case export hack
+			****************************/
+			if (ae->enforce_symbol_case) {
+				char *casefound;
+				int ilocal=0;
+
+				for (i=0;i<ae->il;i++) {
+					if (ae->label[i].autorise_export) {
+						if (!ae->label[i].name) {
+							if ((casefound=_internal_stristr(ae->rawfile[ae->label[i].fileidx],ae->rawlen[ae->label[i].fileidx],ae->wl[ae->label[i].iw].w))!=NULL) {
+								memcpy(ae->wl[ae->label[i].iw].w,casefound,strlen(ae->wl[ae->label[i].iw].w));
+							}
+						} else if (ae->export_local || !ae->label[i].local) {
+							char splitlabel[256];
+							char casecharbackup;
+							int caseidx;
+							int istart,iend,ilen,isplit,icopy;
+
+							ilen=strlen(ae->label[i].name);
+
+							if (ae->label[i].name[0]=='@') {
+								// remove radix
+								while (ae->label[i].name[ilen]!='R') ilen--;
+								ae->label[i].name[ilen]=0;
+							}
+
+							iend=0;
+							do {
+								istart=iend;
+								while (!AutomateCharStop[ae->label[i].name[istart]]) istart++;
+								if (istart>=ilen) break;
+
+								iend=istart;
+								while (AutomateChar[ae->label[i].name[iend]]) iend++;
+
+								isplit=0;
+								icopy=istart;
+								while (icopy<iend && isplit<255) splitlabel[isplit++]=ae->label[i].name[icopy++];
+								splitlabel[isplit]=0;
+
+								if (isplit>1) {
+									casefound=_internal_stristr(ae->rawfile[ae->label[i].fileidx],ae->rawlen[ae->label[i].fileidx],splitlabel);
+									if (casefound) {
+										memcpy(ae->label[i].name+istart,casefound,isplit);
+									}
+								}
+							} while (istart<ilen && iend<ilen);
+
+							if (ae->label[i].name[0]=='@') {
+								// put simplified radix back
+								ae->label[i].name[ilen]='_';
+								sprintf(ae->label[i].name+ilen+1,"%x",ilocal++);
+							}
+						}
+					}
+				}
+				// translate alias only if there are exported
+				if (ae->export_equ) {
+					for (i=0;i<ae->ialias;i++) {
+						if ((casefound=_internal_stristr(ae->rawfile[ae->wl[ae->alias[i].iw].ifile],ae->rawlen[ae->wl[ae->alias[i].iw].ifile],ae->alias[i].alias))!=NULL) {
+							memcpy(ae->alias[i].alias,casefound,strlen(ae->alias[i].alias));
+						}
+					}
+				}
+			}
+
 			switch (ae->export_sym) {
 				case 5:
 					/* ZX export */
@@ -13980,7 +18725,7 @@ printf("output files\n");
 					FileWriteLineClose(TMP_filename);
 					break;
 				case 3:
-					/* winape */
+					/* Winape */
 					for (i=0;i<ae->il;i++) {
 						if (ae->label[i].autorise_export) {
 							if (ae->export_multisym) {
@@ -14068,7 +18813,7 @@ printf("output files\n");
 								sprintf(symbol_line,"%s #%X B%d\n",ae->wl[ae->label[i].iw].w,ae->label[i].ptr,ae->label[i].ibank>31?0:ae->label[i].ibank);
 								FileWriteLine(TMP_filename,symbol_line);
 							} else {
-								if (ae->export_local) {
+								if (ae->export_local || !ae->label[i].local) {
 									sprintf(symbol_line,"%s #%X B%d\n",ae->label[i].name,ae->label[i].ptr,ae->label[i].ibank>31?0:ae->label[i].ibank);
 									FileWriteLine(TMP_filename,symbol_line);
 								}
@@ -14113,13 +18858,13 @@ printf("output files\n");
 			/* add labels and local labels to breakpoint pool (if any) */
 			for (i=0;i<ae->il;i++) {
 				if (!ae->label[i].name) {
-					if (strncmp(ae->wl[ae->label[i].iw].w,"BRK",3)==0) {
+					if (strncmp(ae->wl[ae->label[i].iw].w,"BRK",3)==0 || strncmp(ae->wl[ae->label[i].iw].w,"@BRK",4)==0 || strstr(ae->wl[ae->label[i].iw].w,".BRK")) {
 						breakpoint.address=ae->label[i].ptr;
 						if (ae->label[i].ibank>3) breakpoint.bank=1; else breakpoint.bank=0;
 						ObjectArrayAddDynamicValueConcat((void **)&ae->breakpoint,&ae->ibreakpoint,&ae->maxbreakpoint,&breakpoint,sizeof(struct s_breakpoint));
 					}
 				} else {
-					if (strncmp(ae->label[i].name,"@BRK",4)==0) {
+					if (strncmp(ae->label[i].name,"BRK",3)==0 || strncmp(ae->label[i].name,"@BRK",4)==0 || strstr(ae->label[i].name,".BRK")) {
 						breakpoint.address=ae->label[i].ptr;
 						if (ae->label[i].ibank>3) breakpoint.bank=1; else breakpoint.bank=0;
 						ObjectArrayAddDynamicValueConcat((void **)&ae->breakpoint,&ae->ibreakpoint,&ae->maxbreakpoint,&breakpoint,sizeof(struct s_breakpoint));								
@@ -14135,8 +18880,26 @@ printf("output files\n");
 				}
 				FileWriteLineClose(TMP_filename);
 			} else {
-				if (!ae->nowarning) rasm_printf(ae,KWARNING"Warning: no breakpoint to output (previous file [%s] deleted anyway)\n",TMP_filename);
+				if (!ae->nowarning) {
+					rasm_printf(ae,KWARNING"Warning: no breakpoint to output\n",TMP_filename);
+					if (ae->erronwarn) MaxError(ae);
+					/* empty file */
+					FileTruncate(TMP_filename);
+				}
 			}
+		}
+		/*********************************
+		**********************************
+			DEBUG INFO
+		**********************************
+		*********************************/
+		if (ae->retdebug) {
+			if (ae->rundefined) {
+				ae->debug.run=ae->snapshot.registers.LPC+(ae->snapshot.registers.HPC<<8);
+			} else {
+				ae->debug.run=-1;
+			}
+			ae->debug.start=minmem;
 		}
 
 	} else {
@@ -14175,7 +18938,8 @@ printf("dependencies\n");
 /*******************************************************************************************
                            V E R B O S E     S H I T
 *******************************************************************************************/
-#if TRACE_ASSEMBLE
+	if (ae->display_stats) {
+		int parsed_size=0;
 		rasm_printf(ae,KVERBOSE"------ statistics ------------------\n");
 		rasm_printf(ae,KVERBOSE"%d file%s\n",ae->ifile,ae->ifile>1?"s":"");
 		rasm_printf(ae,KVERBOSE"%d binary include%s\n",ae->ih,ae->ih>1?"s":"");
@@ -14188,8 +18952,10 @@ printf("dependencies\n");
 		rasm_printf(ae,KVERBOSE"%d alias%s\n",ae->ialias,ae->ialias>1?"s":"");
 		rasm_printf(ae,KVERBOSE"%d ORG zone%s\n",ae->io-1,ae->io>2?"s":"");
 		rasm_printf(ae,KVERBOSE"%d virtual space%s\n",ae->nbbank,ae->nbbank>1?"s":"");
-#endif
-
+		rasm_printf(ae,KVERBOSE"\n");
+		for (i=0;i<ae->nbword;i++) parsed_size+=strlen(ae->wl[i].w);
+		rasm_printf(ae,KVERBOSE"%d byte%s of pure code\n",parsed_size,parsed_size>1?"s":"");
+	}
 /*******************************************************************************************
                                   C L E A N U P
 *******************************************************************************************/
@@ -14211,9 +18977,34 @@ printf("-cleanup\n");
 		ok=0;
 	}
 
+	/*********************************************************************
+	 *
+	 * assembling into emulator memory
+	 *
+	 * ******************************************************************/
+	/* get back memory if requested */
+	if (ae->retdebug && ae->debug.emuram && ae->debug.lenram) {
+		int ramidx,ramend,maxbank;
+
+		maxbank=ae->debug.lenram>>14;
+		ramidx=0;
+		for (i=0;i<maxbank;i+=4) {
+			if (ae->bankset[i>>2]) {
+				if (ramidx+65536<=ae->debug.lenram) ramend=65536; else ramend=ae->debug.lenram-ramidx;
+				for (j=0;j<ramend;j++) {
+					ae->debug.emuram[ramidx++]=ae->mem[i][j];
+				}
+			} else {
+				printf("@@@ simple banking unsupported => todo\n");
+				/* unsupported now => @@TODO */
+			}
+		}
+	}
+
 	FreeAssenv(ae);
 #if TRACE_ASSEMBLE
 printf("end of assembling\n");
+printf("-end ok=%d\n",ok);
 #endif
 #if TRACE_GENERALE
 printf("-end ok=%d\n",ok);
@@ -14235,70 +19026,97 @@ void EarlyPrepSrc(struct s_assenv *ae, char **listing, char *filename) {
 			l++;
 			idx=0;
 			continue;
-		} else if (!quote_type) {
-			/* upper case */
-			if (c>='a' && c<='z') {
-				listing[l][idx-1]=c=c-'a'+'A';
-			}
+		} else {
+			if (!quote_type) {
 
-			if (c=='\'' && idx>2 && strncmp(&listing[l][idx-3],"AF'",3)==0) {
-				/* il ne faut rien faire */
-			} else if (c=='"' || c=='\'') {
-				quote_type=c;
-			} else if (c==';' || (c=='/' && listing[l][idx]=='/')) {
-				idx--;
-				while (listing[l][idx] && listing[l][idx]!=0x0D && listing[l][idx]!=0x0A) listing[l][idx++]=':';
-				idx--;
-			} else if (c=='>' && listing[l][idx]=='>' && !quote_type) {
-				listing[l][idx-1]=']';
-				listing[l][idx++]=' ';
-				continue;
-			} else if (c=='<' && listing[l][idx]=='<' && !quote_type) {
-				listing[l][idx-1]='[';
-				listing[l][idx++]=' ';
-				continue;
-			} else if (c=='/' && listing[l][idx]=='*' && !quote_type) {
-				/* multi-line comment */
-				mlc_start=l;
-				mlc_idx=idx-1;
-				idx++;
-				while (1) {
-					c=listing[l][idx++];
-					if (!c) {
-						idx=0;
-						l++;
-						if (!listing[l]) {
-							MakeError(ae,GetCurrentFile(ae),ae->wl[ae->idx].l,"opened comment to the end of the file\n",filename,l+1);
-							return;
+				/* upper case */
+				if (c>='a' && c<='z') {
+					listing[l][idx-1]=c=c-'a'+'A';
+				}
+
+				if (c=='\'') {
+				       if (idx>2 && strncmp(&listing[l][idx-3],"AF'",3)==0) {
+						/* il ne faut rien faire */
+					} else {
+						quote_type=c;
+					}
+				} else if (c=='"') {
+					quote_type=c;
+				} else if (c==';' || (c=='/' && listing[l][idx]=='/')) {
+					idx--;
+					while (listing[l][idx] && listing[l][idx]!=0x0D && listing[l][idx]!=0x0A) listing[l][idx++]=':';
+					idx--;
+				} else if (c=='>' && listing[l][idx]=='>' && !quote_type) {
+					listing[l][idx-1]=']';
+					listing[l][idx++]=' ';
+					continue;
+				} else if (c=='<' && listing[l][idx]=='<' && !quote_type) {
+					listing[l][idx-1]='[';
+					listing[l][idx++]=' ';
+					continue;
+				} else if (c=='/' && listing[l][idx]=='*' && !quote_type) {
+					/* multi-line comment */
+					mlc_start=l;
+					mlc_idx=idx-1;
+					idx++;
+					while (1) {
+						c=listing[l][idx++];
+						if (!c) {
+							idx=0;
+							l++;
+							if (!listing[l]) {
+								MakeError(ae,filename,l+1,"opened comment to the end of the file\n");
+								return;
+							}
+						} else if (c=='*' && listing[l][idx]=='/') {
+							idx++;
+							break;
 						}
-					} else if (c=='*' && listing[l][idx]=='/') {
-						idx++;
-						break;
+					}
+					/* merge */
+					if (mlc_start==l) {
+						/* on the same line */
+						while (mlc_idx<idx) listing[l][mlc_idx++]=' '; /* raz with spaces */
+					} else {
+						/* multi-line */
+						listing[mlc_start][mlc_idx]=0; /* raz EOL */
+						mlc_start++;
+						while (mlc_start<l) listing[mlc_start++][0]=0; /* raz line */
+						mlc_idx=0;
+						while (mlc_idx<idx) listing[l][mlc_idx++]=' '; /* raz beginning of the line */
 					}
 				}
-				/* merge */
-				if (mlc_start==l) {
-					/* on the same line */
-					while (mlc_idx<idx) listing[l][mlc_idx++]=' '; /* raz with spaces */
-				} else {
-					/* multi-line */
-					listing[mlc_start][mlc_idx]=0; /* raz EOL */
-					mlc_start++;
-					while (mlc_start<l) listing[mlc_start++][0]=0; /* raz line */
-					mlc_idx=0;
-					while (mlc_idx<idx) listing[l][mlc_idx++]=' '; /* raz beginning of the line */
+			} else {
+				/* in quote */
+				if (c=='\\') {
+					if (listing[l][idx]) {
+						idx++;
+					}
+				} else if (c==quote_type) {
+					quote_type=0;
 				}
-			}
-		} else {
-			/* in quote */
-			if (c=='\\') {
-				if (listing[l][idx]) {
-					idx++;
-				}
-			} else if (c==quote_type) {
-				quote_type=0;
 			}
 		}
+	}
+	l-=2;
+	if (l>0)
+	while (l>=0) {
+		/* patch merge line with '\' only outside quotes */
+		idx=strlen(listing[l])-1;
+		
+		if (idx>0) {
+			while (idx && (listing[l][idx]==' ' || listing[l][idx]==0x0D || listing[l][idx]==0x0A || listing[l][idx]==0x0B)) {
+				idx--;
+			}
+
+			if (listing[l][idx]=='\\') {
+				/* fusion avec la ligne suivante qui est obligatoirement présente */
+				listing[l]=MemRealloc(listing[l],strlen(listing[l])+strlen(listing[l+1])+1);
+				strcpy(listing[l]+idx,listing[l+1]);
+				strcpy(listing[l+1],"");
+			}
+		}
+		l--;
 	}
 }
 
@@ -14380,9 +19198,9 @@ struct s_assenv *PreProcessing(char *filename, int flux, const char *datain, int
 	char **listing_include=NULL;
 	int i,j,l=0,idx=0,c=0,li,le;
 	char Automate[256]={0};
+	char AutomatePrepro[256]={0};
 	struct s_hexbin curhexbin;
 	char *newlistingline=NULL;
-	unsigned char *newdata;
 	struct s_label curlabel={0};
 	char *labelsep1;
 	char **labelines=NULL;
@@ -14401,7 +19219,7 @@ struct s_assenv *PreProcessing(char *filename, int flux, const char *datain, int
 	int nri=0,mri=0,ri=0;
 	int nwi=0,mwi=0,wi=0;
 	/* state machine trigger */
-	int waiting_quote=0,lquote;
+	int waiting_quote=0,lquote=0;
 	int macro_trigger=0;
 	int escape_code=0;
 	int quote_type=0;
@@ -14410,6 +19228,12 @@ struct s_assenv *PreProcessing(char *filename, int flux, const char *datain, int
 	int nbinstruction;
 	int ifast,texpr;
 	int ispace=0;
+	char opassign=0;
+	/* incbin bug */
+	int incstartL=0;
+	char *original_filename=NULL;
+
+
 
 #if TRACE_GENERALE
 printf("*** preprocessing ***\n");
@@ -14425,14 +19249,12 @@ printf("start prepro, alloc assenv\n");
 	rindex.cidx=-1;
 
 #if TRACE_PREPRO
-printf("malloc\n");
+printf("malloc+memset\n");
 #endif
 	ae=MemMalloc(sizeof(struct s_assenv));
-#if TRACE_PREPRO
-printf("memset\n");
-#endif
 	memset(ae,0,sizeof(struct s_assenv));
 
+	ae->module_separator[0]='_';
 #if TRACE_PREPRO
 printf("paramz 1\n");
 #endif
@@ -14448,9 +19270,11 @@ printf("paramz 1\n");
 		}
 		ae->export_brk=param->export_brk;
 		ae->warn_unused=param->warn_unused;
+		ae->display_stats=param->display_stats;
 		ae->edskoverwrite=param->edskoverwrite;
 		ae->rough=param->rough;
 		ae->as80=param->as80;
+		ae->pasmo=param->pasmo;
 		ae->dams=param->dams;
 		ae->macrovoid=param->macrovoid;
 		if (param->v2) {
@@ -14459,16 +19283,28 @@ printf("paramz 1\n");
 		} else {
 			ae->snapshot.version=3;
 		}
+		ae->xpr=param->xpr;
+		ae->cprinfo=param->cprinfo;
+		ae->cprinfo_export=param->cprinfoexport;
+		ae->cprinfo_filename=param->cprinfo_name;
 		ae->maxerr=param->maxerr;
 		ae->extended_error=param->extended_error;
 		ae->nowarning=param->nowarning;
+		ae->erronwarn=param->erronwarn;
+		ae->utf8enable=param->utf8enable;
+		ae->freequote=param->freequote;
 		ae->breakpoint_name=param->breakpoint_name;
 		ae->symbol_name=param->symbol_name;
 		ae->binary_name=param->binary_name;
 		ae->flexible_export=param->flexible_export;
 		ae->cartridge_name=param->cartridge_name;
 		ae->snapshot_name=param->snapshot_name;
+		ae->tape_name=param->tape_name;
+		ae->rom_name=param->rom_name;
 		ae->checkmode=param->checkmode;
+		ae->noampersand=param->noampersand;
+		ae->module_separator[0]=param->module_separator;
+		ae->enforce_symbol_case=param->enforce_symbol_case;
 		if (param->rough) ae->maxam=0; else ae->maxam=1;
 		/* additional symbols */
 		for (i=0;i<param->nsymb;i++) {
@@ -14476,7 +19312,7 @@ printf("paramz 1\n");
 			sep=strchr(param->symboldef[i],'=');
 			if (sep) {
 				*sep=0;
-				ExpressionSetDicoVar(ae,param->symboldef[i],atof(sep+1));
+				ExpressionSetDicoVar(ae,param->symboldef[i],atof(sep+1),0); // not external as default
 			}
 		}
 		if (param->msymb) {
@@ -14491,7 +19327,7 @@ printf("paramz 1\n");
 		ae->dependencies=param->dependencies;
 	}
 #if TRACE_PREPRO
-printf("init 0\n");
+printf("init 0 amper=%d\n",ae->noampersand);
 #endif
 #if TRACE_GENERALE
 printf("-init\n");
@@ -14546,7 +19382,7 @@ printf("-init\n");
 	ae->snapshot.CPCType=2; /* 6128 */
 	ae->snapshot.crtcstate.model=0; /* CRTC 0 */
 	ae->snapshot.vsyncdelay=2;
-	strcpy((char *)ae->snapshot.unused6+3+0x20+8,RASM_VERSION);
+	strncpy((char *)ae->snapshot.unused6+3+0x20,RASM_VERSION,sizeof(ae->snapshot.unused6)-1-(3+0x20));
 	/* CRTC default registers */
 	ae->snapshot.crtc.registervalue[0]=0x3F;
 	ae->snapshot.crtc.registervalue[1]=40;
@@ -14563,8 +19399,11 @@ printf("-init\n");
 	/* standard stack */
 	ae->snapshot.registers.HSP=0xC0;
 
+	ae->repeat_start=1;
+	ae->repeat_increment=1;
+
 	/*
-		winape		sprintf(symbol_line,"%s #%4X\n",ae->label[i].name,ae->label[i].ptr);
+		Winape		sprintf(symbol_line,"%s #%4X\n",ae->label[i].name,ae->label[i].ptr);
 		pasmo		sprintf(symbol_line,"%s EQU 0%4XH\n",ae->label[i].name,ae->label[i].ptr);
 		rasm 		sprintf(symbol_line,"%s #%X B%d\n",ae->wl[ae->label[i].iw].w,ae->label[i].ptr,ae->label[i].ibank>31?0:ae->label[i].ibank);
 	*/
@@ -14576,11 +19415,23 @@ printf("paramz\n");
 			rasm_printf(ae,"Label import from [%s]\n",param->labelfilename[j]);
 			ae->label_filename=param->labelfilename[j];
 			ae->label_line=1;
-			labelines=FileReadLines(param->labelfilename[j]);
+			labelines=FileReadLines(ae,param->labelfilename[j]);
+	
+			curlabel.fileidx=ae->ifile;
+			FieldArrayAddDynamicValueConcat(&ae->filename,&ae->ifile,&ae->maxfile,filename); // besoin de la casse
+
+			if (ae->enforce_symbol_case) {
+				ae->rawfile=MemRealloc(ae->rawfile,sizeof(char **)*ae->ifile);
+				ae->rawlen=MemRealloc(ae->rawlen,sizeof(int)*ae->ifile);
+				ae->rawfile[ae->ifile-1]=ae->source_bigbuffer;
+				ae->rawlen[ae->ifile-1]=ae->source_bigbuffer_len;
+			}
+
 			i=0;
 			while (labelines[i]) {
+				int k;
 				/* upper case */
-				for (j=0;labelines[i][j];j++) labelines[i][j]=toupper(labelines[i][j]);
+				for (k=0;labelines[i][k];k++) labelines[i][k]=toupper(labelines[i][k]);
 
 				if ((labelsep1=strstr(labelines[i],": EQU 0"))!=NULL) {
 					/* sjasm */
@@ -14600,7 +19451,7 @@ printf("paramz\n");
 					//ObjectArrayAddDynamicValueConcat((void **)&ae->label,&ae->il,&ae->ml,&curlabel,sizeof(curlabel));
 					PushLabelLight(ae,&curlabel);
 				} else if ((labelsep1=strstr(labelines[i]," "))!=NULL) {
-					/* winape / rasm */
+					/* Winape / rasm */
 					if (*(labelsep1+1)=='#') {
 						*labelsep1=0;
 						curlabel.name=labelines[i];
@@ -14654,28 +19505,75 @@ printf("nbbank=%d initialised\n",ae->nbbank);
 	}
 	/* si on est en ligne de commande ET que le fichier n'est pas trouvé */
 	if (param && param->filename && !FileExists(param->filename)) {
-		char *LTryExtension[]={".asm",".z80",".o",".dam",".mxm",".txt",
-					".ASM",".Z80",".O",".DAM",".MXM",".TXT",NULL};
+		char *LTryExtension[]={".asm",".z80",".inc",".src",".dam",".mxm",".txt",
+					".ASM",".Z80",".INC",".SRC",".DAM",".MXM",".TXT",".o",".s",".O",".S","",NULL};
 
 		int iguess=1;
+#if TRACE_PREPRO
+		printf("TRY EXT\n");
+#endif
+		original_filename=TxtStrDup(param->filename);
 		l=strlen(param->filename);
-		filename=MemRealloc(param->filename,l+6);
-		/* si le nom du fichier termine par un . on n'ajoute que l'extension, sinon on l'ajoute avec le . */
-		if (param->filename[l-1]=='.') strcat(param->filename,"asm"); else strcat(param->filename,".asm");
+		param->filename=MemRealloc(param->filename,l+6);
+		/* add fake filetype without dot if not present but a dot */
+		if (param->filename[l-1]=='.') {
+			strcat(param->filename,"asm");
+		} else {
+			/* if no filetype at all and no dot, add it */
+			int eidx=l-1;
+			
+			while (eidx) {
+				if (param->filename[eidx]=='.') {
+					param->filename[eidx]=0;
+					break;
+				} else if (param->filename[eidx]=='/' || param->filename[eidx]=='\\') {
+					break;
+				} else {
+					eidx--;
+				}
+			}
+			strcat(param->filename,".asm");
+		}
 
 		while (!FileExists(param->filename) && LTryExtension[iguess]!=NULL) {
-			TxtReplace(param->filename,LTryExtension[iguess-1],LTryExtension[iguess],0); /* no realloc with this */
+			/* no realloc with this BECAUSE every replace is equal or smaller than the previous one */
+			TxtReplace(param->filename,LTryExtension[iguess-1],LTryExtension[iguess],0);
+#if TRACE_PREPRO
+		printf("TRY [%s]\n",param->filename);
+#endif
 			if (!FileExists(param->filename)) {
 				param->filename[l]=0;
 			}
 			iguess++;
 		}
+		filename=param->filename;
 	}
 
 	if (param && param->filename && !FileExists(param->filename)) {
-		rasm_printf(ae,"Cannot find file [%s]\n",param->filename);
-		exit(-1802);
+		char *filename_toread;
+		int fileok=0,ilookfile;
+#if TRACE_PREPRO
+		printf("TRY %d include path(s)\n",ae->ipath);
+#endif
+		/* search the very first file into include paths */
+		for (ilookfile=0;ilookfile<ae->ipath && !fileok;ilookfile++) {
+			filename_toread=MergePath(ae,ae->includepath[ilookfile],original_filename);
+#if TRACE_PREPRO
+		printf("TRY [%s]\n",filename_toread);
+#endif
+			if (FileExists(filename_toread)) {
+				fileok=1;
+			}
+		}
+		if (fileok) {
+			filename=TxtStrDup(filename_toread); // overwrite original filename
+		} else {
+			// we tried, we tried, but hey, nothing found!
+			rasm_printf(ae,"Cannot find file [%s]\n",param->filename);
+			exit(-1802);
+		}
 	}
+	if (original_filename) MemFree(original_filename);
 	
 	if (param) rasm_printf(ae,KAYGREEN"Pre-processing [%s]\n",param->filename);
 	for (nbinstruction=0;instruction[nbinstruction].mnemo[0];nbinstruction++);
@@ -14683,6 +19581,9 @@ printf("nbbank=%d initialised\n",ae->nbbank);
 	for (i=0;i<256;i++) { ae->fastmatch[i]=-1; }
 	for (i=0;i<nbinstruction;i++) { if (ae->fastmatch[(int)instruction[i].mnemo[0]]==-1) ae->fastmatch[(int)instruction[i].mnemo[0]]=i; } 
 	for (i=0;CharWord[i];i++) {Automate[((int)CharWord[i])&0xFF]=1;}
+	for (i=0;i<256;i++) {
+		if (((i>='A' && i<='Z') || (i>='0' && i<='9') || i=='@' || i=='_') && !quote_type) AutomatePrepro[i]=1; else AutomatePrepro[i]=0;
+	}
 	 /* separators */
 	Automate[' ']=2;
 	Automate[',']=2;
@@ -14710,8 +19611,14 @@ printf("-read/flux\n");
 #endif
 
 	if (!ae->flux) {
-		zelines=FileReadLines(filename);
+		zelines=FileReadLines(ae,filename);
 		FieldArrayAddDynamicValueConcat(&ae->filename,&ae->ifile,&ae->maxfile,filename);
+		if (ae->enforce_symbol_case) {
+			ae->rawfile=MemRealloc(ae->rawfile,sizeof(char **)*ae->ifile);
+			ae->rawlen=MemRealloc(ae->rawlen,sizeof(int)*ae->ifile);
+			ae->rawfile[ae->ifile-1]=ae->source_bigbuffer;
+			ae->rawlen[ae->ifile-1]=ae->source_bigbuffer_len;
+		}
 	} else {
 		int flux_nblines=0;
 		int flux_curpos;
@@ -14747,7 +19654,7 @@ if (flux_nblines<50) printf("%02d[%s]\n",flux_nblines,zelines[flux_nblines]);
 		/* terminator */
 		zelines[flux_nblines]=NULL;
 
-		/* en mode flux on prend le repertoire courant en reference */
+		/* with embedded Rasm we set the current directory of the caller as reference */
 		FieldArrayAddDynamicValueConcat(&ae->filename,&ae->ifile,&ae->maxfile,CURRENT_DIR);
 	}	
 
@@ -14776,22 +19683,49 @@ printf("-comz/include\n");
 	}
 
 	waiting_quote=quote_type=0;
+
+	/************************************************************************************/
+	/************************************************************************************/
+	/* simplify case, carriage return and some tricky quotes ****************************/
+	/* also do all sources and binaries includes ****************************************/
+	/************************************************************************************/
+	/************************************************************************************/
 	l=idx=0;
 	while (l<ilisting) {
+
+#if TRACE_PREPRO
+if (!idx) printf("[%s]\n",listing[l].listing);
+#endif
+
 		c=listing[l].listing[idx++];
 		if (!c) {
 			l++;
 			idx=0;
 			continue;
-		} else if (c=='\\' && !waiting_quote) {
+		}
+		if (c=='\\' && !waiting_quote) {
 			idx++;
 			continue;
-		} else if (c==0x0D || c==0x0A) {
+		}
+		
+		if (c==0x0D || c==0x0A) {
 			listing[l].listing[idx-1]=':';
 			c=':';
-		} else if (c=='\'' && idx>2 && strncmp(&listing[l].listing[idx-3],"AF'",3)==0) {
-			/* rien */
-		} else if (c=='"' || c=='\'') {
+		} else if (c=='\'') {
+			// test this only if there is a single quote
+		       	if (idx>2 && strncmp(&listing[l].listing[idx-3],"AF'",3)==0) {
+				/* nothing */
+			} else {
+				if (!quote_type) {
+					quote_type=c;
+					lquote=l;
+				} else {
+					if (c==quote_type) {
+						quote_type=0;
+					}
+				}
+			}
+		} else if (c=='"') {
 			if (!quote_type) {
 				quote_type=c;
 				lquote=l;
@@ -14803,10 +19737,18 @@ printf("-comz/include\n");
 		}
 
 		if (waiting_quote) {
-			/* expecting quote and nothing else */
+			/* expecting quote and NOTHING else */
 			switch (waiting_quote) {
 				case 1:
-					if (c==quote_type) waiting_quote=2;
+					if (c==quote_type) waiting_quote=2; else {
+						/* enforce there is only spaces or tabs between READ/INC and string */
+						if (c!=' ' && c!=0x9) {
+							MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"A quoted string must follow INCLUDE/READ directive\n");
+							waiting_quote=0;
+							idx--;
+							continue;
+						}
+					}
 					break;
 				case 2:
 					if (!quote_type) {
@@ -14833,101 +19775,76 @@ printf("-comz/include\n");
 							}
 						}
 					}
-					
 					curhexbin.filename=TxtStrDup(filename_toread);
 					curhexbin.crunch=crunch;
-					if (fileok) {
-						/* lecture */
-						curhexbin.rawlen=curhexbin.datalen=FileGetSize(filename_toread);
-						curhexbin.data=MemMalloc(curhexbin.datalen*1.3+10);
-						#if TRACE_PREPRO
-							switch (crunch) {
-								case 0:rasm_printf(ae,KBLUE"incbin [%s] size=%d\n",filename_toread,curhexbin.datalen);break;
-								case 4:rasm_printf(ae,KBLUE"inclz4 [%s] size=%d\n",filename_toread,curhexbin.datalen);break;
-								case 7:rasm_printf(ae,KBLUE"incsx7 [%s] size=%d\n",filename_toread,curhexbin.datalen);break;
-								case 8:rasm_printf(ae,KBLUE"incexo [%s] size=%d\n",filename_toread,curhexbin.datalen);break;
-								case 88:rasm_printf(ae,KBLUE"incexb [%s] size=%d\n",filename_toread,curhexbin.datalen);break;
-								case 48:rasm_printf(ae,KBLUE"incl48 [%s] size=%d\n",filename_toread,curhexbin.datalen);break;
-								case 49:rasm_printf(ae,KBLUE"incl49 [%s] size=%d\n",filename_toread,curhexbin.datalen);break;
-								default:rasm_printf(ae,KBLUE"invalid crunch state!\n");exit(-42);
-							}
-						#endif
-						if (FileReadBinary(filename_toread,(char*)curhexbin.data,curhexbin.datalen)!=curhexbin.datalen) {
-							rasm_printf(ae,"read error on %s",filename_toread);
-							exit(2);
-						}
-						FileReadBinaryClose(filename_toread);
-						switch (crunch) {
-							#ifndef NO_3RD_PARTIES
-							case 4:
-								newdata=LZ4_crunch(curhexbin.data,curhexbin.datalen,&curhexbin.datalen);
-								MemFree(curhexbin.data);
-								curhexbin.data=newdata;
-								#if TRACE_PREPRO
-								rasm_printf(ae,KVERBOSE"crunched with LZ4 into %d byte(s)\n",curhexbin.datalen);
-								#endif
-								break;
-							case 7:
-								{
-								size_t slzlen;
-								newdata=ZX7_compress(optimize(curhexbin.data, curhexbin.datalen), curhexbin.data, curhexbin.datalen, &slzlen);
-								curhexbin.datalen=slzlen;
-								MemFree(curhexbin.data);
-								curhexbin.data=newdata;
-								#if TRACE_PREPRO
-								rasm_printf(ae,KVERBOSE"crunched with ZX7 into %d byte(s)\n",curhexbin.datalen);
-								#endif
-								}
-								break;
-							case 8:
-						rasm_printf(ae,KWARNING"Exomizer is crunching %.1fkb this may take a while, be patient...\n",curhexbin.datalen/1024.0);
-								newdata=Exomizer_crunch(curhexbin.data,curhexbin.datalen,&curhexbin.datalen);
-								MemFree(curhexbin.data);
-								curhexbin.data=newdata;
-								#if TRACE_PREPRO
-								rasm_printf(ae,KVERBOSE"crunched with Exomizer into %d byte(s)\n",curhexbin.datalen);
-								#endif
-								break;
-							#endif
-							case 48:
-								newdata=LZ48_crunch(curhexbin.data,curhexbin.datalen,&curhexbin.datalen);
-								MemFree(curhexbin.data);
-								curhexbin.data=newdata;
-								#if TRACE_PREPRO
-								rasm_printf(ae,KVERBOSE"crunched with LZ48 into %d byte(s)\n",curhexbin.datalen);
-								#endif
-								break;
-							case 49:
-								newdata=LZ49_crunch(curhexbin.data,curhexbin.datalen,&curhexbin.datalen);
-								MemFree(curhexbin.data);
-								curhexbin.data=newdata;
-								#if TRACE_PREPRO
-								rasm_printf(ae,KVERBOSE"crunched into with LZ49 %d byte(s)\n",curhexbin.datalen);
-								#endif
-								break;
-							default:break;
-						}
-					} else {
-						/* TAG + info */
-						curhexbin.datalen=-1;
-						curhexbin.data=MemMalloc(2);
-						/* not yet an error, we will know later when executing the code */
+					switch (crunch) {
+						case 18:
+							curhexbin.version=1;
+							curhexbin.minmatch=5;
+							break;
+						case 19:
+							curhexbin.crunch=18;
+							curhexbin.version=2;
+							curhexbin.minmatch=2;
+							break;
+						default:break;
 					}
-					ObjectArrayAddDynamicValueConcat((void**)&ae->hexbin,&ae->ih,&ae->mh,&curhexbin,sizeof(curhexbin));
-					/* insertion */
-					le=strlen(listing[l].listing);
 
-					newlistingline=MemMalloc(le+32);
-					memcpy(newlistingline,listing[l].listing,rewrite);
-					rewrite+=sprintf(newlistingline+rewrite,"HEXBIN #%X",ae->ih-1);
-					strcat(newlistingline+rewrite,listing[l].listing+idx);
-					idx=rewrite;
-					MemFree(listing[l].listing);
-					listing[l].listing=newlistingline;
+					/* TAG + info */
+					curhexbin.datalen=-1;
+					curhexbin.data=NULL;
+					/* not yet an error, we will know later when executing the code */
+					ObjectArrayAddDynamicValueConcat((void**)&ae->hexbin,&ae->ih,&ae->mh,&curhexbin,sizeof(curhexbin));
+
+					/* v0.130 handling error case with filename on multiple lines */
+					if (incstartL!=l) {
+						int iconcat=incstartL;
+						int ilen;
+
+						MakeError(ae,ae->filename[listing[incstartL].ifile],listing[incstartL].iline,"INCBIN filename cannot be on multiple lines\n");
+
+						ilen=strlen(listing[iconcat].listing)+1;
+						idx+=ilen-rewrite;
+						while (iconcat<l) {
+							int tlen;
+							iconcat++;
+							tlen=strlen(listing[iconcat].listing);
+							ilen+=tlen;
+							if (iconcat<l) idx+=tlen;
+						}
+
+						iconcat=incstartL;
+						listing[iconcat].listing=MemRealloc(listing[iconcat].listing,ilen);
+						while (iconcat<l) {
+							iconcat++;
+							strcat(listing[incstartL].listing,listing[iconcat].listing);
+							listing[iconcat].listing[0]=0;
+						}
+						l=incstartL;
+
+						/* patch data to remain Assembler silent about this */
+						for (i=rewrite;i<idx;i++) listing[incstartL].listing[i]=' ';
+						/* delete entry */
+						MemFree(curhexbin.filename);
+						ae->ih--;
+					} else {
+						/* insertion */
+						le=strlen(listing[l].listing);
+
+						newlistingline=MemMalloc(le+32);
+						memcpy(newlistingline,listing[l].listing,rewrite);
+						rewrite+=sprintf(newlistingline+rewrite,"HEXBIN #%X",ae->ih-1);
+						strcat(newlistingline+rewrite,listing[l].listing+idx);
+						idx=rewrite;
+						MemFree(listing[l].listing);
+						listing[l].listing=newlistingline;
+					}
 					incbin=0;
 				} else if (include) {
 					/* qval contient le nom du fichier a lire */
 					int fileok=0,ilookfile;
+					/* cette notion n'existe pas dans le cas normal */
+					curhexbin.datalen=0;
 					/* qval contient le nom du fichier a lire */
 					filename_toread=MergePath(ae,ae->filename[listing[l].ifile],qval);
 					if (FileExists(filename_toread)) {
@@ -14940,43 +19857,78 @@ printf("-comz/include\n");
 							}
 						}
 					}
-					
-					if (fileok) {
-						int newi,newj;
-						#if TRACE_PREPRO
-						rasm_printf(ae,KBLUE"include [%s]\n",filename_toread);
-						#endif
-						
-						/* lecture */
-						listing_include=FileReadLines(filename_toread);
-						FieldArrayAddDynamicValueConcat(&ae->filename,&ae->ifile,&ae->maxfile,filename_toread);
-						/* virer les commentaires + pré-traitement */
-						EarlyPrepSrc(ae,listing_include,ae->filename[ae->ifile-1]);
 
-						/* split de la ligne en cours + suppression de l'instruction include */
-						PreProcessingSplitListing(&listing,&ilisting,&maxlisting,l,rewrite,idx);
-						/* insertion des nouvelles lignes + reference fichier + numeros de ligne */
-						PreProcessingInsertListing(&listing,&ilisting,&maxlisting,l,listing_include,ae->ifile-1);
-						
-						MemFree(listing_include); /* free le tableau mais pas les lignes */
-						listing_include=NULL;
-						idx=0; /* on reste sur la meme ligne mais on se prepare a relire du caractere 0! */
+					/* v0.130 handling error case with filename on multiple lines */
+					if (incstartL!=l) {
+						int iconcat=incstartL;
+						int ilen;
+
+						MakeError(ae,ae->filename[listing[incstartL].ifile],listing[incstartL].iline,"INCLUDE filename cannot be on multiple lines\n");
+						ilen=strlen(listing[iconcat].listing)+1;
+						idx+=ilen-rewrite;
+						while (iconcat<l) {
+							int tlen;
+							iconcat++;
+							tlen=strlen(listing[iconcat].listing);
+							ilen+=tlen;
+							if (iconcat<l) idx+=tlen;
+						}
+
+						iconcat=incstartL;
+						listing[iconcat].listing=MemRealloc(listing[iconcat].listing,ilen);
+						while (iconcat<l) {
+							iconcat++;
+							strcat(listing[incstartL].listing,listing[iconcat].listing);
+							listing[iconcat].listing[0]=0;
+						}
+						l=incstartL;
+
 					} else {
-						/* TAG + info */
-						curhexbin.filename=TxtStrDup(filename_toread);
-						curhexbin.datalen=-2;
-						curhexbin.data=MemMalloc(2);
-						/* not yet an error, we will know later when executing the code */
-						ObjectArrayAddDynamicValueConcat((void**)&ae->hexbin,&ae->ih,&ae->mh,&curhexbin,sizeof(curhexbin));
-						/* insertion */
-						le=strlen(listing[l].listing);
-						newlistingline=MemMalloc(le+32);
-						memcpy(newlistingline,listing[l].listing,rewrite);
-						rewrite+=sprintf(newlistingline+rewrite,"HEXBIN #%X",ae->ih-1);
-						strcat(newlistingline+rewrite,listing[l].listing+idx);
-						idx=rewrite;
-						MemFree(listing[l].listing);
-						listing[l].listing=newlistingline;
+						if (fileok) {
+							#if TRACE_PREPRO
+							rasm_printf(ae,KBLUE"include [%s]\n",filename_toread);
+							#endif
+							
+							/* lecture */
+							listing_include=FileReadLines(ae,filename_toread);
+							FieldArrayAddDynamicValueConcat(&ae->filename,&ae->ifile,&ae->maxfile,filename_toread);
+							if (ae->enforce_symbol_case) {
+								ae->rawfile=MemRealloc(ae->rawfile,sizeof(char **)*ae->ifile);
+								ae->rawlen=MemRealloc(ae->rawlen,sizeof(int)*ae->ifile);
+								ae->rawfile[ae->ifile-1]=ae->source_bigbuffer;
+								ae->rawlen[ae->ifile-1]=ae->source_bigbuffer_len;
+							}
+							/* virer les commentaires + pré-traitement */
+							EarlyPrepSrc(ae,listing_include,ae->filename[ae->ifile-1]);
+
+							/* split de la ligne en cours + suppression de l'instruction include */
+							PreProcessingSplitListing(&listing,&ilisting,&maxlisting,l,rewrite,idx);
+							/* insertion des nouvelles lignes + reference fichier + numeros de ligne */
+							PreProcessingInsertListing(&listing,&ilisting,&maxlisting,l,listing_include,ae->ifile-1);
+							
+							MemFree(listing_include); /* free le tableau mais pas les lignes */
+							listing_include=NULL;
+							idx=0; /* on reste sur la meme ligne mais on se prepare a relire du caractere 0! */
+						} else {
+							/********************************************
+							*      E R R O R    M a n a g e m e n t     *
+							********************************************/
+							char tmp_insert[128];
+
+							for (i=rewrite;i<idx;i++) listing[incstartL].listing[i]=' ';
+							sprintf(tmp_insert,"READ %d",ae->ih);
+							memcpy(listing[incstartL].listing+rewrite,tmp_insert,strlen(tmp_insert));
+							
+							filename_toread=MergePath(ae,ae->filename[listing[l].ifile],qval);
+							curhexbin.filename=TxtStrDup(filename_toread);
+							curhexbin.crunch=crunch;
+
+							/* TAG + info */
+							curhexbin.datalen=-2;
+							curhexbin.data=NULL;
+							/* not yet an error, we will know later when executing the code */
+							ObjectArrayAddDynamicValueConcat((void**)&ae->hexbin,&ae->ih,&ae->mh,&curhexbin,sizeof(curhexbin));
+						}
 					}
 					include=0;
 				}
@@ -14988,144 +19940,244 @@ printf("-comz/include\n");
 			/* classic behaviour */
 
 			/* looking for include/incbin */
-			if (((c>='A' && c<='Z') || (c>='0' && c<='9') || c=='@' || c=='_')&& !quote_type) {
+			//if (((c>='A' && c<='Z') || (c>='0' && c<='9') || c=='@' || c=='_')&& !quote_type) {
+			if (AutomatePrepro[((int)c)&0xFF] && !quote_type) {
 				bval[ival++]=c;
 				StateMachineResizeBuffer(&bval,ival,&sval);
 				bval[ival]=0;
 			} else {
-				if (strcmp(bval,"INCLUDE")==0) {
-					include=1;
-					waiting_quote=1;
-					rewrite=idx-7-1;
-					/* quote right after keyword */
-					if (c==quote_type) {
-						waiting_quote=2;
-					}
-				} else if (strcmp(bval,"READ")==0) {
-					include=1;
-					waiting_quote=1;
-					rewrite=idx-4-1;
-					/* quote right after keyword */
-					if (c==quote_type) {
-						waiting_quote=2;
-					}
-				} else if (strcmp(bval,"INCLZ4")==0) {
-					incbin=1;
-					crunch=4;
-					waiting_quote=1;
-					rewrite=idx-6-1;
-					/* quote right after keyword */
-					if (c==quote_type) {
-						waiting_quote=2;
-					}
-				} else if (strcmp(bval,"INCEXB")==0) {
-					incbin=1;
-					crunch=88;
-					waiting_quote=1;
-					rewrite=idx-6-1;
-					/* quote right after keyword */
-					if (c==quote_type) {
-						waiting_quote=2;
-					}
-				} else if (strcmp(bval,"INCEXO")==0) {
-					incbin=1;
-					crunch=8;
-					waiting_quote=1;
-					rewrite=idx-6-1;
-					/* quote right after keyword */
-					if (c==quote_type) {
-						waiting_quote=2;
-					}
-				} else if (strcmp(bval,"INCZX7")==0) {
-					incbin=1;
-					crunch=7;
-					waiting_quote=1;
-					rewrite=idx-6-1;
-					/* quote right after keyword */
-					if (c==quote_type) {
-						waiting_quote=2;
-					}
-				} else if (strcmp(bval,"INCL48")==0) {
-					incbin=1;
-					crunch=48;
-					waiting_quote=1;
-					rewrite=idx-6-1;
-					/* quote right after keyword */
-					if (c==quote_type) {
-						waiting_quote=2;
-					}
-				} else if (strcmp(bval,"INCL49")==0) {
-					incbin=1;
-					crunch=49;
-					waiting_quote=1;
-					rewrite=idx-6-1;
-					/* quote right after keyword */
-					if (c==quote_type) {
-						waiting_quote=2;
-					}
-				} else if (strcmp(bval,"INCBIN")==0) {
-					incbin=1;
-					crunch=0;
-					waiting_quote=1;
-					rewrite=idx-6-1;
-					/* quote right after keyword */
-					if (c==quote_type) {
-						waiting_quote=2;
-					}
-				} else if (strcmp(bval,"INCWAV")==0) {
-					incbin=1;
-					crunch=0;
-					waiting_quote=1;
-					rewrite=idx-6-1;
-					/* quote right after keyword */
-					if (c==quote_type) {
-						waiting_quote=2;
-					}
-				} else if (strcmp(bval,"WHILE")==0) {
-					/* remplir la structure repeat_index */
-					windex.ol=listing[l].iline;
-					windex.oidx=idx;
-					windex.ifile=ae->ifile-1;
-					ObjectArrayAddDynamicValueConcat((void**)&TABwindex,&nwi,&mwi,&windex,sizeof(windex));
-				} else if (strcmp(bval,"REPEAT")==0) {
-					/* remplir la structure repeat_index */
-					rindex.ol=listing[l].iline;
-					rindex.oidx=idx;
-					rindex.ifile=ae->ifile-1;
-					ObjectArrayAddDynamicValueConcat((void**)&TABrindex,&nri,&mri,&rindex,sizeof(rindex));
-				} else if (strcmp(bval,"WEND")==0) {
-					/* retrouver la structure repeat_index correspondant a l'ouverture */
-					for (wi=nwi-1;wi>=0;wi--) {
-						if (TABwindex[wi].cl==-1) {
-							TABwindex[wi].cl=c;
-							TABwindex[wi].cidx=idx;
-							break;
+				switch (bval[0]) {
+					case 'I':
+						if (bval[1]=='N' && bval[2]=='C') {
+							if (strcmp(bval,"INCLUDE")==0) {
+								incstartL=l;
+								include=1;
+								waiting_quote=1;
+								rewrite=idx-7-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCLZSA2")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=19;
+								waiting_quote=1;
+								rewrite=idx-8-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCLZSA1")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=18;
+								waiting_quote=1;
+								rewrite=idx-8-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCAPU")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=17;
+								waiting_quote=1;
+								rewrite=idx-6-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCLZ4")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=4;
+								waiting_quote=1;
+								rewrite=idx-6-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCEXO")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=8;
+								waiting_quote=1;
+								rewrite=idx-6-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCZX0")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=70;
+								waiting_quote=1;
+								rewrite=idx-6-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCZX0B")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=71;
+								waiting_quote=1;
+								rewrite=idx-7-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCZX7")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=7;
+								waiting_quote=1;
+								rewrite=idx-6-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCL48")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=48;
+								waiting_quote=1;
+								rewrite=idx-6-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCL49")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=49;
+								waiting_quote=1;
+								rewrite=idx-6-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCBIN")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=0;
+								waiting_quote=1;
+								rewrite=idx-6-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							} else if (strcmp(bval,"INCWAV")==0) {
+								incstartL=l;
+								incbin=1;
+								crunch=0;
+								waiting_quote=1;
+								rewrite=idx-6-1;
+								/* quote right after keyword */
+								if (c==quote_type) {
+									waiting_quote=2;
+								}
+							}
 						}
-					}
-					if (wi==-1) {
-						MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"WEND refers to unknown WHILE\n");
-						//exit(1);
-					}
-				} else if (strcmp(bval,"REND")==0 || strcmp(bval,"UNTIL")==0) {
-					/* retrouver la structure repeat_index correspondant a l'ouverture */
-					for (ri=nri-1;ri>=0;ri--) {
-						if (TABrindex[ri].cl==-1) {
-							TABrindex[ri].cl=c;
-							TABrindex[ri].cidx=idx;
-							break;
+						break;
+
+					case 'U':
+						/* code dupliqué du REND */
+						if (strcmp(bval,"UNTIL")==0) {
+							/* retrouver la structure repeat_index correspondant a l'ouverture */
+							for (ri=nri-1;ri>=0;ri--) {
+								if (TABrindex[ri].cl==-1) {
+									TABrindex[ri].cl=c;
+									TABrindex[ri].cidx=idx;
+									break;
+								}
+							}
+							if (ri==-1) {
+								MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"%s refers to unknown REPEAT\n",bval);
+								//exit(1);
+							}
 						}
-					}
-					if (ri==-1) {
-						MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"%s refers to unknown REPEAT\n",bval);
-						//exit(1);
-					}
-						
+						break;
+
+					case 'R':
+						if (strcmp(bval,"READ")==0) {
+							incstartL=l;
+							include=1;
+							waiting_quote=1;
+							rewrite=idx-4-1;
+							/* quote right after keyword */
+							if (c==quote_type) {
+								waiting_quote=2;
+							}
+						/* code dupliqué du UNTIL */
+						} else if (strcmp(bval,"REND")==0) {
+							/* retrouver la structure repeat_index correspondant a l'ouverture */
+							for (ri=nri-1;ri>=0;ri--) {
+								if (TABrindex[ri].cl==-1) {
+									TABrindex[ri].cl=c;
+									TABrindex[ri].cidx=idx;
+									break;
+								}
+							}
+							if (ri==-1) {
+								MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"%s refers to unknown REPEAT\n",bval);
+								//exit(1);
+							}
+						} else if (strcmp(bval,"REPEAT")==0) {
+							/* remplir la structure repeat_index */
+							rindex.ol=listing[l].iline;
+							rindex.oidx=idx;
+							rindex.ifile=ae->ifile-1;
+							ObjectArrayAddDynamicValueConcat((void**)&TABrindex,&nri,&mri,&rindex,sizeof(rindex));
+						}
+						break;
+
+					case 'W':
+						if (strcmp(bval,"WHILE")==0) {
+							/* remplir la structure repeat_index */
+							windex.ol=listing[l].iline;
+							windex.oidx=idx;
+							windex.ifile=ae->ifile-1;
+							ObjectArrayAddDynamicValueConcat((void**)&TABwindex,&nwi,&mwi,&windex,sizeof(windex));
+						} else if (strcmp(bval,"WEND")==0) {
+							/* retrouver la structure repeat_index correspondant a l'ouverture */
+							for (wi=nwi-1;wi>=0;wi--) {
+								if (TABwindex[wi].cl==-1) {
+									TABwindex[wi].cl=c;
+									TABwindex[wi].cidx=idx;
+									break;
+								}
+							}
+							if (wi==-1) {
+								MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"WEND refers to unknown WHILE\n");
+								//exit(1);
+							}
+								
+						}
+						break;
+
+					default: if (ae->noampersand && c=='&') {
+							  listing[l].listing[idx-1]='#';
+#if TRACE_PREPRO
+printf("patch & => #\n");
+#endif
+						}
+						break;
 				}
+
+#if TRACE_PREPRO
+printf("bval=[%s]\n",bval);
+#endif
 				bval[0]=0;
 				ival=0;
 			}
 		}
 	}
+	if (waiting_quote && ilisting) {
+		MakeError(ae,ae->filename[listing[ilisting-1].ifile],listing[ilisting-1].iline,"A quoted string must follow INCLUDE/READ directive\n");
+	}
+
 #if TRACE_PREPRO
 printf("check quotes and repeats\n");
 #endif
@@ -15190,25 +20242,40 @@ printf("-build wordlist\n");
 #if TRACE_PREPRO
 printf("c='%c' automate[c]=%d\n",c>31?c:'.',Automate[((int)c)&0xFF]);			
 #endif
-					exit(0);
+					exit(1);
 					break;
 				case 1:
-					if (c=='\'' && idx>2 && strncmp(&listing[l].listing[idx-3],"AF'",3)==0) {
-						w[lw++]=c;
-						StateMachineResizeBuffer(&w,lw,&mw);
-						w[lw]=0;
-						break;
-					} else if (c=='\'' || c=='"') {
-						quote_type=c;
-						/* debut d'une quote, on finalise le mot -> POURQUOI DONC? */
-						//idx--;
+					if (c=='\'') {
+						if (idx>2 && strncmp(&listing[l].listing[idx-3],"AF'",3)==0) {
+							w[lw++]=c;
+							StateMachineResizeBuffer(&w,lw,&mw);
+							w[lw]=0;
+							break;
+						}
 #if TRACE_PREPRO
 printf("quote\n");
 #endif
 						/* on finalise le mot si on est en début d'une nouvelle instruction ET que c'est un SAVE */
 						if (strcmp(w,"SAVE")==0) {
+							// on ne break pas pour passer dans le case 2 (separator)
 							idx--;
 						} else {
+							quote_type=c;
+							w[lw++]=c;
+							StateMachineResizeBuffer(&w,lw,&mw);
+							w[lw]=0;
+							break;
+						}
+					} else if (c=='"') {
+#if TRACE_PREPRO
+printf("quote\n");
+#endif
+						/* on finalise le mot si on est en début d'une nouvelle instruction ET que c'est un SAVE */
+						if (strcmp(w,"SAVE")==0) {
+							// on ne break pas pour passer dans le case 2 (separator)
+							idx--;
+						} else {
+							quote_type=c;
 							w[lw++]=c;
 							StateMachineResizeBuffer(&w,lw,&mw);
 							w[lw]=0;
@@ -15222,7 +20289,7 @@ printf("quote\n");
 						} else {
 							/* Winape/Maxam operator compatibility on expressions */
 #if TRACE_PREPRO
-printf("1/2 winape maxam operator test for [%s]\n",w+ispace);
+printf("1/2 Winape maxam operator test for [%s]\n",w+ispace);
 #endif
 							if (texpr) {
 								if (strcmp(w+ispace,"AND")==0) {
@@ -15261,9 +20328,9 @@ printf("*** separator='%c'\n",c);
 					if (lw) {
 						w[lw]=0;
 						if (texpr && !wordlist[nbword-1].t && wordlist[nbword-1].e && !hadcomma) {
-							/* pour compatibilite winape avec AND,OR,XOR */
+							/* pour compatibilite Winape avec AND,OR,XOR */
 #if TRACE_PREPRO
-printf("2/2 winape maxam operator test for expression [%s]\n",w+ispace);
+printf("2/2 Winape maxam operator test for expression [%s]\n",w+ispace);
 #endif
 							if (strcmp(w,"AND")==0) {
 								wtmp=TxtStrDup("&");
@@ -15477,6 +20544,22 @@ printf("expr operator=%c\n",c);
 #endif
 					/* expression/condition */
 					texpr=1;
+
+					/* patch operator assignment with useless spacing v121 */
+					if (lw==1 && c=='=') {
+						switch (w[0]) {
+							case '[':case ']':case '+':case '*':case '-':case '/':case '|':case '&':
+#if TRACE_PREPRO
+printf("*** patch prepro operator assignment + useless spacing\n");
+#endif
+								opassign=w[0];lw=0;
+								break;
+							default:opassign=0;break;
+						}
+					} else {
+						opassign=0;
+					}
+
 				    if (lw) {
 						Automate[' ']=1;
 						Automate['\t']=1;
@@ -15493,7 +20576,7 @@ printf("expr operator=%c\n",c);
 					} else {
 						/* 2018.06.06 évolution sur le ! (not) */
 #if TRACE_PREPRO
-printf("*** operateur commence le mot\n");						
+printf("*** operateur commence le mot\n");
 printf("mot precedent=[%s] t=%d\n",wordlist[nbword-1].w,wordlist[nbword-1].t);
 #endif
 						if (hadcomma && c=='!') {
@@ -15535,6 +20618,14 @@ printf("mot precedent=[%s] t=%d\n",wordlist[nbword-1].w,wordlist[nbword-1].t);
 								}
 								MemFree(wordlist[nbword].w);
 								/* on ajoute l'egalite ou comparaison! */
+								if (opassign) {
+									#if TRACE_PREPRO
+									printf("*** patch opassign en finalisation de mot\n");
+									#endif
+									w[lw++]=opassign;
+									StateMachineResizeBuffer(&w,lw,&mw);
+									w[lw]=0;
+								}
 								curw.e=lw+1;
 							}
 							w[lw++]=c;
@@ -15553,21 +20644,95 @@ printf("mot precedent=[%s] t=%d\n",wordlist[nbword-1].w,wordlist[nbword-1].t);
 					exit(-1);
 			}
 		} else {
-			/* lecture inconditionnelle de la quote */
 #if TRACE_PREPRO
-printf("quote[%d]=%c\n",lw,c);
+printf("quote start with %c\n",c);
 #endif
+			/* quoted string always starts with a single or a double quote */
 			w[lw++]=c;
 			StateMachineResizeBuffer(&w,lw,&mw);
-			w[lw]=0;
-			if (!escape_code) {
-				if (c=='\\') escape_code=1;
-				if (lw>1 && c==quote_type) {
-					quote_type=0;
-				}
-			} else {
-				escape_code=0;
+			if (c=='\\') {
+				escape_code=1;
+			} else if (c==quote_type) {
+				quote_type=0;
 			}
+
+			if (quote_type) // should not happend but...
+			do {
+				c=listing[l].listing[idx++];
+				if (!c) {
+					MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"Quoted string must be on a single line!\n");
+					idx=0;
+					l++;
+					lw=0; // to avoid side effects
+					quote_type=0; // leave anyway
+				} else {
+					w[lw++]=c;
+					StateMachineResizeBuffer(&w,lw,&mw);
+
+					// string is stored with quotes
+					if (!escape_code) {
+						if (c=='\\') {
+							escape_code=1;
+						} else if (c==quote_type) {
+							quote_type=0;
+						}
+					} else {
+						// if previous char is an escape char, do not take care about ending quote
+						escape_code=0;
+					}
+				}
+			} while (quote_type);
+			// EOL for new word!
+			w[lw]=0;
+
+			if (ae->utf8enable) {
+				int utidx;
+				for (utidx=0;w[utidx];utidx++) {
+					if ((unsigned char)w[utidx]>126) {
+						switch ((unsigned char)w[utidx]) {
+							case 0xC2:
+								if ((unsigned char)w[utidx+1]==0xBF) w[utidx]=174; else // ¿
+								if ((unsigned char)w[utidx+1]==0xA1) w[utidx]=175; else // ¡
+									MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"Unsupported UTF8 char for quoted string\n");
+								break;
+							case 0xC3:
+								if ((unsigned char)w[utidx+1]==0xB9) w[utidx]=124; else // ù
+								if ((unsigned char)w[utidx+1]==0xA9) w[utidx]=123; else // é
+								if ((unsigned char)w[utidx+1]==0xA8) w[utidx]=125; else // è
+								if ((unsigned char)w[utidx+1]==0xA0) w[utidx]=64; else  // à
+								if ((unsigned char)w[utidx+1]==0x91) w[utidx]=161; else // Ñ
+								if ((unsigned char)w[utidx+1]==0xB1) w[utidx]=171; else // ñ
+								if ((unsigned char)w[utidx+1]==0xA7) {                  // ç
+									w[utidx]=92;
+									w[utidx+1]=92;
+								} else
+									MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"Unsupported UTF8 char for quoted string\n");
+								break;
+							default:
+								MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"Unsupported UTF8 char for quoted string\n");
+						}
+						// shift string bytes except for \ char
+						if (w[utidx+1] && w[utidx+1]!=92) {
+							int utshift;
+							utshift=utidx+1; do { w[utshift]=w[utshift+1]; utshift++; } while (w[utshift]);
+						}
+					}
+				}
+			} else if (!ae->freequote) {
+				// control special chars except in freequote mode
+				int utidx;
+				for (utidx=0;w[utidx];utidx++) {
+					if ((w[utidx]>=32 && w[utidx]<127) || w[utidx]=='\t') {
+						// is ok
+					} else {
+						MakeError(ae,ae->filename[listing[l].ifile],listing[l].iline,"Invalid char for quoted string\n");
+					}
+				}
+			}
+
+#if TRACE_PREPRO
+printf("quote end w=%s\n",w);
+#endif
 		}
 	}
 
@@ -15575,6 +20740,10 @@ printf("quote[%d]=%c\n",lw,c);
 printf("END\n");
 #endif
 
+	// fix error in previous instruction
+	if (nbword && !wordlist[nbword-1].t) {
+		wordlist[nbword-1].t=1;
+	}
 	curw.w="END";
 	curw.l=0;
 	curw.t=2;
@@ -15650,7 +20819,10 @@ int Rasm(struct s_parameter *param)
 
 int RasmAssemble(const char *datain, int lenin, unsigned char **dataout, int *lenout)
 {
+	static int cpt=0;
 	struct s_assenv *ae=NULL;
+
+	if (datain==NULL && lenin==0) return cpt; else cpt++;
 
 	if (lenout) *lenout=0;	
 	ae=PreProcessing(NULL,1,datain,lenin,NULL);
@@ -15659,18 +20831,76 @@ int RasmAssemble(const char *datain, int lenin, unsigned char **dataout, int *le
 
 int RasmAssembleInfo(const char *datain, int lenin, unsigned char **dataout, int *lenout, struct s_rasm_info **debug)
 {
+	static int cpt=0;
 	struct s_assenv *ae=NULL;
 	int ret;
-	
+
+	if (datain==NULL && lenin==0) return cpt; else cpt++;
+
 	ae=PreProcessing(NULL,1,datain,lenin,NULL);
 	ret=Assemble(ae,dataout,lenout,debug);
 	return ret;
 }
 
+int RasmAssembleInfoIntoRAM(const char *datain, int lenin, struct s_rasm_info **debug, unsigned char *emuram, int ramsize)
+{
+	static int cpt=0;
+	struct s_assenv *ae=NULL;
+	int ret;
+	int i,j,maxbank,ramidx;
+
+	if (datain==NULL && lenin==0) return cpt; else cpt++;
+
+	ae=PreProcessing(NULL,1,datain,lenin,NULL);
+
+	/* extension 4Mo = 256 slots + 4 slots 64K de RAM par défaut => 260 */
+	maxbank=ramsize>>14;
+	for (i=0;i<maxbank;i++) {
+		ramidx=i*16384;
+		for (j=0;j<16384;j++) {
+			ae->mem[i][j+16384*(i&3)]=emuram[ramidx++];
+		}
+	}
+	/* remaining bytes, if any */
+	ramidx=i*16384;
+	for (j=0;j<ramsize-ramidx;j++) {
+		ae->mem[i][j+16384*(i&3)]=emuram[ramidx++];
+	}
+
+	ae->debug.emuram=emuram;
+	ae->debug.lenram=ramsize;
+
+	ret=Assemble(ae,NULL,NULL,debug);
+
+	return ret;
+}
+
+int RasmAssembleInfoParam(const char *datain, int lenin, unsigned char **dataout, int *lenout, struct s_rasm_info **debug, struct s_parameter *param)
+{
+	static int cpt=0;
+	struct s_assenv *ae=NULL;
+	int ret;
+
+	if (datain==NULL && lenin==0) return cpt; else cpt++;
+
+	ae=PreProcessing(NULL,1,datain,lenin,param);
+	ret=Assemble(ae,dataout,lenout,debug);
+	return ret;
+}
+
+#define AUTOTEST_ACCENT "defb 'grouiké'"
+
+#define AUTOTEST_QUOTELAST "nop : save'grouik"
 
 #define AUTOTEST_PAGELABELGEN "buildsna: bank: cpt=5: ld bc,{page}miam{cpt}: bank cpt: nop: miam{cpt} nop: assert {page}miam{cpt}==0x7FC5 "
 
 #define AUTOTEST_NOINCLUDE "truc equ 0:if truc:include'bite':endif:nop"
+
+#define AUTOTEST_BADINCLUDE "include 'truc\n .bin' \n nop nop"
+
+#define AUTOTEST_BADINCBIN "incl49 'truc\n .bin' \n nop nop"
+
+#define AUTOTEST_BADINCLUDE02 "read: ldir : cp ';'"
 
 #define AUTOTEST_SETINSIDE "ld hl,0=0xC9FB"
 
@@ -15858,6 +21088,9 @@ int RasmAssembleInfo(const char *datain, int lenin, unsigned char **dataout, int
 
 #define AUTOTEST_EQUNUM		"mavar = 9:monlabel{mavar+5}truc:unalias{mavar+5}heu equ 50:autrelabel{unalias14heu}:ld hl,autrelabel50"
 
+#define AUTOTEST_EQUDOLLAR	" ld hl,une_equ: ld de,deux_equ: ldir: une_equ equ $+2: deux_equ equ $+4: defw 1: preums: defw 2: deuze: defw 3,4,5,6: assert une_equ == preums: assert deux_equ == deuze"
+
+
 #define AUTOTEST_DELAYNUM	"macro test  label:    dw {label}:    endm:    repeat 3, idx:idx2 = idx-1:" \
 				" test label_{idx2}:    rend:repeat 3, idx:label_{idx-1}:nop:rend"
 
@@ -15900,6 +21133,18 @@ int RasmAssembleInfo(const char *datain, int lenin, unsigned char **dataout, int
 
 #define AUTOTEST_LZSEGMENT	"org #100:debut:jr nz,zend:lz48:repeat 128:nop:rend:lzclose:jp zend:lz48:repeat 2:dec a:jr nz,@next:ld a,5:@next:jp debut:rend:" \
 							"lzclose:zend"
+
+#define AUTOTEST_MULTILZ	"bank: jr suivant: lz48: defs 100,#FF: lzclose: suivant jr lafin: lz49: defs 100,#FF: lzclose: lafin: bank: jr preums: " \
+				" preums jr suivant2: lzapu: defs 100,#FF: lzclose: suivant2 jr lafin2: lzexo: defs 100,#FF: lzclose: lafin2 "
+
+#define AUTOTEST_MULTILZORG " tabeul: defw script0: defw script1: defw script2: " \
+				"script0: org #4000,$: lz48: start1: jr end1: defs 100: djnz start1: end1: lzclose: " \
+				"org $: script1: org #4000,$: lz49: start2: jr end2: defs 100: djnz start2: end2: lzclose: " \
+				"org $: script2: org #4000,$: lz49: start3: jr end3: defs 100: djnz start3: end3: lzclose: " \
+				"org $: ei: ret "
+
+#define AUTOTEST_LZDEFERED	"lz48:defs 20:lzclose:defb $"
+
 
 #define AUTOTEST_PAGETAG	"bankset 0:org #5000:label1:bankset 1:org #9000:label2:bankset 2:" \
 							"assert {page}label1==0x7FC0:assert {page}label2==0x7FC6:assert {pageset}label1==#7FC0:assert {pageset}label2==#7FC2:nop"
@@ -15945,6 +21190,12 @@ int RasmAssembleInfo(const char *datain, int lenin, unsigned char **dataout, int
 #define AUTOTEST_DEFUSED	"ld hl,labelused :ifdef labelused:fail 'labelexiste':endif:ifndef labelused:else:fail 'labelexiste':endif:" \
 				"ifnused labelused:fail 'labelused':endif:ifused labelused:else:fail 'labelused':endif:labelused"
 
+#define AUTOTEST_ALIGN		"org 0:nop: align 64: defb 64: align 128: defb 128: align 256: defb 255 "
+
+#define AUTOTEST_CONFINE	"org 0: nop: org 250: confine 10: defb #aa: org 500: confine 12: defb #bb: assert $<512 "
+
+#define AUTOTEST_SAVEINVALID0	"repeat 256,x : defb x-1 : rend : save 'rasmoutput.bin',0,$"
+
 #define AUTOTEST_SAVEINVALID1	"nop : save'gruik',20,-100"
 
 #define AUTOTEST_SAVEINVALID2	"nop : save'gruik',-20,100"
@@ -15952,6 +21203,11 @@ int RasmAssembleInfo(const char *datain, int lenin, unsigned char **dataout, int
 #define AUTOTEST_SAVEINVALID3	"nop : save'gruik',40000,30000"
 
 #define AUTOTEST_MACROPROX	" macro unemacro: nop: endm: global_label: ld hl, .table: .table"
+
+#define AUTOTEST_MACRO_CONF01   " nop: macro label1: nop: mend: macro label1: nop: mend:"
+#define AUTOTEST_MACRO_CONF02   " label1=0: macro label1: nop: mend: nop:"
+#define AUTOTEST_MACRO_CONF03   " label1 equ #100: macro label1: nop: mend: nop:"
+#define AUTOTEST_MACRO_CONF04   " label1 nop: macro label1: nop: mend: nop"
 
 #define AUTOTEST_PROXBACK	" macro grouik: @truc djnz @truc: .unprox djnz .unprox: mend:" \
 				"ld b,2: unglobal nop: djnz unglobal: ld b,2: .unprox nop: djnz .unprox: beforelocal=$ :" \
@@ -15970,6 +21226,8 @@ int RasmAssembleInfo(const char *datain, int lenin, unsigned char **dataout, int
 
 #define AUTOTEST_FRAC		"mavar=frac(5.5):assert mavar==0.5:assert frac(6.6)==0.6:assert frac(1.1)==0.1:assert frac(1)==0:assert frac(100000)==0:nop"
 
+#define AUTOTEST_RND		"repeat:glop=rnd(20):until glop==10:nop"
+
 /* test override control between bank and bankset in snapshot mode + temp workspace */
 #define AUTOTEST_BANKSET "buildsna:bank 0:nop:bank 1:nop:bank:nop:bank 2:nop:bank 3:nop:bankset 1:nop:bank 8:nop:bank 9:nop:bank 10:nop:bank 11:nop"
 
@@ -15980,7 +21238,7 @@ int RasmAssembleInfo(const char *datain, int lenin, unsigned char **dataout, int
 #define AUTOTEST_DEFS "defs 256,0"
 
 #define AUTOTEST_LIMIT03	"limit -1 : nop"
-#define AUTOTEST_LIMIT04	"limit #10000 : nop"
+#define AUTOTEST_LIMIT04	"limit #10001 : nop"
 #define AUTOTEST_LIMIT05	"org #FFFF : ldir"
 #define AUTOTEST_LIMIT06	"org #FFFF : nop"
 
@@ -15992,7 +21250,86 @@ int RasmAssembleInfo(const char *datain, int lenin, unsigned char **dataout, int
 
 #define AUTOTEST_LZ4	"lz4:repeat 10:nop:rend:defb 'roudoudoudouoneatxkjhgfdskljhsdfglkhnopnopnopnop':lzclose"
 
+#define AUTOTEST_INCBIN1	"incbin 'autotest_include.raw'"
+#define AUTOTEST_INCBIN2	"incbin 'autotest_include.raw',1000"
+#define AUTOTEST_INCBIN3	"incbin 'autotest_include.raw',0,1000"
+
+#define AUTOTEST_LZ4_A	"lz4 : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZ4_B	"inclz4 'autotest_include.raw'"
+#define AUTOTEST_LZ4_C	"inclz4 'autotest_include.raw',100"
+#define AUTOTEST_LZ4_D	"lz4 : incbin 'autotest_include.raw',100 : lzclose"
+#define AUTOTEST_LZ4_E	"inclz4 'autotest_include.raw',0,1000"
+#define AUTOTEST_LZ4_F	"lz4 : incbin'autotest_include.raw',0,1000 : lzclose"
+
+#define AUTOTEST_LZ48_A	"lz48 : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZ48_B	"incl48 'autotest_include.raw'"
+#define AUTOTEST_LZ48_C	"incl48 'autotest_include.raw',100"
+#define AUTOTEST_LZ48_D	"lz48 : incbin 'autotest_include.raw',100 : lzclose"
+#define AUTOTEST_LZ48_E	"incl48 'autotest_include.raw',0,1000"
+#define AUTOTEST_LZ48_F	"lz48 : incbin'autotest_include.raw',0,1000 : lzclose"
+
+#define AUTOTEST_LZ49_A	"lz49 : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZ49_B	"incl49 'autotest_include.raw'"
+#define AUTOTEST_LZ49_C	"incl49 'autotest_include.raw',100"
+#define AUTOTEST_LZ49_D	"lz49 : incbin 'autotest_include.raw',100 : lzclose"
+#define AUTOTEST_LZ49_E	"incl49 'autotest_include.raw',0,1000"
+#define AUTOTEST_LZ49_F	"lz49 : incbin'autotest_include.raw',0,1000 : lzclose"
+
+#define AUTOTEST_LZAPU_A	"lzapu : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZAPU_B	"incapu 'autotest_include.raw'"
+#define AUTOTEST_LZAPU_C	"incapu 'autotest_include.raw',100"
+#define AUTOTEST_LZAPU_D	"lzapu : incbin 'autotest_include.raw',100 : lzclose"
+#define AUTOTEST_LZAPU_E	"incapu 'autotest_include.raw',0,1000"
+#define AUTOTEST_LZAPU_F	"lzapu : incbin'autotest_include.raw',0,1000 : lzclose"
+
+#define AUTOTEST_LZSA2_A	"lzsa2 : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZSA2_Abis	"lzsa2 2 : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZSA2_B	"inclzsa2 'autotest_include.raw'"
+#define AUTOTEST_LZSA2_C	"inclzsa2 'autotest_include.raw',100"
+#define AUTOTEST_LZSA2_D	"lzsa2 : incbin 'autotest_include.raw',100 : lzclose"
+#define AUTOTEST_LZSA2_E	"inclzsa2 'autotest_include.raw',0,1000"
+#define AUTOTEST_LZSA2_F	"lzsa2 : incbin'autotest_include.raw',0,1000 : lzclose"
+
+#define AUTOTEST_LZSA1_A	"lzsa1 : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZSA1_Abis	"lzsa1 2 : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZSA1_B	"inclzsa1 'autotest_include.raw'"
+#define AUTOTEST_LZSA1_C	"inclzsa1 'autotest_include.raw',100"
+#define AUTOTEST_LZSA1_D	"lzsa1 : incbin 'autotest_include.raw',100 : lzclose"
+#define AUTOTEST_LZSA1_E	"inclzsa1 'autotest_include.raw',0,1000"
+#define AUTOTEST_LZSA1_F	"lzsa1 : incbin'autotest_include.raw',0,1000 : lzclose"
+
+#define AUTOTEST_LZEXO_A	"lzexo : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZEXO_B	"incexo 'autotest_include.raw'"
+#define AUTOTEST_LZEXO_C	"incexo 'autotest_include.raw',100"
+#define AUTOTEST_LZEXO_D	"lzexo : incbin 'autotest_include.raw',100 : lzclose"
+#define AUTOTEST_LZEXO_E	"incexo 'autotest_include.raw',0,1000"
+#define AUTOTEST_LZEXO_F	"lzexo : incbin'autotest_include.raw',0,1000 : lzclose"
+
+#define AUTOTEST_LZX7_A	"lzx7 : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZX7_B	"inczx7 'autotest_include.raw'"
+#define AUTOTEST_LZX7_C	"inczx7 'autotest_include.raw',100"
+#define AUTOTEST_LZX7_D	"lzx7 : incbin 'autotest_include.raw',100 : lzclose"
+#define AUTOTEST_LZX7_E	"inczx7 'autotest_include.raw',0,1000"
+#define AUTOTEST_LZX7_F	"lzx7 : incbin'autotest_include.raw',0,1000 : lzclose"
+
+#define AUTOTEST_LZX0_A	"lzx0 : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZX0_B	"inczx0 'autotest_include.raw'"
+#define AUTOTEST_LZX0_C	"inczx0 'autotest_include.raw',100"
+#define AUTOTEST_LZX0_D	"lzx0 : incbin 'autotest_include.raw',100 : lzclose"
+#define AUTOTEST_LZX0_E	"inczx0 'autotest_include.raw',0,1000"
+#define AUTOTEST_LZX0_F	"lzx0 : incbin'autotest_include.raw',0,1000 : lzclose"
+
+#define AUTOTEST_LZX0B_A "lzx0b : incbin 'autotest_include.raw' : lzclose"
+#define AUTOTEST_LZX0B_B "inczx0b 'autotest_include.raw'"
+#define AUTOTEST_LZX0B_C "inczx0b 'autotest_include.raw',100"
+#define AUTOTEST_LZX0B_D "lzx0b : incbin 'autotest_include.raw',100 : lzclose"
+#define AUTOTEST_LZX0B_E "inczx0b 'autotest_include.raw',0,1000"
+#define AUTOTEST_LZX0B_F "lzx0b : incbin'autotest_include.raw',0,1000 : lzclose"
+
+
 #define AUTOTEST_MAXERROR	"repeat 20:aglapi:rend:nop"
+
+#define AUTOTEST_REAL	"defr 0,0.5,-0.5,43.375,3.14159265,-0.25,0.9994433,0.9994434,-0.9994433,-0.9994434,0.1234567,1.2345678,0.00007"
 
 #define AUTOTEST_ENHANCED_LD	"ld h,(ix+11): ld l,(ix+10): ld h,(iy+21): ld l,(iy+20): ld b,(ix+11): ld c,(ix+10):" \
 			"ld b,(iy+21): ld c,(iy+20): ld d,(ix+11): ld e,(ix+10): ld d,(iy+21): ld e,(iy+20): ld hl,(ix+10): " \
@@ -16003,6 +21340,10 @@ int RasmAssembleInfo(const char *datain, int lenin, unsigned char **dataout, int
 				"pop hl:pop bc:pop de:pop iy:pop ix:pop af:nop:nop"
 #define AUTOTEST_ENHANCED_LD2 "ld (ix+0),hl: ld (ix+0),de: ld (ix+0),bc: ld (iy+0),hl: ld (iy+0),de: ld (iy+0),bc:"\
 "ld (ix+1),h: ld (ix+0),l: ld (ix+1),d: ld (ix+0),e: ld (ix+1),b: ld (ix+0),c: ld (iy+1),h: ld (iy+0),l: ld (iy+1),d: ld (iy+0),e: ld (iy+1),b: ld (iy+0),c"
+
+#define AUTOTEST_ENHANCED_LD3 "ld bc,ix : ld bc,iy : ld de,ix : ld de,iy : ld ix,bc : ld ix,de : ld iy,bc : ld iy,de:"\
+	"ld b,hx : ld c,lx : ld b,hy : ld c,ly : ld d,hx : ld e,lx : ld d,hy : ld e,ly :"\
+	"ld hx,b : ld lx,c : ld hx,d : ld lx,e : ld hy,b : ld ly,c : ld hy,d : ld ly,e"
 
 #define AUTOTEST_INHIBITION2 "ifdef roudoudou:macro glop bank,page,param:ld a,{bank}:ld hl,{param}{bank}:if {bank}:nop:else:exx:" \
 	"endif::switch {param}:nop:case 4:nop:case {param}:nop:default:nop:break:endswitch:endif:defb 'coucou'"
@@ -16041,7 +21382,617 @@ int RasmAssembleInfo(const char *datain, int lenin, unsigned char **dataout, int
 				"a>>=1 : assert a==20 : nop"
 #define AUTOTEST_OPERATORASSIGN2 "a=1 : a+=2 : assert a==3 : repeat 2 : a+=10 : rend : assert a==23: a=1 : a-=2 : assert a==-1 : repeat 2 : a-=10 : rend : assert a==-21: " \
 				"a=3 : a*=2 : assert a==6 : repeat 2 : a*=10 : rend : assert a==600: a=600 : a/=2 : assert a==300 : repeat 2 : a/=10 : rend : assert a==3 : nop"
+#define AUTOTEST_OPERATORASSIGN3 "a=1 : a += 2 : assert a==3 : repeat 2 : a += 10 : rend : assert a==23: a=1 : a -= 2 : assert a==-1 : repeat 2 : a -= 10 : rend : assert a==-21: " \
+				"a=3 : a *= 2 : assert a==6 : repeat 2 : a *= 10 : rend : assert a==600: a=600 : a /= 2 : assert a==300 : repeat 2 : a /= 10 : rend : assert a==3 : nop"
 
+#define AUTOTEST_MODULE01 "org 0: nop: preums nop  : .prox1      : djnz preums : djnz .prox1 : defs 200 : djnz gourni_preums: djnz gourni_preums.prox1: djnz grouik_preums: " \
+			"djnz grouik_preums.prox1: module grouik: preums nop: .prox1: djnz preums: djnz .prox1: djnz gourni_preums: module gourni: ld (.prox1),a: ld (preums.prox1),a: " \
+			"preums nop: .prox1: djnz preums: djnz .prox1: djnz grouik_preums: assert preums!=1: module : plop: : module quatre: : jp plop: bip: jr bip: " \
+			" : assert preums==1: module OFF: : assert preums==1 "
+
+#define AUTOTEST_PUSHPOPGLOBAL "unglobal: nop: repeat 2: @unlocal: .prox nop: rend: .prox nop: apres=$: macro unemacro: @inside: nop: .prox: nop: assert .prox>@inside: djnz .prox: " \
+			"mend: macro deuxmacros: @inside: nop: .prox: nop: unemacro: nop: djnz .prox: assert  .prox>@inside: mend: unemacro (void): assert .prox<apres: " \
+			"djnz .prox: deuxmacros (void): djnz .prox: assert .prox<apres "
+#define AUTOTEST_MODULE02 "unglobal: nop: .prox: nop: module un: deuxglobal: nop: .prox: nop: djnz .prox: nop: doublon: nop: module deux: troisglobal: nop: " \
+			" .prox: nop: djnz .prox: nop: doublon: nop: assert doublon>troisglobal: module: jr un_doublon: jr deux_doublon: jr un_deuxglobal.prox: jr deux_troisglobal.prox "
+
+#define AUTOTEST_MODULE03 "unglobal: nop: .prox: nop: module un: deuxglobal: nop: .prox: nop: djnz .prox: nop: doublon: nop: module deux: troisglobal: nop: " \
+			" .prox: nop: djnz .prox: nop: doublon: nop: assert doublon>troisglobal: endmodule: jr un_doublon: jr deux_doublon: jr un_deuxglobal.prox: jr deux_troisglobal.prox "
+
+#define AUTOTEST_GETNOP_LD "ticker start,testouille:"\
+			"ld a,1: ld a,b: ld b,a: ld a,i: ld i,a: ld a,r: ld r,a:"\
+			"ld a,(5): ld a,(hl): ld a,(de): ld (de),a: ld (hl),h: ld a,lx: ld lx,c:"\
+			"ld (1234),a: ld hl,1234: ld bc,1234: ld ix,1234: ld hl,(123): ld bc,(123): ld ix,(123): ld sp,(123):"\
+			"ld (123),hl: ld (123),de: ld (123),iy: ld (123),sp: ld yh,45: ld sp,hl: ld sp,ix:"\
+			"ticker stop,testouille:"\
+			"v1=getnop('ld a,1: ld a,b: ld b,a: ld a,i: ld i,a: ld a,r: ld r,a'):"\
+			"v1+=getnop('ld a,(5): ld a,(hl): ld a,(de): ld (de),a: ld (hl),h: ld a,lx: ld lx,c'):"\
+			"v1+=getnop('ld (1234),a: ld hl,1234: ld bc,1234: ld ix,1234: ld hl,(123): ld bc,(123): ld ix,(123): ld sp,(123)'):"\
+			"v1+=getnop('ld (123),hl: ld (123),de: ld (123),iy: ld (123),sp: ld yh,45: ld sp,hl: ld sp,ix'):"\
+			"assert v1==testouille"
+
+#define AUTOTEST_DELAYED_EQU "ld (ix + PLY_AKM_Data_OffsetPtStartTrack + 1),h:PLY_AKM_Track1_Data::" \
+			"PLY_AKM_Track1_PtStartTrack defw 0:PLY_AKM_Data_OffsetPtStartTrack   "\
+	  		" equ PLY_AKM_Track1_PtStartTrack - PLY_AKM_Track1_Data"
+
+#define AUTOTEST_TICKERNOP_FULL "ticker start,v1 : rla: rlca: rrca: rra: nop: ccf: daa: scf: cpl: exx: ei: di : ticker stop,v1:"\
+"ticker start,v2 :im 0: neg : rst #10: retn : reti:ticker stop,v2:"\
+"ticker start,v3 :cpir : cpdr : cpd : cpi : outi : outd : ldd :ldi :ldir:lddr:inir:indr:otir:otdr:ind:ini:ticker stop,v3:"\
+"ticker start,v4 :rld:rrd:cp (hl):cp #12:cp a:cp c:cp (ix+0):cp (iy+5):cp ly:cp xl:ticker stop,v4:"\
+"assert v1==getnop('rla: rlca: rrca: rra: nop: ccf: daa: scf: cpl: exx: ei: di'):"\
+"assert v2==getnop('im : neg : rst : retn : reti'):"\
+"assert v3==getnop('cpir : cpdr : cpd : cpi : outi : outd : ldd :ldi :ldir:lddr:inir:indr:otir:otdr:ind:ini'):"\
+"assert v4==getnop('rld:rrd:cp (hl):cp #12:cp a:cp c:cp (ix+0):cp (iy+5):cp ly:cp xl'):"\
+"ticker start,v5 : ex af,af' : ex hl,de : ex de,hl : ex (sp),hl : ex hl,(sp) : ex (sp),ix : ex ix,(sp) : exx : ticker stop,v5:"\
+"assert v5==getnop(\"ex af,af' : ex hl,de : ex de,hl : ex (sp),hl : ex hl,(sp) : ex (sp),ix : ex ix,(sp) : exx\"):"\
+"ticker start,v6 : push af : push bc : push ix : pop ix : pop bc : pop af : ticker stop,v6:"\
+"ticker start,v7 : sla a : sla b : sla (hl) : sla (ix+5) : sla (ix-20),b : ticker stop,v7:"\
+"assert v7==getnop('sla a : sla b : sla (hl) : sla (ix+5) : sla (ix-20),b'):"\
+"ticker start,v8 : sll a : sll b : sll (hl) : sll (ix+5) : sll (ix-20),b : ticker stop,v8:"\
+"assert v8==getnop('sll a : sll b : sll (hl) : sll (ix+5) : sll (ix-20),b'):"\
+"ticker start,v9 : sra a : sra b : sra (hl) : sra (ix+5) : sra (ix-20),b : ticker stop,v9:"\
+"assert v9==getnop('sra a : sra b : sra (hl) : sra (ix+5) : sra (ix-20),b'):"\
+"ticker start,v10 : srl a : srl b : srl (hl) : srl (ix+5) : srl (ix-20),b : ticker stop,v10:"\
+"assert v10==getnop('srl a : srl b : srl (hl) : srl (ix+5) : srl (ix-20),b'):"\
+"ticker start,v11 : rl a : rl b : rl (hl) : rl (ix+5) : rl (ix-20),b : ticker stop,v11:"\
+"assert v11==getnop('rl a : rl b : rl (hl) : rl (ix+5) : rl (ix-20),b'):"\
+"ticker start,v12 : rlc a : rlc b : rlc (hl) : rlc (ix+5) : rlc (ix-20),b : ticker stop,v12:"\
+"assert v12==getnop('rlc a : rlc b : rlc (hl) : rlc (ix+5) : rlc (ix-20),b'):"\
+"ticker start,v13 : rr a : rr b : rr (hl) : rr (ix+5) : rr (ix-20),b : ticker stop,v13:"\
+"assert v13==getnop('rr a : rr b : rr (hl) : rr (ix+5) : rr (ix-20),b'):"\
+"ticker start,v14 : rrc a : rrc b : rrc (hl) : rrc (ix+5) : rrc (ix-20),b : ticker stop,v14:"\
+"assert v14==getnop('rrc a : rrc b : rrc (hl) : rrc (ix+5) : rrc (ix-20),b'):"\
+"ticker start,v20 : out (c),a : out (c),c : out (0),a : out (c),0 : in a,(c) : in f,(c) : in a,(0) : ticker stop,v20:"\
+"assert v20==getnop('out (c),a : out (c),c : out (0),a : out (c),0 : in a,(c) : in f,(c) : in a,(0) '):"\
+"ticker start,v21 : add a,a : add b : add ix,bc : add iy,sp : add hl,de : add (hl) : add xl : add (ix+3) : add #12 : ticker stop,v21:"\
+"assert v21==getnop('add a,a : add b : add ix,bc : add iy,sp : add hl,de : add (hl) : add xl : add (ix+3) : add #12'):"\
+"ticker start,v22 : adc hl,bc : adc hl,hl : sbc hl,hl : sbc hl,sp : sbc hl,bc : adc hl,sp : ticker stop,v22:"\
+"assert v22==getnop('adc hl,bc : adc hl,hl : sbc hl,hl : sbc hl,sp : sbc hl,bc : adc hl,sp'):"\
+"ticker start,v23 : sub a : sub a,b : sub c : sub #44 : sub (hl) : sub xl : sub (ix+20) : ticker stop,v23:"\
+"assert v23==getnop('sub a : sub a,b : sub c : sub #44 : sub (hl) : sub xl : sub (ix+20)'):"\
+"ticker start,v24 : xor a : xor b : xor c : xor #44 : xor (hl) : xor xl : xor (ix+20) : ticker stop,v24:"\
+"assert v24==getnop('xor a : xor b : xor c : xor #44 : xor (hl) : xor xl : xor (ix+20)'):"\
+"ticker start,v25 : and a : and b : and c : and #44 : and (hl) : and xl : and (ix+20) : ticker stop,v25:"\
+"assert v25==getnop('and a : and b : and c : and #44 : and (hl) : and xl : and (ix+20)'):"\
+"ticker start,v26 : or a : or b : or c : or #44 : or (hl) : or xl : or (ix+20) : ticker stop,v26:"\
+"assert v26==getnop('or a : or b : or c : or #44 : or (hl) : or xl : or (ix+20)'):"\
+"ticker start,v27 : bit 0,a : bit 1,b : bit 2,c : bit 3,d : bit 4,(hl) : bit 5,(ix+0) : bit 6,(ix+0),e  : ticker stop,v27:"\
+"assert v27==getnop('bit 0,a : bit 1,b : bit 2,c : bit 3,d : bit 4,(hl) : bit 5,(ix+0) : bit 6,(ix+0),e'):"\
+"ticker start,v28 : res 0,a : res 1,b : res 2,c : res 3,d : res 4,(hl) : res 5,(ix+0) : res 6,(ix+0),e  : ticker stop,v28:"\
+"assert v28==getnop('res 0,a : res 1,b : res 2,c : res 3,d : res 4,(hl) : res 5,(ix+0) : res 6,(ix+0),e'):"\
+"ticker start,v29 : set 0,a : set 1,b : set 2,c : set 3,d : set 4,(hl) : set 5,(ix+0) : set 6,(ix+0),e  : ticker stop,v29:"\
+"assert v29==getnop('set 0,a : set 1,b : set 2,c : set 3,d : set 4,(hl) : set 5,(ix+0) : set 6,(ix+0),e'):"\
+"ticker start,v30 : dec a : dec b : dec lx : dec bc : dec hl : dec sp : dec ix : dec (hl) : dec (ix+100) : ticker stop,v30:"\
+"assert v30==getnop('dec a : dec b : dec lx : dec bc : dec hl : dec sp : dec ix : dec (hl) : dec (ix+100) '):"\
+"ticker start,v31 : inc a : inc b : inc lx : inc bc : inc hl : inc sp : inc ix : inc (hl) : inc (ix+100)  : ticker stop,v31:"\
+"assert v31==getnop('inc a : inc b : inc lx : inc bc : inc hl : inc sp : inc ix : inc (hl) : inc (ix+100) '):"\
+"ticker start,v32 : jp 0 : jp c,0 : jp pe,0 : jp (ix) : jp (hl) : djnz $ : ticker stop,v32:"\
+"assert v32==getnop('jp 0 : jp c,0 : jp pe,0 : jp (ix) : jp (hl) : djnz $'):"\
+"ticker start,v40 : ld a,i : ld a,r : ld r,a : ld i,a : ld a,a : ld b,c : ld d,e : ld a,yl : ld d,yh : ld a,(bc)  : ticker stop,v40:"\
+"assert v40==getnop('ld a,i : ld a,r : ld r,a : ld i,a : ld a,a : ld b,c : ld d,e : ld a,yl : ld d,yh : ld a,(bc)'):"\
+"ticker start,v41 : ld a,(de) : ld a,(hl) : ld l,(hl) : ld (hl),d : ld (hl),a : ld a,#12 : ld b,#12 : ld a,(#1234) : ld (#1234),a : ticker stop,v41:"\
+"assert v41==getnop('ld a,(de) : ld a,(hl) : ld l,(hl) : ld (hl),d : ld (hl),a : ld a,#12 : ld b,#12 : ld a,(#1234) : ld (#1234),a'):"\
+"ticker start,v42 : ld bc,123 : ld hl,123 : ld sp,123 : ld bc,(123) : ld hl,(123) : ld sp,(123) : ld ix,123 : ld ix,(123) : ticker stop,v42:"\
+"assert v42==getnop('ld bc,123 : ld hl,123 : ld sp,123 : ld bc,(123) : ld hl,(123) : ld sp,(123) : ld ix,123 : ld ix,(123)'):"\
+"ticker start,v43 : ld (123),bc : ld (123),hl : ld (123),ix : ld (123),sp : ld hy,#12 : ld ly,b : ld sp,hl : ld sp,ix : ticker stop,v43:"\
+"assert v43==getnop('ld (123),bc : ld (123),hl : ld (123),ix : ld (123),sp : ld hy,#12 : ld ly,b : ld sp,hl : ld sp,ix'):"\
+"ticker start,v44 : ld a,(ix+0) : ld h,(ix+0) : ld (ix+0),a : ld (ix+0),l : ld (ix+0),#12 : ticker stop,v44:"\
+"assert v44==getnop('ld a,(ix+0) : ld h,(ix+0) : ld (ix+0),a : ld (ix+0),l : ld (ix+0),#12')"
+
+#define AUTOTEST_TICKER_FULL "ticker start,v1 : rla: rlca: rrca: rra: nop: ccf: daa: scf: cpl: exx: ei: di : ticker stopzx,v1:"\
+"ticker start,v2 :im 0: neg : rst #10: retn : reti:ticker stopzx,v2:"\
+"ticker start,v3 :cpir : cpdr : cpd : cpi : outi : outd : ldd :ldi :ldir:lddr:inir:indr:otir:otdr:ind:ini:ticker stopzx,v3:"\
+"ticker start,v4 :rld:rrd::cp (hl):cp #12:cp a:cp c:cp (ix+0):cp (iy+5):cp ly:cp xl:ticker stopzx,v4:"\
+"assert v1==gettick('rla: rlca: rrca: rra: nop: ccf: daa: scf: cpl: exx: ei: di'):"\
+"assert v2==gettick('im : neg : rst : retn : reti'):"\
+"assert v3==gettick('cpir : cpdr : cpd : cpi : outi : outd : ldd :ldi :ldir:lddr:inir:indr:otir:otdr:ind:ini'):"\
+"assert v4==gettick('rld:rrd:cp (hl):cp #12:cp a:cp c:cp (ix+0):cp (iy+5):cp ly:cp xl'):"\
+"ticker start,v5 : ex af,af' : ex hl,de : ex de,hl : ex (sp),hl : ex hl,(sp) : ex (sp),ix : ex ix,(sp) : exx : ticker stopzx,v5:"\
+"assert v5==gettick(\"ex af,af' : ex hl,de : ex de,hl : ex (sp),hl : ex hl,(sp) : ex (sp),ix : ex ix,(sp) : exx\"):"\
+"ticker start,v6 : push af : push bc : push ix : pop ix : pop bc : pop af : ticker stopzx,v6:"\
+"ticker start,v7 : sla a : sla b : sla (hl) : sla (ix+5) : sla (ix-20),b : ticker stopzx,v7:"\
+"assert v7==gettick('sla a : sla b : sla (hl) : sla (ix+5) : sla (ix-20),b'):"\
+"ticker start,v8 : sll a : sll b : sll (hl) : sll (ix+5) : sll (ix-20),b : ticker stopzx,v8:"\
+"assert v8==gettick('sll a : sll b : sll (hl) : sll (ix+5) : sll (ix-20),b'):"\
+"ticker start,v9 : sra a : sra b : sra (hl) : sra (ix+5) : sra (ix-20),b : ticker stopzx,v9:"\
+"assert v9==gettick('sra a : sra b : sra (hl) : sra (ix+5) : sra (ix-20),b'):"\
+"ticker start,v10 : srl a : srl b : srl (hl) : srl (ix+5) : srl (ix-20),b : ticker stopzx,v10:"\
+"assert v10==gettick('srl a : srl b : srl (hl) : srl (ix+5) : srl (ix-20),b'):"\
+"ticker start,v11 : rl a : rl b : rl (hl) : rl (ix+5) : rl (ix-20),b : ticker stopzx,v11:"\
+"assert v11==gettick('rl a : rl b : rl (hl) : rl (ix+5) : rl (ix-20),b'):"\
+"ticker start,v12 : rlc a : rlc b : rlc (hl) : rlc (ix+5) : rlc (ix-20),b : ticker stopzx,v12:"\
+"assert v12==gettick('rlc a : rlc b : rlc (hl) : rlc (ix+5) : rlc (ix-20),b'):"\
+"ticker start,v13 : rr a : rr b : rr (hl) : rr (ix+5) : rr (ix-20),b : ticker stopzx,v13:"\
+"assert v13==gettick('rr a : rr b : rr (hl) : rr (ix+5) : rr (ix-20),b'):"\
+"ticker start,v14 : rrc a : rrc b : rrc (hl) : rrc (ix+5) : rrc (ix-20),b : ticker stopzx,v14:"\
+"assert v14==gettick('rrc a : rrc b : rrc (hl) : rrc (ix+5) : rrc (ix-20),b'):"\
+"ticker start,v20 : out (c),a : out (c),c : out (0),a : out (c),0 : in a,(c) : in f,(c) : in a,(0) : ticker stopzx,v20:"\
+"assert v20==gettick('out (c),a : out (c),c : out (0),a : out (c),0 : in a,(c) : in f,(c) : in a,(0) '):"\
+"ticker start,v21 : add a,a : add b : add ix,bc : add iy,sp : add hl,de : add (hl) : add xl : add (ix+3) : add #12 : ticker stopzx,v21:"\
+"assert v21==gettick('add a,a : add b : add ix,bc : add iy,sp : add hl,de : add (hl) : add xl : add (ix+3) : add #12'):"\
+"ticker start,v22 : adc hl,bc : adc hl,hl : sbc hl,hl : sbc hl,sp : sbc hl,bc : adc hl,sp : ticker stopzx,v22:"\
+"assert v22==gettick('adc hl,bc : adc hl,hl : sbc hl,hl : sbc hl,sp : sbc hl,bc : adc hl,sp'):"\
+"ticker start,v23 : sub a : sub a,b : sub c : sub #44 : sub (hl) : sub xl : sub (ix+20) : ticker stopzx,v23:"\
+"assert v23==gettick('sub a : sub a,b : sub c : sub #44 : sub (hl) : sub xl : sub (ix+20)'):"\
+"ticker start,v24 : xor a : xor b : xor c : xor #44 : xor (hl) : xor xl : xor (ix+20) : ticker stopzx,v24:"\
+"assert v24==gettick('xor a : xor b : xor c : xor #44 : xor (hl) : xor xl : xor (ix+20)'):"\
+"ticker start,v25 : and a : and b : and c : and #44 : and (hl) : and xl : and (ix+20) : ticker stopzx,v25:"\
+"assert v25==gettick('and a : and b : and c : and #44 : and (hl) : and xl : and (ix+20)'):"\
+"ticker start,v26 : or a : or b : or c : or #44 : or (hl) : or xl : or (ix+20) : ticker stopzx,v26:"\
+"assert v26==gettick('or a : or b : or c : or #44 : or (hl) : or xl : or (ix+20)'):"\
+"ticker start,v27 : bit 0,a : bit 1,b : bit 2,c : bit 3,d : bit 4,(hl) : bit 5,(ix+0) : bit 6,(ix+0),e  : ticker stopzx,v27:"\
+"assert v27==gettick('bit 0,a : bit 1,b : bit 2,c : bit 3,d : bit 4,(hl) : bit 5,(ix+0) : bit 6,(ix+0),e'):"\
+"ticker start,v28 : res 0,a : res 1,b : res 2,c : res 3,d : res 4,(hl) : res 5,(ix+0) : res 6,(ix+0),e  : ticker stopzx,v28:"\
+"assert v28==gettick('res 0,a : res 1,b : res 2,c : res 3,d : res 4,(hl) : res 5,(ix+0) : res 6,(ix+0),e'):"\
+"ticker start,v29 : set 0,a : set 1,b : set 2,c : set 3,d : set 4,(hl) : set 5,(ix+0) : set 6,(ix+0),e  : ticker stopzx,v29:"\
+"assert v29==gettick('set 0,a : set 1,b : set 2,c : set 3,d : set 4,(hl) : set 5,(ix+0) : set 6,(ix+0),e'):"\
+"ticker start,v30 : dec a : dec b : dec lx : dec bc : dec hl : dec sp : dec ix : dec (hl) : dec (ix+100) : ticker stopzx,v30:"\
+"assert v30==gettick('dec a : dec b : dec lx : dec bc : dec hl : dec sp : dec ix : dec (hl) : dec (ix+100) '):"\
+"ticker start,v31 : inc a : inc b : inc lx : inc bc : inc hl : inc sp : inc ix : inc (hl) : inc (ix+100)  : ticker stopzx,v31:"\
+"assert v31==gettick('inc a : inc b : inc lx : inc bc : inc hl : inc sp : inc ix : inc (hl) : inc (ix+100) '):"\
+"ticker start,v32 : jp 0 : jp c,0 : jp pe,0 : jp (ix) : jp (hl) : djnz $ : ticker stopzx,v32:"\
+"assert v32==gettick('jp 0 : jp c,0 : jp pe,0 : jp (ix) : jp (hl) : djnz $'):"\
+"ticker start,v40 : ld a,i : ld a,r : ld r,a : ld i,a : ld a,a : ld b,c : ld d,e : ld a,yl : ld d,yh : ld a,(bc)  : ticker stopzx,v40:"\
+"assert v40==gettick('ld a,i : ld a,r : ld r,a : ld i,a : ld a,a : ld b,c : ld d,e : ld a,yl : ld d,yh : ld a,(bc)'):"\
+"ticker start,v41 : ld a,(de) : ld a,(hl) : ld l,(hl) : ld (hl),d : ld (hl),a : ld a,#12 : ld b,#12 : ld a,(#1234) : ld (#1234),a : ticker stopzx,v41:"\
+"assert v41==gettick('ld a,(de) : ld a,(hl) : ld l,(hl) : ld (hl),d : ld (hl),a : ld a,#12 : ld b,#12 : ld a,(#1234) : ld (#1234),a'):"\
+"ticker start,v42 : ld bc,123 : ld hl,123 : ld sp,123 : ld bc,(123) : ld hl,(123) : ld sp,(123) : ld ix,123 : ld ix,(123) : ticker stopzx,v42:"\
+"assert v42==gettick('ld bc,123 : ld hl,123 : ld sp,123 : ld bc,(123) : ld hl,(123) : ld sp,(123) : ld ix,123 : ld ix,(123)'):"\
+"ticker start,v43 : ld (123),bc : ld (123),hl : ld (123),ix : ld (123),sp : ld hy,#12 : ld ly,b : ld sp,hl : ld sp,ix : ticker stopzx,v43:"\
+"assert v43==gettick('ld (123),bc : ld (123),hl : ld (123),ix : ld (123),sp : ld hy,#12 : ld ly,b : ld sp,hl : ld sp,ix'):"\
+"ticker start,v44 : ld a,(ix+0) : ld h,(ix+0) : ld (ix+0),a : ld (ix+0),l : ld (ix+0),#12 : ticker stopzx,v44:"\
+"assert v44==gettick('ld a,(ix+0) : ld h,(ix+0) : ld (ix+0),a : ld (ix+0),l : ld (ix+0),#12')"
+
+#define AUTOTEST_GETSIZE "bank:push de:assert $==getsize('push de'):bank:sub #12:assert $==getsize('sub #12'):bank:rst #10:assert $==getsize('rst #10'):" \
+"bank:ret c:assert $==getsize('ret c'):bank:exx:assert $==getsize('exx'):bank:jp c,#1234:assert $==getsize('jp c,#1234')" \
+":bank:in a,(#12):assert $==getsize('in a,(#12)'):bank:call c,#1234:assert $==getsize('call c,#1234'):bank:nop:assert $==getsize('nop')" \
+":bank:sbc #12:assert $==getsize('sbc #12'):bank:rst #18:assert $==getsize('rst #18'):bank:ret po:assert $==getsize('ret po')" \
+":bank:pop hl:assert $==getsize('pop hl'):bank:jp po,#1234:assert $==getsize('jp po,#1234'):bank:ex (sp),hl:assert $==getsize('ex (sp),hl')" \
+":bank:call po,#1234:assert $==getsize('call po,#1234'):bank:push hl:assert $==getsize('push hl'):bank:and #12:assert $==getsize('and #12')" \
+":bank:rst #20:assert $==getsize('rst #20'):bank:ret pe:assert $==getsize('ret pe'):bank:jp (hl):assert $==getsize('jp (hl)')" \
+":bank:jp pe,#1234:assert $==getsize('jp pe,#1234'):bank:ex de,hl:assert $==getsize('ex de,hl'):bank:call pe,#1234:assert $==getsize('call pe,#1234')" \
+":bank:nop:assert $==getsize('nop'):bank:xor #12:assert $==getsize('xor #12'):bank:rst #28:assert $==getsize('rst #28')" \
+":bank:ret p:assert $==getsize('ret p'):bank:pop af:assert $==getsize('pop af'):bank:jp p,#1234:assert $==getsize('jp p,#1234')" \
+":bank:di:assert $==getsize('di'):bank:call p,#1234:assert $==getsize('call p,#1234'):bank:push af:assert $==getsize('push af')" \
+":bank:or #12:assert $==getsize('or #12'):bank:rst #30:assert $==getsize('rst #30'):bank:ret m:assert $==getsize('ret m')" \
+":bank:ld sp,hl:assert $==getsize('ld sp,hl'):bank:jp m,#1234:assert $==getsize('jp m,#1234'):bank:ei:assert $==getsize('ei')" \
+":bank:call m,#1234:assert $==getsize('call m,#1234'):bank:nop:assert $==getsize('nop'):bank:cp #12:assert $==getsize('cp #12')" \
+":bank:rst #38:assert $==getsize('rst #38'):bank:in b,(c):assert $==getsize('in b,(c)'):bank:out (c),b:assert $==getsize('out (c),b')" \
+":bank:sbc hl,bc:assert $==getsize('sbc hl,bc'):bank:ld (#1234),bc:assert $==getsize('ld (#1234),bc'):bank:neg:assert $==getsize('neg')" \
+":bank:retn:assert $==getsize('retn'):bank:im 0:assert $==getsize('im 0'):bank:ld i,a:assert $==getsize('ld i,a')" \
+":bank:in c,(c):assert $==getsize('in c,(c)'):bank:out (c),c:assert $==getsize('out (c),c'):bank:adc hl,bc:assert $==getsize('adc hl,bc')" \
+":bank:ld bc,(#1234):assert $==getsize('ld bc,(#1234)'):bank:reti:assert $==getsize('reti'):bank:ld r,a:assert $==getsize('ld r,a')" \
+":bank:in d,(c):assert $==getsize('in d,(c)'):bank:out (c),d:assert $==getsize('out (c),d'):bank:sbc hl,de:assert $==getsize('sbc hl,de')" \
+":bank:ld (#1234),de:assert $==getsize('ld (#1234),de'):bank:retn:assert $==getsize('retn'):bank:im 1:assert $==getsize('im 1')" \
+":bank:ld a,i:assert $==getsize('ld a,i'):bank:in e,(c):assert $==getsize('in e,(c)'):bank:out (c),e:assert $==getsize('out (c),e')" \
+":bank:adc hl,de:assert $==getsize('adc hl,de'):bank:ld de,(#1234):assert $==getsize('ld de,(#1234)'):bank:im 2:assert $==getsize('im 2')" \
+":bank:ld a,r:assert $==getsize('ld a,r'):bank:in h,(c):assert $==getsize('in h,(c)'):bank:out (c),h:assert $==getsize('out (c),h')" \
+":bank:sbc hl,hl:assert $==getsize('sbc hl,hl'):bank:rrd:assert $==getsize('rrd'):bank:in l,(c):assert $==getsize('in l,(c)')" \
+":bank:out (c),l:assert $==getsize('out (c),l'):bank:adc hl,hl:assert $==getsize('adc hl,hl'):bank:rld:assert $==getsize('rld')" \
+":bank:in 0,(c):assert $==getsize('in 0,(c)'):bank:out (c),0:assert $==getsize('out (c),0'):bank:sbc hl,sp:assert $==getsize('sbc hl,sp')" \
+":bank:ld (#1234),sp:assert $==getsize('ld (#1234),sp'):bank:in a,(c):assert $==getsize('in a,(c)'):bank:out (c),a:assert $==getsize('out (c),a')" \
+":bank:adc hl,sp:assert $==getsize('adc hl,sp'):bank:ld sp,(#1234):assert $==getsize('ld sp,(#1234)'):bank:ldi:assert $==getsize('ldi')" \
+":bank:cpi:assert $==getsize('cpi'):bank:ini:assert $==getsize('ini'):bank:outi:assert $==getsize('outi')" \
+":bank:ldd:assert $==getsize('ldd'):bank:cpd:assert $==getsize('cpd'):bank:ind:assert $==getsize('ind')" \
+":bank:outd:assert $==getsize('outd'):bank:ldir:assert $==getsize('ldir'):bank:cpir:assert $==getsize('cpir')" \
+":bank:inir:assert $==getsize('inir'):bank:otir:assert $==getsize('otir'):bank:lddr:assert $==getsize('lddr')" \
+":bank:cpdr:assert $==getsize('cpdr'):bank:indr:assert $==getsize('indr'):bank:otdr:assert $==getsize('otdr')" \
+":bank:rlc b:assert $==getsize('rlc b'):bank:rlc c:assert $==getsize('rlc c'):bank:rlc d:assert $==getsize('rlc d')" \
+":bank:rlc e:assert $==getsize('rlc e'):bank:rlc h:assert $==getsize('rlc h'):bank:rlc l:assert $==getsize('rlc l')" \
+":bank:rlc (hl):assert $==getsize('rlc (hl)'):bank:rlc a:assert $==getsize('rlc a'):bank:rrc b:assert $==getsize('rrc b')" \
+":bank:rrc c:assert $==getsize('rrc c'):bank:rrc d:assert $==getsize('rrc d'):bank:rrc e:assert $==getsize('rrc e')" \
+":bank:rrc h:assert $==getsize('rrc h'):bank:rrc l:assert $==getsize('rrc l'):bank:rrc (hl):assert $==getsize('rrc (hl)')" \
+":bank:rrc a:assert $==getsize('rrc a'):bank:rl b:assert $==getsize('rl b'):bank:rl c:assert $==getsize('rl c')" \
+":bank:rl d:assert $==getsize('rl d'):bank:rl e:assert $==getsize('rl e'):bank:rl h:assert $==getsize('rl h')" \
+":bank:rl l:assert $==getsize('rl l'):bank:rl (hl):assert $==getsize('rl (hl)'):bank:rl a:assert $==getsize('rl a')" \
+":bank:rr b:assert $==getsize('rr b'):bank:rr c:assert $==getsize('rr c'):bank:rr d:assert $==getsize('rr d')" \
+":bank:rr e:assert $==getsize('rr e'):bank:rr h:assert $==getsize('rr h'):bank:rr l:assert $==getsize('rr l')" \
+":bank:rr (hl):assert $==getsize('rr (hl)'):bank:rr a:assert $==getsize('rr a'):bank:sla b:assert $==getsize('sla b')" \
+":bank:sla c:assert $==getsize('sla c'):bank:sla d:assert $==getsize('sla d'):bank:sla e:assert $==getsize('sla e')" \
+":bank:sla h:assert $==getsize('sla h'):bank:sla l:assert $==getsize('sla l'):bank:sla (hl):assert $==getsize('sla (hl)')" \
+":bank:sla a:assert $==getsize('sla a'):bank:sra b:assert $==getsize('sra b'):bank:sra c:assert $==getsize('sra c')" \
+":bank:sra d:assert $==getsize('sra d'):bank:sra e:assert $==getsize('sra e'):bank:sra h:assert $==getsize('sra h')" \
+":bank:sra l:assert $==getsize('sra l'):bank:sra (hl):assert $==getsize('sra (hl)'):bank:sra a:assert $==getsize('sra a')" \
+":bank:sll b:assert $==getsize('sll b'):bank:sll c:assert $==getsize('sll c'):bank:sll d:assert $==getsize('sll d')" \
+":bank:sll e:assert $==getsize('sll e'):bank:sll h:assert $==getsize('sll h'):bank:sll l:assert $==getsize('sll l')" \
+":bank:sll (hl):assert $==getsize('sll (hl)'):bank:sll a:assert $==getsize('sll a'):bank:srl b:assert $==getsize('srl b')" \
+":bank:srl c:assert $==getsize('srl c'):bank:srl d:assert $==getsize('srl d'):bank:srl e:assert $==getsize('srl e')" \
+":bank:srl h:assert $==getsize('srl h'):bank:srl l:assert $==getsize('srl l'):bank:srl (hl):assert $==getsize('srl (hl)')" \
+":bank:srl a:assert $==getsize('srl a'):bank:bit 0,b:assert $==getsize('bit 0,b'):bank:bit 0,c:assert $==getsize('bit 0,c')" \
+":bank:bit 0,d:assert $==getsize('bit 0,d'):bank:bit 0,e:assert $==getsize('bit 0,e'):bank:bit 0,h:assert $==getsize('bit 0,h')" \
+":bank:bit 0,l:assert $==getsize('bit 0,l'):bank:bit 0,(hl):assert $==getsize('bit 0,(hl)'):bank:bit 0,a:assert $==getsize('bit 0,a')" \
+":bank:bit 1,b:assert $==getsize('bit 1,b'):bank:bit 1,c:assert $==getsize('bit 1,c'):bank:bit 1,d:assert $==getsize('bit 1,d')" \
+":bank:bit 1,e:assert $==getsize('bit 1,e'):bank:bit 1,h:assert $==getsize('bit 1,h'):bank:bit 1,l:assert $==getsize('bit 1,l')" \
+":bank:bit 1,(hl):assert $==getsize('bit 1,(hl)'):bank:bit 1,a:assert $==getsize('bit 1,a'):bank:bit 2,b:assert $==getsize('bit 2,b')" \
+":bank:bit 2,c:assert $==getsize('bit 2,c'):bank:bit 2,d:assert $==getsize('bit 2,d'):bank:bit 2,e:assert $==getsize('bit 2,e')" \
+":bank:bit 2,h:assert $==getsize('bit 2,h'):bank:bit 2,l:assert $==getsize('bit 2,l'):bank:bit 2,(hl):assert $==getsize('bit 2,(hl)')" \
+":bank:bit 2,a:assert $==getsize('bit 2,a'):bank:bit 3,b:assert $==getsize('bit 3,b'):bank:bit 3,c:assert $==getsize('bit 3,c')" \
+":bank:bit 3,d:assert $==getsize('bit 3,d'):bank:bit 3,e:assert $==getsize('bit 3,e'):bank:bit 3,h:assert $==getsize('bit 3,h')" \
+":bank:bit 3,l:assert $==getsize('bit 3,l'):bank:bit 3,(hl):assert $==getsize('bit 3,(hl)'):bank:bit 3,a:assert $==getsize('bit 3,a')" \
+":bank:bit 4,b:assert $==getsize('bit 4,b'):bank:bit 4,c:assert $==getsize('bit 4,c'):bank:bit 4,d:assert $==getsize('bit 4,d')" \
+":bank:bit 4,e:assert $==getsize('bit 4,e'):bank:bit 4,h:assert $==getsize('bit 4,h'):bank:bit 4,l:assert $==getsize('bit 4,l')" \
+":bank:bit 4,(hl):assert $==getsize('bit 4,(hl)'):bank:bit 4,a:assert $==getsize('bit 4,a'):bank:bit 5,b:assert $==getsize('bit 5,b')" \
+":bank:bit 5,c:assert $==getsize('bit 5,c'):bank:bit 5,d:assert $==getsize('bit 5,d'):bank:bit 5,e:assert $==getsize('bit 5,e')" \
+":bank:bit 5,h:assert $==getsize('bit 5,h'):bank:bit 5,l:assert $==getsize('bit 5,l'):bank:bit 5,(hl):assert $==getsize('bit 5,(hl)')" \
+":bank:bit 5,a:assert $==getsize('bit 5,a'):bank:bit 6,b:assert $==getsize('bit 6,b'):bank:bit 6,c:assert $==getsize('bit 6,c')" \
+":bank:bit 6,d:assert $==getsize('bit 6,d'):bank:bit 6,e:assert $==getsize('bit 6,e'):bank:bit 6,h:assert $==getsize('bit 6,h')" \
+":bank:bit 6,l:assert $==getsize('bit 6,l'):bank:bit 6,(hl):assert $==getsize('bit 6,(hl)'):bank:bit 6,a:assert $==getsize('bit 6,a')" \
+":bank:bit 7,b:assert $==getsize('bit 7,b'):bank:bit 7,c:assert $==getsize('bit 7,c'):bank:bit 7,d:assert $==getsize('bit 7,d')" \
+":bank:bit 7,e:assert $==getsize('bit 7,e'):bank:bit 7,h:assert $==getsize('bit 7,h'):bank:bit 7,l:assert $==getsize('bit 7,l')" \
+":bank:bit 7,(hl):assert $==getsize('bit 7,(hl)'):bank:bit 7,a:assert $==getsize('bit 7,a'):bank:res 0,b:assert $==getsize('res 0,b')" \
+":bank:res 0,c:assert $==getsize('res 0,c'):bank:res 0,d:assert $==getsize('res 0,d'):bank:res 0,e:assert $==getsize('res 0,e')" \
+":bank:res 0,h:assert $==getsize('res 0,h'):bank:res 0,l:assert $==getsize('res 0,l'):bank:res 0,(hl):assert $==getsize('res 0,(hl)')" \
+":bank:res 0,a:assert $==getsize('res 0,a'):bank:res 1,b:assert $==getsize('res 1,b'):bank:res 1,c:assert $==getsize('res 1,c')" \
+":bank:res 1,d:assert $==getsize('res 1,d'):bank:res 1,e:assert $==getsize('res 1,e'):bank:res 1,h:assert $==getsize('res 1,h')" \
+":bank:res 1,l:assert $==getsize('res 1,l'):bank:res 1,(hl):assert $==getsize('res 1,(hl)'):bank:res 1,a:assert $==getsize('res 1,a')" \
+":bank:res 2,b:assert $==getsize('res 2,b'):bank:res 2,c:assert $==getsize('res 2,c'):bank:res 2,d:assert $==getsize('res 2,d')" \
+":bank:res 2,e:assert $==getsize('res 2,e'):bank:res 2,h:assert $==getsize('res 2,h'):bank:res 2,l:assert $==getsize('res 2,l')" \
+":bank:res 2,(hl):assert $==getsize('res 2,(hl)'):bank:res 2,a:assert $==getsize('res 2,a'):bank:res 3,b:assert $==getsize('res 3,b')" \
+":bank:res 3,c:assert $==getsize('res 3,c'):bank:res 3,d:assert $==getsize('res 3,d'):bank:res 3,e:assert $==getsize('res 3,e')" \
+":bank:res 3,h:assert $==getsize('res 3,h'):bank:res 3,l:assert $==getsize('res 3,l'):bank:res 3,(hl):assert $==getsize('res 3,(hl)')" \
+":bank:res 3,a:assert $==getsize('res 3,a'):bank:res 4,b:assert $==getsize('res 4,b'):bank:res 4,c:assert $==getsize('res 4,c')" \
+":bank:res 4,d:assert $==getsize('res 4,d'):bank:res 4,e:assert $==getsize('res 4,e'):bank:res 4,h:assert $==getsize('res 4,h')" \
+":bank:res 4,l:assert $==getsize('res 4,l'):bank:res 4,(hl):assert $==getsize('res 4,(hl)'):bank:res 4,a:assert $==getsize('res 4,a')" \
+":bank:res 5,b:assert $==getsize('res 5,b'):bank:res 5,c:assert $==getsize('res 5,c'):bank:res 5,d:assert $==getsize('res 5,d')" \
+":bank:res 5,e:assert $==getsize('res 5,e'):bank:res 5,h:assert $==getsize('res 5,h'):bank:res 5,l:assert $==getsize('res 5,l')" \
+":bank:res 5,(hl):assert $==getsize('res 5,(hl)'):bank:res 5,a:assert $==getsize('res 5,a'):bank:res 6,b:assert $==getsize('res 6,b')" \
+":bank:res 6,c:assert $==getsize('res 6,c'):bank:res 6,d:assert $==getsize('res 6,d'):bank:res 6,e:assert $==getsize('res 6,e')" \
+":bank:res 6,h:assert $==getsize('res 6,h'):bank:res 6,l:assert $==getsize('res 6,l'):bank:res 6,(hl):assert $==getsize('res 6,(hl)')" \
+":bank:res 6,a:assert $==getsize('res 6,a'):bank:res 7,b:assert $==getsize('res 7,b'):bank:res 7,c:assert $==getsize('res 7,c')" \
+":bank:res 7,d:assert $==getsize('res 7,d'):bank:res 7,e:assert $==getsize('res 7,e'):bank:res 7,h:assert $==getsize('res 7,h')" \
+":bank:res 7,l:assert $==getsize('res 7,l'):bank:res 7,(hl):assert $==getsize('res 7,(hl)'):bank:res 7,a:assert $==getsize('res 7,a')" \
+":bank:set 0,b:assert $==getsize('set 0,b'):bank:set 0,c:assert $==getsize('set 0,c'):bank:set 0,d:assert $==getsize('set 0,d')" \
+":bank:set 0,e:assert $==getsize('set 0,e'):bank:set 0,h:assert $==getsize('set 0,h'):bank:set 0,l:assert $==getsize('set 0,l')" \
+":bank:set 0,(hl):assert $==getsize('set 0,(hl)'):bank:set 0,a:assert $==getsize('set 0,a'):bank:set 1,b:assert $==getsize('set 1,b')" \
+":bank:set 1,c:assert $==getsize('set 1,c'):bank:set 1,d:assert $==getsize('set 1,d'):bank:set 1,e:assert $==getsize('set 1,e')" \
+":bank:set 1,h:assert $==getsize('set 1,h'):bank:set 1,l:assert $==getsize('set 1,l'):bank:set 1,(hl):assert $==getsize('set 1,(hl)')" \
+":bank:set 1,a:assert $==getsize('set 1,a'):bank:set 2,b:assert $==getsize('set 2,b'):bank:set 2,c:assert $==getsize('set 2,c')" \
+":bank:set 2,d:assert $==getsize('set 2,d'):bank:set 2,e:assert $==getsize('set 2,e'):bank:set 2,h:assert $==getsize('set 2,h')" \
+":bank:set 2,l:assert $==getsize('set 2,l'):bank:set 2,(hl):assert $==getsize('set 2,(hl)'):bank:set 2,a:assert $==getsize('set 2,a')" \
+":bank:set 3,b:assert $==getsize('set 3,b'):bank:set 3,c:assert $==getsize('set 3,c'):bank:set 3,d:assert $==getsize('set 3,d')" \
+":bank:set 3,e:assert $==getsize('set 3,e'):bank:set 3,h:assert $==getsize('set 3,h'):bank:set 3,l:assert $==getsize('set 3,l')" \
+":bank:set 3,(hl):assert $==getsize('set 3,(hl)'):bank:set 3,a:assert $==getsize('set 3,a'):bank:set 4,b:assert $==getsize('set 4,b')" \
+":bank:set 4,c:assert $==getsize('set 4,c'):bank:set 4,d:assert $==getsize('set 4,d'):bank:set 4,e:assert $==getsize('set 4,e')" \
+":bank:set 4,h:assert $==getsize('set 4,h'):bank:set 4,l:assert $==getsize('set 4,l'):bank:set 4,(hl):assert $==getsize('set 4,(hl)')" \
+":bank:set 4,a:assert $==getsize('set 4,a'):bank:set 5,b:assert $==getsize('set 5,b'):bank:set 5,c:assert $==getsize('set 5,c')" \
+":bank:set 5,d:assert $==getsize('set 5,d'):bank:set 5,e:assert $==getsize('set 5,e'):bank:set 5,h:assert $==getsize('set 5,h')" \
+":bank:set 5,l:assert $==getsize('set 5,l'):bank:set 5,(hl):assert $==getsize('set 5,(hl)'):bank:set 5,a:assert $==getsize('set 5,a')" \
+":bank:set 6,b:assert $==getsize('set 6,b'):bank:set 6,c:assert $==getsize('set 6,c'):bank:set 6,d:assert $==getsize('set 6,d')" \
+":bank:set 6,e:assert $==getsize('set 6,e'):bank:set 6,h:assert $==getsize('set 6,h'):bank:set 6,l:assert $==getsize('set 6,l')" \
+":bank:set 6,(hl):assert $==getsize('set 6,(hl)'):bank:set 6,a:assert $==getsize('set 6,a'):bank:set 7,b:assert $==getsize('set 7,b')" \
+":bank:set 7,c:assert $==getsize('set 7,c'):bank:set 7,d:assert $==getsize('set 7,d'):bank:set 7,e:assert $==getsize('set 7,e')" \
+":bank:set 7,h:assert $==getsize('set 7,h'):bank:set 7,l:assert $==getsize('set 7,l'):bank:set 7,(hl):assert $==getsize('set 7,(hl)')" \
+":bank:set 7,a:assert $==getsize('set 7,a'):bank:add ix,bc:assert $==getsize('add ix,bc'):bank:add ix,de:assert $==getsize('add ix,de')" \
+":bank:ld ix,#1234:assert $==getsize('ld ix,#1234'):bank:ld (#1234),ix:assert $==getsize('ld (#1234),ix'):bank:inc ix:assert $==getsize('inc ix')" \
+":bank:inc xh:assert $==getsize('inc xh'):bank:dec xh:assert $==getsize('dec xh'):bank:ld xh,#12:assert $==getsize('ld xh,#12')" \
+":bank:add ix,ix:assert $==getsize('add ix,ix'):bank:ld ix,(#1234):assert $==getsize('ld ix,(#1234)'):bank:dec ix:assert $==getsize('dec ix')" \
+":bank:inc xl:assert $==getsize('inc xl'):bank:dec xl:assert $==getsize('dec xl'):bank:ld xl,#12:assert $==getsize('ld xl,#12')" \
+":bank:inc (ix+#12):assert $==getsize('inc (ix+#12)'):bank:dec (ix+#12):assert $==getsize('dec (ix+#12)'):bank:ld (ix+#12),#34:assert $==getsize('ld (ix+#12),#34')" \
+":bank:add ix,sp:assert $==getsize('add ix,sp'):bank:ld b,xh:assert $==getsize('ld b,xh'):bank:ld b,xl:assert $==getsize('ld b,xl')" \
+":bank:ld b,(ix+#12):assert $==getsize('ld b,(ix+#12)'):bank:ld c,xh:assert $==getsize('ld c,xh'):bank:ld c,xl:assert $==getsize('ld c,xl')" \
+":bank:ld c,(ix+#12):assert $==getsize('ld c,(ix+#12)'):bank:ld d,xh:assert $==getsize('ld d,xh'):bank:ld d,xl:assert $==getsize('ld d,xl')" \
+":bank:ld d,(ix+#12):assert $==getsize('ld d,(ix+#12)'):bank:ld e,xh:assert $==getsize('ld e,xh'):bank:ld e,xl:assert $==getsize('ld e,xl')" \
+":bank:ld e,(ix+#12):assert $==getsize('ld e,(ix+#12)'):bank:ld xh,b:assert $==getsize('ld xh,b'):bank:ld xh,c:assert $==getsize('ld xh,c')" \
+":bank:ld xh,d:assert $==getsize('ld xh,d'):bank:ld xh,e:assert $==getsize('ld xh,e'):bank:ld xh,xh:assert $==getsize('ld xh,xh')" \
+":bank:ld xh,xl:assert $==getsize('ld xh,xl'):bank:ld h,(ix+#12):assert $==getsize('ld h,(ix+#12)'):bank:ld xh,a:assert $==getsize('ld xh,a')" \
+":bank:ld xl,b:assert $==getsize('ld xl,b'):bank:ld xl,c:assert $==getsize('ld xl,c'):bank:ld xl,d:assert $==getsize('ld xl,d')" \
+":bank:ld xl,e:assert $==getsize('ld xl,e'):bank:ld xl,xh:assert $==getsize('ld xl,xh'):bank:ld xl,xl:assert $==getsize('ld xl,xl')" \
+":bank:ld l,(ix+#12):assert $==getsize('ld l,(ix+#12)'):bank:ld xl,a:assert $==getsize('ld xl,a'):bank:ld (ix+#12),b:assert $==getsize('ld (ix+#12),b')" \
+":bank:ld (ix+#12),c:assert $==getsize('ld (ix+#12),c'):bank:ld (ix+#12),d:assert $==getsize('ld (ix+#12),d'):bank:ld (ix+#12),e:assert $==getsize('ld (ix+#12),e')" \
+":bank:ld (ix+#12),h:assert $==getsize('ld (ix+#12),h'):bank:ld (ix+#12),l:assert $==getsize('ld (ix+#12),l'):bank:ld (ix+#12),a:assert $==getsize('ld (ix+#12),a')" \
+":bank:ld a,xh:assert $==getsize('ld a,xh'):bank:ld a,xl:assert $==getsize('ld a,xl'):bank:ld a,(ix+#12):assert $==getsize('ld a,(ix+#12)')" \
+":bank:add xh:assert $==getsize('add xh'):bank:add xl:assert $==getsize('add xl'):bank:add (ix+#12):assert $==getsize('add (ix+#12)')" \
+":bank:adc xh:assert $==getsize('adc xh'):bank:adc xl:assert $==getsize('adc xl'):bank:adc (ix+#12):assert $==getsize('adc (ix+#12)')" \
+":bank:sub xh:assert $==getsize('sub xh'):bank:sub xl:assert $==getsize('sub xl'):bank:sub (ix+#12):assert $==getsize('sub (ix+#12)')" \
+":bank:sbc xh:assert $==getsize('sbc xh'):bank:sbc xl:assert $==getsize('sbc xl'):bank:sbc (ix+#12):assert $==getsize('sbc (ix+#12)')" \
+":bank:and xh:assert $==getsize('and xh'):bank:and xl:assert $==getsize('and xl'):bank:and (ix+#12):assert $==getsize('and (ix+#12)')" \
+":bank:xor xh:assert $==getsize('xor xh'):bank:xor xl:assert $==getsize('xor xl'):bank:xor (ix+#12):assert $==getsize('xor (ix+#12)')" \
+":bank:or xh:assert $==getsize('or xh'):bank:or xl:assert $==getsize('or xl'):bank:or (ix+#12):assert $==getsize('or (ix+#12)')" \
+":bank:cp xh:assert $==getsize('cp xh'):bank:cp xl:assert $==getsize('cp xl'):bank:cp (ix+#12):assert $==getsize('cp (ix+#12)')" \
+":bank:pop ix:assert $==getsize('pop ix'):bank:ex (sp),ix:assert $==getsize('ex (sp),ix'):bank:push ix:assert $==getsize('push ix')" \
+":bank:jp (ix):assert $==getsize('jp (ix)'):bank:ld sp,ix:assert $==getsize('ld sp,ix'):bank:rlc (ix+#12),b:assert $==getsize('rlc (ix+#12),b')" \
+":bank:rlc (ix+#12),c:assert $==getsize('rlc (ix+#12),c'):bank:rlc (ix+#12),d:assert $==getsize('rlc (ix+#12),d'):bank:rlc (ix+#12),e:assert $==getsize('rlc (ix+#12),e')" \
+":bank:rlc (ix+#12),h:assert $==getsize('rlc (ix+#12),h'):bank:rlc (ix+#12),l:assert $==getsize('rlc (ix+#12),l'):bank:rlc (ix+#12):assert $==getsize('rlc (ix+#12)')" \
+":bank:rlc (ix+#12),a:assert $==getsize('rlc (ix+#12),a'):bank:rrc (ix+#12),b:assert $==getsize('rrc (ix+#12),b'):bank:rrc (ix+#12),c:assert $==getsize('rrc (ix+#12),c')" \
+":bank:rrc (ix+#12),d:assert $==getsize('rrc (ix+#12),d'):bank:rrc (ix+#12),e:assert $==getsize('rrc (ix+#12),e'):bank:rrc (ix+#12),h:assert $==getsize('rrc (ix+#12),h')" \
+":bank:rrc (ix+#12),l:assert $==getsize('rrc (ix+#12),l'):bank:rrc (ix+#12):assert $==getsize('rrc (ix+#12)'):bank:rrc (ix+#12),a:assert $==getsize('rrc (ix+#12),a')" \
+":bank:rl (ix+#12),b:assert $==getsize('rl (ix+#12),b'):bank:rl (ix+#12),c:assert $==getsize('rl (ix+#12),c'):bank:rl (ix+#12),d:assert $==getsize('rl (ix+#12),d')" \
+":bank:rl (ix+#12),e:assert $==getsize('rl (ix+#12),e'):bank:rl (ix+#12),h:assert $==getsize('rl (ix+#12),h'):bank:rl (ix+#12),l:assert $==getsize('rl (ix+#12),l')" \
+":bank:rl (ix+#12):assert $==getsize('rl (ix+#12)'):bank:rl (ix+#12),a:assert $==getsize('rl (ix+#12),a'):bank:rr (ix+#12),b:assert $==getsize('rr (ix+#12),b')" \
+":bank:rr (ix+#12),c:assert $==getsize('rr (ix+#12),c'):bank:rr (ix+#12),d:assert $==getsize('rr (ix+#12),d'):bank:rr (ix+#12),e:assert $==getsize('rr (ix+#12),e')" \
+":bank:rr (ix+#12),h:assert $==getsize('rr (ix+#12),h'):bank:rr (ix+#12),l:assert $==getsize('rr (ix+#12),l'):bank:rr (ix+#12):assert $==getsize('rr (ix+#12)')" \
+":bank:rr (ix+#12),a:assert $==getsize('rr (ix+#12),a'):bank:sla (ix+#12),b:assert $==getsize('sla (ix+#12),b'):bank:sla (ix+#12),c:assert $==getsize('sla (ix+#12),c')" \
+":bank:sla (ix+#12),d:assert $==getsize('sla (ix+#12),d'):bank:sla (ix+#12),e:assert $==getsize('sla (ix+#12),e'):bank:sla (ix+#12),h:assert $==getsize('sla (ix+#12),h')" \
+":bank:sla (ix+#12),l:assert $==getsize('sla (ix+#12),l'):bank:sla (ix+#12):assert $==getsize('sla (ix+#12)'):bank:sla (ix+#12),a:assert $==getsize('sla (ix+#12),a')" \
+":bank:sra (ix+#12),b:assert $==getsize('sra (ix+#12),b'):bank:sra (ix+#12),c:assert $==getsize('sra (ix+#12),c'):bank:sra (ix+#12),d:assert $==getsize('sra (ix+#12),d')" \
+":bank:sra (ix+#12),e:assert $==getsize('sra (ix+#12),e'):bank:sra (ix+#12),h:assert $==getsize('sra (ix+#12),h'):bank:sra (ix+#12),l:assert $==getsize('sra (ix+#12),l')" \
+":bank:sra (ix+#12):assert $==getsize('sra (ix+#12)'):bank:sra (ix+#12),a:assert $==getsize('sra (ix+#12),a'):bank:sll (ix+#12),b:assert $==getsize('sll (ix+#12),b')" \
+":bank:sll (ix+#12),c:assert $==getsize('sll (ix+#12),c'):bank:sll (ix+#12),d:assert $==getsize('sll (ix+#12),d'):bank:sll (ix+#12),e:assert $==getsize('sll (ix+#12),e')" \
+":bank:sll (ix+#12),h:assert $==getsize('sll (ix+#12),h'):bank:sll (ix+#12),l:assert $==getsize('sll (ix+#12),l'):bank:sll (ix+#12):assert $==getsize('sll (ix+#12)')" \
+":bank:sll (ix+#12),a:assert $==getsize('sll (ix+#12),a'):bank:srl (ix+#12),b:assert $==getsize('srl (ix+#12),b'):bank:srl (ix+#12),c:assert $==getsize('srl (ix+#12),c')" \
+":bank:srl (ix+#12),d:assert $==getsize('srl (ix+#12),d'):bank:srl (ix+#12),e:assert $==getsize('srl (ix+#12),e'):bank:srl (ix+#12),h:assert $==getsize('srl (ix+#12),h')" \
+":bank:srl (ix+#12),l:assert $==getsize('srl (ix+#12),l'):bank:srl (ix+#12):assert $==getsize('srl (ix+#12)'):bank:srl (ix+#12),a:assert $==getsize('srl (ix+#12),a')" \
+":bank:bit 0,(ix+#12):assert $==getsize('bit 0,(ix+#12)'):bank:bit 1,(ix+#12):assert $==getsize('bit 1,(ix+#12)'):bank:bit 2,(ix+#12):assert $==getsize('bit 2,(ix+#12)')" \
+":bank:bit 3,(ix+#12):assert $==getsize('bit 3,(ix+#12)'):bank:bit 4,(ix+#12):assert $==getsize('bit 4,(ix+#12)'):bank:bit 5,(ix+#12):assert $==getsize('bit 5,(ix+#12)')" \
+":bank:bit 6,(ix+#12):assert $==getsize('bit 6,(ix+#12)'):bank:bit 7,(ix+#12):assert $==getsize('bit 7,(ix+#12)'):bank:bit 0,(ix+#12),d:assert $==getsize('bit 0,(ix+#12),d')" \
+":bank:bit 1,(ix+#12),b:assert $==getsize('bit 1,(ix+#12),b'):bank:bit 2,(ix+#12),c:assert $==getsize('bit 2,(ix+#12),c'):bank:bit 3,(ix+#12),d:assert $==getsize('bit 3,(ix+#12),d')" \
+":bank:bit 4,(ix+#12),e:assert $==getsize('bit 4,(ix+#12),e'):bank:bit 5,(ix+#12),h:assert $==getsize('bit 5,(ix+#12),h'):bank:bit 6,(ix+#12),l:assert $==getsize('bit 6,(ix+#12),l')" \
+":bank:bit 7,(ix+#12),a:assert $==getsize('bit 7,(ix+#12),a'):bank:res 0,(ix+#12),b:assert $==getsize('res 0,(ix+#12),b'):bank:res 0,(ix+#12),c:assert $==getsize('res 0,(ix+#12),c')" \
+":bank:res 0,(ix+#12),d:assert $==getsize('res 0,(ix+#12),d'):bank:res 0,(ix+#12),e:assert $==getsize('res 0,(ix+#12),e'):bank:res 0,(ix+#12),h:assert $==getsize('res 0,(ix+#12),h')" \
+":bank:res 0,(ix+#12),l:assert $==getsize('res 0,(ix+#12),l'):bank:res 0,(ix+#12):assert $==getsize('res 0,(ix+#12)'):bank:res 0,(ix+#12),a:assert $==getsize('res 0,(ix+#12),a')" \
+":bank:res 1,(ix+#12),b:assert $==getsize('res 1,(ix+#12),b'):bank:res 1,(ix+#12),c:assert $==getsize('res 1,(ix+#12),c'):bank:res 1,(ix+#12),d:assert $==getsize('res 1,(ix+#12),d')" \
+":bank:res 1,(ix+#12),e:assert $==getsize('res 1,(ix+#12),e'):bank:res 1,(ix+#12),h:assert $==getsize('res 1,(ix+#12),h'):bank:res 1,(ix+#12),l:assert $==getsize('res 1,(ix+#12),l')" \
+":bank:res 1,(ix+#12):assert $==getsize('res 1,(ix+#12)'):bank:res 1,(ix+#12),a:assert $==getsize('res 1,(ix+#12),a'):bank:res 2,(ix+#12),b:assert $==getsize('res 2,(ix+#12),b')" \
+":bank:res 2,(ix+#12),c:assert $==getsize('res 2,(ix+#12),c'):bank:res 2,(ix+#12),d:assert $==getsize('res 2,(ix+#12),d'):bank:res 2,(ix+#12),e:assert $==getsize('res 2,(ix+#12),e')" \
+":bank:res 2,(ix+#12),h:assert $==getsize('res 2,(ix+#12),h'):bank:res 2,(ix+#12),l:assert $==getsize('res 2,(ix+#12),l'):bank:res 2,(ix+#12):assert $==getsize('res 2,(ix+#12)')" \
+":bank:res 2,(ix+#12),a:assert $==getsize('res 2,(ix+#12),a'):bank:res 3,(ix+#12),b:assert $==getsize('res 3,(ix+#12),b'):bank:res 3,(ix+#12),c:assert $==getsize('res 3,(ix+#12),c')" \
+":bank:res 3,(ix+#12),d:assert $==getsize('res 3,(ix+#12),d'):bank:res 3,(ix+#12),e:assert $==getsize('res 3,(ix+#12),e'):bank:res 3,(ix+#12),h:assert $==getsize('res 3,(ix+#12),h')" \
+":bank:res 3,(ix+#12),l:assert $==getsize('res 3,(ix+#12),l'):bank:res 3,(ix+#12):assert $==getsize('res 3,(ix+#12)'):bank:res 3,(ix+#12),a:assert $==getsize('res 3,(ix+#12),a')" \
+":bank:res 4,(ix+#12),b:assert $==getsize('res 4,(ix+#12),b'):bank:res 4,(ix+#12),c:assert $==getsize('res 4,(ix+#12),c'):bank:res 4,(ix+#12),d:assert $==getsize('res 4,(ix+#12),d')" \
+":bank:res 4,(ix+#12),e:assert $==getsize('res 4,(ix+#12),e'):bank:res 4,(ix+#12),h:assert $==getsize('res 4,(ix+#12),h'):bank:res 4,(ix+#12),l:assert $==getsize('res 4,(ix+#12),l')" \
+":bank:res 4,(ix+#12):assert $==getsize('res 4,(ix+#12)'):bank:res 4,(ix+#12),a:assert $==getsize('res 4,(ix+#12),a'):bank:res 5,(ix+#12),b:assert $==getsize('res 5,(ix+#12),b')" \
+":bank:res 5,(ix+#12),c:assert $==getsize('res 5,(ix+#12),c'):bank:res 5,(ix+#12),d:assert $==getsize('res 5,(ix+#12),d'):bank:res 5,(ix+#12),e:assert $==getsize('res 5,(ix+#12),e')" \
+":bank:res 5,(ix+#12),h:assert $==getsize('res 5,(ix+#12),h'):bank:res 5,(ix+#12),l:assert $==getsize('res 5,(ix+#12),l'):bank:res 5,(ix+#12):assert $==getsize('res 5,(ix+#12)')" \
+":bank:res 5,(ix+#12),a:assert $==getsize('res 5,(ix+#12),a'):bank:res 6,(ix+#12),b:assert $==getsize('res 6,(ix+#12),b'):bank:res 6,(ix+#12),c:assert $==getsize('res 6,(ix+#12),c')" \
+":bank:res 6,(ix+#12),d:assert $==getsize('res 6,(ix+#12),d'):bank:res 6,(ix+#12),e:assert $==getsize('res 6,(ix+#12),e'):bank:res 6,(ix+#12),h:assert $==getsize('res 6,(ix+#12),h')" \
+":bank:res 6,(ix+#12),l:assert $==getsize('res 6,(ix+#12),l'):bank:res 6,(ix+#12):assert $==getsize('res 6,(ix+#12)'):bank:res 6,(ix+#12),a:assert $==getsize('res 6,(ix+#12),a')" \
+":bank:res 7,(ix+#12),b:assert $==getsize('res 7,(ix+#12),b'):bank:res 7,(ix+#12),c:assert $==getsize('res 7,(ix+#12),c'):bank:res 7,(ix+#12),d:assert $==getsize('res 7,(ix+#12),d')" \
+":bank:res 7,(ix+#12),e:assert $==getsize('res 7,(ix+#12),e'):bank:res 7,(ix+#12),h:assert $==getsize('res 7,(ix+#12),h'):bank:res 7,(ix+#12),l:assert $==getsize('res 7,(ix+#12),l')" \
+":bank:res 7,(ix+#12):assert $==getsize('res 7,(ix+#12)'):bank:res 7,(ix+#12),a:assert $==getsize('res 7,(ix+#12),a'):bank:set 0,(ix+#12),b:assert $==getsize('set 0,(ix+#12),b')" \
+":bank:set 0,(ix+#12),c:assert $==getsize('set 0,(ix+#12),c'):bank:set 0,(ix+#12),d:assert $==getsize('set 0,(ix+#12),d'):bank:set 0,(ix+#12),e:assert $==getsize('set 0,(ix+#12),e')" \
+":bank:set 0,(ix+#12),h:assert $==getsize('set 0,(ix+#12),h'):bank:set 0,(ix+#12),l:assert $==getsize('set 0,(ix+#12),l'):bank:set 0,(ix+#12):assert $==getsize('set 0,(ix+#12)')" \
+":bank:set 0,(ix+#12),a:assert $==getsize('set 0,(ix+#12),a'):bank:set 1,(ix+#12),b:assert $==getsize('set 1,(ix+#12),b'):bank:set 1,(ix+#12),c:assert $==getsize('set 1,(ix+#12),c')" \
+":bank:set 1,(ix+#12),d:assert $==getsize('set 1,(ix+#12),d'):bank:set 1,(ix+#12),e:assert $==getsize('set 1,(ix+#12),e'):bank:set 1,(ix+#12),h:assert $==getsize('set 1,(ix+#12),h')" \
+":bank:set 1,(ix+#12),l:assert $==getsize('set 1,(ix+#12),l'):bank:set 1,(ix+#12):assert $==getsize('set 1,(ix+#12)'):bank:set 1,(ix+#12),a:assert $==getsize('set 1,(ix+#12),a')" \
+":bank:set 2,(ix+#12),b:assert $==getsize('set 2,(ix+#12),b'):bank:set 2,(ix+#12),c:assert $==getsize('set 2,(ix+#12),c'):bank:set 2,(ix+#12),d:assert $==getsize('set 2,(ix+#12),d')" \
+":bank:set 2,(ix+#12),e:assert $==getsize('set 2,(ix+#12),e'):bank:set 2,(ix+#12),h:assert $==getsize('set 2,(ix+#12),h'):bank:set 2,(ix+#12),l:assert $==getsize('set 2,(ix+#12),l')" \
+":bank:set 2,(ix+#12):assert $==getsize('set 2,(ix+#12)'):bank:set 2,(ix+#12),a:assert $==getsize('set 2,(ix+#12),a'):bank:set 3,(ix+#12),b:assert $==getsize('set 3,(ix+#12),b')" \
+":bank:set 3,(ix+#12),c:assert $==getsize('set 3,(ix+#12),c'):bank:set 3,(ix+#12),d:assert $==getsize('set 3,(ix+#12),d'):bank:set 3,(ix+#12),e:assert $==getsize('set 3,(ix+#12),e')" \
+":bank:set 3,(ix+#12),h:assert $==getsize('set 3,(ix+#12),h'):bank:set 3,(ix+#12),l:assert $==getsize('set 3,(ix+#12),l'):bank:set 3,(ix+#12):assert $==getsize('set 3,(ix+#12)')" \
+":bank:set 3,(ix+#12),a:assert $==getsize('set 3,(ix+#12),a'):bank:set 4,(ix+#12),b:assert $==getsize('set 4,(ix+#12),b'):bank:set 4,(ix+#12),c:assert $==getsize('set 4,(ix+#12),c')" \
+":bank:set 4,(ix+#12),d:assert $==getsize('set 4,(ix+#12),d'):bank:set 4,(ix+#12),e:assert $==getsize('set 4,(ix+#12),e'):bank:set 4,(ix+#12),h:assert $==getsize('set 4,(ix+#12),h')" \
+":bank:set 4,(ix+#12),l:assert $==getsize('set 4,(ix+#12),l'):bank:set 4,(ix+#12):assert $==getsize('set 4,(ix+#12)'):bank:set 4,(ix+#12),a:assert $==getsize('set 4,(ix+#12),a')" \
+":bank:set 5,(ix+#12),b:assert $==getsize('set 5,(ix+#12),b'):bank:set 5,(ix+#12),c:assert $==getsize('set 5,(ix+#12),c'):bank:set 5,(ix+#12),d:assert $==getsize('set 5,(ix+#12),d')" \
+":bank:set 5,(ix+#12),e:assert $==getsize('set 5,(ix+#12),e'):bank:set 5,(ix+#12),h:assert $==getsize('set 5,(ix+#12),h'):bank:set 5,(ix+#12),l:assert $==getsize('set 5,(ix+#12),l')" \
+":bank:set 5,(ix+#12):assert $==getsize('set 5,(ix+#12)'):bank:set 5,(ix+#12),a:assert $==getsize('set 5,(ix+#12),a'):bank:set 6,(ix+#12),b:assert $==getsize('set 6,(ix+#12),b')" \
+":bank:set 6,(ix+#12),c:assert $==getsize('set 6,(ix+#12),c'):bank:set 6,(ix+#12),d:assert $==getsize('set 6,(ix+#12),d'):bank:set 6,(ix+#12),e:assert $==getsize('set 6,(ix+#12),e')" \
+":bank:set 6,(ix+#12),h:assert $==getsize('set 6,(ix+#12),h'):bank:set 6,(ix+#12),l:assert $==getsize('set 6,(ix+#12),l'):bank:set 6,(ix+#12):assert $==getsize('set 6,(ix+#12)')" \
+":bank:set 6,(ix+#12),a:assert $==getsize('set 6,(ix+#12),a'):bank:set 7,(ix+#12),b:assert $==getsize('set 7,(ix+#12),b'):bank:set 7,(ix+#12),c:assert $==getsize('set 7,(ix+#12),c')" \
+":bank:set 7,(ix+#12),d:assert $==getsize('set 7,(ix+#12),d'):bank:set 7,(ix+#12),e:assert $==getsize('set 7,(ix+#12),e'):bank:set 7,(ix+#12),h:assert $==getsize('set 7,(ix+#12),h')" \
+":bank:set 7,(ix+#12),l:assert $==getsize('set 7,(ix+#12),l'):bank:set 7,(ix+#12):assert $==getsize('set 7,(ix+#12)'):bank:set 7,(ix+#12),a:assert $==getsize('set 7,(ix+#12),a')" \
+":bank:add iy,bc:assert $==getsize('add iy,bc'):bank:add iy,de:assert $==getsize('add iy,de'):bank:ld iy,#1234:assert $==getsize('ld iy,#1234')" \
+":bank:ld (#1234),iy:assert $==getsize('ld (#1234),iy'):bank:inc iy:assert $==getsize('inc iy'):bank:inc yh:assert $==getsize('inc yh')" \
+":bank:dec yh:assert $==getsize('dec yh'):bank:ld yh,#12:assert $==getsize('ld yh,#12'):bank:add iy,iy:assert $==getsize('add iy,iy')" \
+":bank:ld iy,(#1234):assert $==getsize('ld iy,(#1234)'):bank:dec iy:assert $==getsize('dec iy'):bank:inc yl:assert $==getsize('inc yl')" \
+":bank:dec yl:assert $==getsize('dec yl'):bank:ld yl,#12:assert $==getsize('ld yl,#12'):bank:inc (iy+#12):assert $==getsize('inc (iy+#12)')" \
+":bank:dec (iy+#12):assert $==getsize('dec (iy+#12)'):bank:ld (iy+#12),#34:assert $==getsize('ld (iy+#12),#34'):bank:add iy,sp:assert $==getsize('add iy,sp')" \
+":bank:ld b,yh:assert $==getsize('ld b,yh'):bank:ld b,yl:assert $==getsize('ld b,yl'):bank:ld b,(iy+#12):assert $==getsize('ld b,(iy+#12)')" \
+":bank:ld c,yh:assert $==getsize('ld c,yh'):bank:ld c,yl:assert $==getsize('ld c,yl'):bank:ld c,(iy+#12):assert $==getsize('ld c,(iy+#12)')" \
+":bank:ld d,yh:assert $==getsize('ld d,yh'):bank:ld d,yl:assert $==getsize('ld d,yl'):bank:ld d,(iy+#12):assert $==getsize('ld d,(iy+#12)')" \
+":bank:ld e,yh:assert $==getsize('ld e,yh'):bank:ld e,yl:assert $==getsize('ld e,yl'):bank:ld e,(iy+#12):assert $==getsize('ld e,(iy+#12)')" \
+":bank:ld yh,b:assert $==getsize('ld yh,b'):bank:ld yh,c:assert $==getsize('ld yh,c'):bank:ld yh,d:assert $==getsize('ld yh,d')" \
+":bank:ld yh,e:assert $==getsize('ld yh,e'):bank:ld yh,yh:assert $==getsize('ld yh,yh'):bank:ld yh,yl:assert $==getsize('ld yh,yl')" \
+":bank:ld h,(iy+#12):assert $==getsize('ld h,(iy+#12)'):bank:ld yh,a:assert $==getsize('ld yh,a'):bank:ld yl,b:assert $==getsize('ld yl,b')" \
+":bank:ld yl,c:assert $==getsize('ld yl,c'):bank:ld yl,d:assert $==getsize('ld yl,d'):bank:ld yl,e:assert $==getsize('ld yl,e')" \
+":bank:ld yl,yh:assert $==getsize('ld yl,yh'):bank:ld yl,yl:assert $==getsize('ld yl,yl'):bank:ld l,(iy+#12):assert $==getsize('ld l,(iy+#12)')" \
+":bank:ld yl,a:assert $==getsize('ld yl,a'):bank:ld (iy+#12),b:assert $==getsize('ld (iy+#12),b'):bank:ld (iy+#12),c:assert $==getsize('ld (iy+#12),c')" \
+":bank:ld (iy+#12),d:assert $==getsize('ld (iy+#12),d'):bank:ld (iy+#12),e:assert $==getsize('ld (iy+#12),e'):bank:ld (iy+#12),h:assert $==getsize('ld (iy+#12),h')" \
+":bank:ld (iy+#12),l:assert $==getsize('ld (iy+#12),l'):bank:ld (iy+#12),a:assert $==getsize('ld (iy+#12),a'):bank:ld a,yh:assert $==getsize('ld a,yh')" \
+":bank:ld a,yl:assert $==getsize('ld a,yl'):bank:ld a,(iy+#12):assert $==getsize('ld a,(iy+#12)'):bank:add yh:assert $==getsize('add yh')" \
+":bank:add yl:assert $==getsize('add yl'):bank:add (iy+#12):assert $==getsize('add (iy+#12)'):bank:adc yh:assert $==getsize('adc yh')" \
+":bank:adc yl:assert $==getsize('adc yl'):bank:adc (iy+#12):assert $==getsize('adc (iy+#12)'):bank:sub yh:assert $==getsize('sub yh')" \
+":bank:sub yl:assert $==getsize('sub yl'):bank:sub (iy+#12):assert $==getsize('sub (iy+#12)'):bank:sbc yh:assert $==getsize('sbc yh')" \
+":bank:sbc yl:assert $==getsize('sbc yl'):bank:sbc (iy+#12):assert $==getsize('sbc (iy+#12)'):bank:and yh:assert $==getsize('and yh')" \
+":bank:and yl:assert $==getsize('and yl'):bank:and (iy+#12):assert $==getsize('and (iy+#12)'):bank:xor yh:assert $==getsize('xor yh')" \
+":bank:xor yl:assert $==getsize('xor yl'):bank:xor (iy+#12):assert $==getsize('xor (iy+#12)'):bank:or yh:assert $==getsize('or yh')" \
+":bank:or yl:assert $==getsize('or yl'):bank:or (iy+#12):assert $==getsize('or (iy+#12)'):bank:cp yh:assert $==getsize('cp yh')" \
+":bank:cp yl:assert $==getsize('cp yl'):bank:cp (iy+#12):assert $==getsize('cp (iy+#12)'):bank:pop iy:assert $==getsize('pop iy')" \
+":bank:ex (sp),iy:assert $==getsize('ex (sp),iy'):bank:push iy:assert $==getsize('push iy'):bank:jp (iy):assert $==getsize('jp (iy)')" \
+":bank:ld sp,iy:assert $==getsize('ld sp,iy'):bank:rlc (iy+#12),b:assert $==getsize('rlc (iy+#12),b'):bank:rlc (iy+#12),c:assert $==getsize('rlc (iy+#12),c')" \
+":bank:rlc (iy+#12),d:assert $==getsize('rlc (iy+#12),d'):bank:rlc (iy+#12),e:assert $==getsize('rlc (iy+#12),e'):bank:rlc (iy+#12),h:assert $==getsize('rlc (iy+#12),h')" \
+":bank:rlc (iy+#12),l:assert $==getsize('rlc (iy+#12),l'):bank:rlc (iy+#12):assert $==getsize('rlc (iy+#12)'):bank:rlc (iy+#12),a:assert $==getsize('rlc (iy+#12),a')" \
+":bank:rrc (iy+#12),b:assert $==getsize('rrc (iy+#12),b'):bank:rrc (iy+#12),c:assert $==getsize('rrc (iy+#12),c'):bank:rrc (iy+#12),d:assert $==getsize('rrc (iy+#12),d')" \
+":bank:rrc (iy+#12),e:assert $==getsize('rrc (iy+#12),e'):bank:rrc (iy+#12),h:assert $==getsize('rrc (iy+#12),h'):bank:rrc (iy+#12),l:assert $==getsize('rrc (iy+#12),l')" \
+":bank:rrc (iy+#12):assert $==getsize('rrc (iy+#12)'):bank:rrc (iy+#12),a:assert $==getsize('rrc (iy+#12),a'):bank:rl (iy+#12),b:assert $==getsize('rl (iy+#12),b')" \
+":bank:rl (iy+#12),c:assert $==getsize('rl (iy+#12),c'):bank:rl (iy+#12),d:assert $==getsize('rl (iy+#12),d'):bank:rl (iy+#12),e:assert $==getsize('rl (iy+#12),e')" \
+":bank:rl (iy+#12),h:assert $==getsize('rl (iy+#12),h'):bank:rl (iy+#12),l:assert $==getsize('rl (iy+#12),l'):bank:rl (iy+#12):assert $==getsize('rl (iy+#12)')" \
+":bank:rl (iy+#12),a:assert $==getsize('rl (iy+#12),a'):bank:rr (iy+#12),b:assert $==getsize('rr (iy+#12),b'):bank:rr (iy+#12),c:assert $==getsize('rr (iy+#12),c')" \
+":bank:rr (iy+#12),d:assert $==getsize('rr (iy+#12),d'):bank:rr (iy+#12),e:assert $==getsize('rr (iy+#12),e'):bank:rr (iy+#12),h:assert $==getsize('rr (iy+#12),h')" \
+":bank:rr (iy+#12),l:assert $==getsize('rr (iy+#12),l'):bank:rr (iy+#12):assert $==getsize('rr (iy+#12)'):bank:rr (iy+#12),a:assert $==getsize('rr (iy+#12),a')" \
+":bank:sla (iy+#12),b:assert $==getsize('sla (iy+#12),b'):bank:sla (iy+#12),c:assert $==getsize('sla (iy+#12),c'):bank:sla (iy+#12),d:assert $==getsize('sla (iy+#12),d')" \
+":bank:sla (iy+#12),e:assert $==getsize('sla (iy+#12),e'):bank:sla (iy+#12),h:assert $==getsize('sla (iy+#12),h'):bank:sla (iy+#12),l:assert $==getsize('sla (iy+#12),l')" \
+":bank:sla (iy+#12):assert $==getsize('sla (iy+#12)'):bank:sla (iy+#12),a:assert $==getsize('sla (iy+#12),a'):bank:sra (iy+#12),b:assert $==getsize('sra (iy+#12),b')" \
+":bank:sra (iy+#12),c:assert $==getsize('sra (iy+#12),c'):bank:sra (iy+#12),d:assert $==getsize('sra (iy+#12),d'):bank:sra (iy+#12),e:assert $==getsize('sra (iy+#12),e')" \
+":bank:sra (iy+#12),h:assert $==getsize('sra (iy+#12),h'):bank:sra (iy+#12),l:assert $==getsize('sra (iy+#12),l'):bank:sra (iy+#12):assert $==getsize('sra (iy+#12)')" \
+":bank:sra (iy+#12),a:assert $==getsize('sra (iy+#12),a'):bank:sll (iy+#12),b:assert $==getsize('sll (iy+#12),b'):bank:sll (iy+#12),c:assert $==getsize('sll (iy+#12),c')" \
+":bank:sll (iy+#12),d:assert $==getsize('sll (iy+#12),d'):bank:sll (iy+#12),e:assert $==getsize('sll (iy+#12),e'):bank:sll (iy+#12),h:assert $==getsize('sll (iy+#12),h')" \
+":bank:sll (iy+#12),l:assert $==getsize('sll (iy+#12),l'):bank:sll (iy+#12):assert $==getsize('sll (iy+#12)'):bank:sll (iy+#12),a:assert $==getsize('sll (iy+#12),a')" \
+":bank:srl (iy+#12),b:assert $==getsize('srl (iy+#12),b'):bank:srl (iy+#12),c:assert $==getsize('srl (iy+#12),c'):bank:srl (iy+#12),d:assert $==getsize('srl (iy+#12),d')" \
+":bank:srl (iy+#12),e:assert $==getsize('srl (iy+#12),e'):bank:srl (iy+#12),h:assert $==getsize('srl (iy+#12),h'):bank:srl (iy+#12),l:assert $==getsize('srl (iy+#12),l')" \
+":bank:srl (iy+#12):assert $==getsize('srl (iy+#12)'):bank:srl (iy+#12),a:assert $==getsize('srl (iy+#12),a'):bank:bit 0,(iy+#12):assert $==getsize('bit 0,(iy+#12)')" \
+":bank:bit 1,(iy+#12):assert $==getsize('bit 1,(iy+#12)'):bank:bit 2,(iy+#12):assert $==getsize('bit 2,(iy+#12)'):bank:bit 3,(iy+#12):assert $==getsize('bit 3,(iy+#12)')" \
+":bank:bit 4,(iy+#12):assert $==getsize('bit 4,(iy+#12)'):bank:bit 5,(iy+#12):assert $==getsize('bit 5,(iy+#12)'):bank:bit 6,(iy+#12):assert $==getsize('bit 6,(iy+#12)')" \
+":bank:bit 7,(iy+#12):assert $==getsize('bit 7,(iy+#12)'):bank:res 0,(iy+#12),b:assert $==getsize('res 0,(iy+#12),b'):bank:res 0,(iy+#12),c:assert $==getsize('res 0,(iy+#12),c')" \
+":bank:res 0,(iy+#12),d:assert $==getsize('res 0,(iy+#12),d'):bank:res 0,(iy+#12),e:assert $==getsize('res 0,(iy+#12),e'):bank:res 0,(iy+#12),h:assert $==getsize('res 0,(iy+#12),h')" \
+":bank:res 0,(iy+#12),l:assert $==getsize('res 0,(iy+#12),l'):bank:res 0,(iy+#12):assert $==getsize('res 0,(iy+#12)'):bank:res 0,(iy+#12),a:assert $==getsize('res 0,(iy+#12),a')" \
+":bank:res 1,(iy+#12),b:assert $==getsize('res 1,(iy+#12),b'):bank:res 1,(iy+#12),c:assert $==getsize('res 1,(iy+#12),c'):bank:res 1,(iy+#12),d:assert $==getsize('res 1,(iy+#12),d')" \
+":bank:res 1,(iy+#12),e:assert $==getsize('res 1,(iy+#12),e'):bank:res 1,(iy+#12),h:assert $==getsize('res 1,(iy+#12),h'):bank:res 1,(iy+#12),l:assert $==getsize('res 1,(iy+#12),l')" \
+":bank:res 1,(iy+#12):assert $==getsize('res 1,(iy+#12)'):bank:res 1,(iy+#12),a:assert $==getsize('res 1,(iy+#12),a'):bank:res 2,(iy+#12),b:assert $==getsize('res 2,(iy+#12),b')" \
+":bank:res 2,(iy+#12),c:assert $==getsize('res 2,(iy+#12),c'):bank:res 2,(iy+#12),d:assert $==getsize('res 2,(iy+#12),d'):bank:res 2,(iy+#12),e:assert $==getsize('res 2,(iy+#12),e')" \
+":bank:res 2,(iy+#12),h:assert $==getsize('res 2,(iy+#12),h'):bank:res 2,(iy+#12),l:assert $==getsize('res 2,(iy+#12),l'):bank:res 2,(iy+#12):assert $==getsize('res 2,(iy+#12)')" \
+":bank:res 2,(iy+#12),a:assert $==getsize('res 2,(iy+#12),a'):bank:res 3,(iy+#12),b:assert $==getsize('res 3,(iy+#12),b'):bank:res 3,(iy+#12),c:assert $==getsize('res 3,(iy+#12),c')" \
+":bank:res 3,(iy+#12),d:assert $==getsize('res 3,(iy+#12),d'):bank:res 3,(iy+#12),e:assert $==getsize('res 3,(iy+#12),e'):bank:res 3,(iy+#12),h:assert $==getsize('res 3,(iy+#12),h')" \
+":bank:res 3,(iy+#12),l:assert $==getsize('res 3,(iy+#12),l'):bank:res 3,(iy+#12):assert $==getsize('res 3,(iy+#12)'):bank:res 3,(iy+#12),a:assert $==getsize('res 3,(iy+#12),a')" \
+":bank:res 4,(iy+#12),b:assert $==getsize('res 4,(iy+#12),b'):bank:res 4,(iy+#12),c:assert $==getsize('res 4,(iy+#12),c'):bank:res 4,(iy+#12),d:assert $==getsize('res 4,(iy+#12),d')" \
+":bank:res 4,(iy+#12),e:assert $==getsize('res 4,(iy+#12),e'):bank:res 4,(iy+#12),h:assert $==getsize('res 4,(iy+#12),h'):bank:res 4,(iy+#12),l:assert $==getsize('res 4,(iy+#12),l')" \
+":bank:res 4,(iy+#12):assert $==getsize('res 4,(iy+#12)'):bank:res 4,(iy+#12),a:assert $==getsize('res 4,(iy+#12),a'):bank:res 5,(iy+#12),b:assert $==getsize('res 5,(iy+#12),b')" \
+":bank:res 5,(iy+#12),c:assert $==getsize('res 5,(iy+#12),c'):bank:res 5,(iy+#12),d:assert $==getsize('res 5,(iy+#12),d'):bank:res 5,(iy+#12),e:assert $==getsize('res 5,(iy+#12),e')" \
+":bank:res 5,(iy+#12),h:assert $==getsize('res 5,(iy+#12),h'):bank:res 5,(iy+#12),l:assert $==getsize('res 5,(iy+#12),l'):bank:res 5,(iy+#12):assert $==getsize('res 5,(iy+#12)')" \
+":bank:res 5,(iy+#12),a:assert $==getsize('res 5,(iy+#12),a'):bank:res 6,(iy+#12),b:assert $==getsize('res 6,(iy+#12),b'):bank:res 6,(iy+#12),c:assert $==getsize('res 6,(iy+#12),c')" \
+":bank:res 6,(iy+#12),d:assert $==getsize('res 6,(iy+#12),d'):bank:res 6,(iy+#12),e:assert $==getsize('res 6,(iy+#12),e'):bank:res 6,(iy+#12),h:assert $==getsize('res 6,(iy+#12),h')" \
+":bank:res 6,(iy+#12),l:assert $==getsize('res 6,(iy+#12),l'):bank:res 6,(iy+#12):assert $==getsize('res 6,(iy+#12)'):bank:res 6,(iy+#12),a:assert $==getsize('res 6,(iy+#12),a')" \
+":bank:res 7,(iy+#12),b:assert $==getsize('res 7,(iy+#12),b'):bank:res 7,(iy+#12),c:assert $==getsize('res 7,(iy+#12),c'):bank:res 7,(iy+#12),d:assert $==getsize('res 7,(iy+#12),d')" \
+":bank:res 7,(iy+#12),e:assert $==getsize('res 7,(iy+#12),e'):bank:res 7,(iy+#12),h:assert $==getsize('res 7,(iy+#12),h'):bank:res 7,(iy+#12),l:assert $==getsize('res 7,(iy+#12),l')" \
+":bank:res 7,(iy+#12):assert $==getsize('res 7,(iy+#12)'):bank:res 7,(iy+#12),a:assert $==getsize('res 7,(iy+#12),a'):bank:set 0,(iy+#12),b:assert $==getsize('set 0,(iy+#12),b')" \
+":bank:set 0,(iy+#12),c:assert $==getsize('set 0,(iy+#12),c'):bank:set 0,(iy+#12),d:assert $==getsize('set 0,(iy+#12),d'):bank:set 0,(iy+#12),e:assert $==getsize('set 0,(iy+#12),e')" \
+":bank:set 0,(iy+#12),h:assert $==getsize('set 0,(iy+#12),h'):bank:set 0,(iy+#12),l:assert $==getsize('set 0,(iy+#12),l'):bank:set 0,(iy+#12):assert $==getsize('set 0,(iy+#12)')" \
+":bank:set 1,(iy+#12),d:assert $==getsize('set 1,(iy+#12),d'):bank:set 1,(iy+#12),e:assert $==getsize('set 1,(iy+#12),e'):bank:set 1,(iy+#12),h:assert $==getsize('set 1,(iy+#12),h')" \
+":bank:set 1,(iy+#12),l:assert $==getsize('set 1,(iy+#12),l'):bank:set 1,(iy+#12):assert $==getsize('set 1,(iy+#12)'):bank:set 1,(iy+#12),a:assert $==getsize('set 1,(iy+#12),a')" \
+":bank:set 2,(iy+#12),b:assert $==getsize('set 2,(iy+#12),b'):bank:set 2,(iy+#12),c:assert $==getsize('set 2,(iy+#12),c'):bank:set 2,(iy+#12),d:assert $==getsize('set 2,(iy+#12),d')" \
+":bank:set 2,(iy+#12),e:assert $==getsize('set 2,(iy+#12),e'):bank:set 2,(iy+#12),h:assert $==getsize('set 2,(iy+#12),h'):bank:set 2,(iy+#12),l:assert $==getsize('set 2,(iy+#12),l')" \
+":bank:set 2,(iy+#12):assert $==getsize('set 2,(iy+#12)'):bank:set 2,(iy+#12),a:assert $==getsize('set 2,(iy+#12),a'):bank:set 3,(iy+#12),b:assert $==getsize('set 3,(iy+#12),b')" \
+":bank:set 3,(iy+#12),c:assert $==getsize('set 3,(iy+#12),c'):bank:set 3,(iy+#12),d:assert $==getsize('set 3,(iy+#12),d'):bank:set 3,(iy+#12),e:assert $==getsize('set 3,(iy+#12),e')" \
+":bank:set 3,(iy+#12),h:assert $==getsize('set 3,(iy+#12),h'):bank:set 3,(iy+#12),l:assert $==getsize('set 3,(iy+#12),l'):bank:set 3,(iy+#12):assert $==getsize('set 3,(iy+#12)')" \
+":bank:set 3,(iy+#12),a:assert $==getsize('set 3,(iy+#12),a'):bank:set 4,(iy+#12),b:assert $==getsize('set 4,(iy+#12),b'):bank:set 4,(iy+#12),c:assert $==getsize('set 4,(iy+#12),c')" \
+":bank:set 4,(iy+#12),d:assert $==getsize('set 4,(iy+#12),d'):bank:set 4,(iy+#12),e:assert $==getsize('set 4,(iy+#12),e'):bank:set 4,(iy+#12),h:assert $==getsize('set 4,(iy+#12),h')" \
+":bank:set 4,(iy+#12),l:assert $==getsize('set 4,(iy+#12),l'):bank:set 4,(iy+#12):assert $==getsize('set 4,(iy+#12)'):bank:set 4,(iy+#12),a:assert $==getsize('set 4,(iy+#12),a')" \
+":bank:set 5,(iy+#12),b:assert $==getsize('set 5,(iy+#12),b'):bank:set 5,(iy+#12),c:assert $==getsize('set 5,(iy+#12),c'):bank:set 5,(iy+#12),d:assert $==getsize('set 5,(iy+#12),d')" \
+":bank:set 5,(iy+#12),e:assert $==getsize('set 5,(iy+#12),e'):bank:set 5,(iy+#12),h:assert $==getsize('set 5,(iy+#12),h'):bank:set 5,(iy+#12),l:assert $==getsize('set 5,(iy+#12),l')" \
+":bank:set 5,(iy+#12):assert $==getsize('set 5,(iy+#12)'):bank:set 5,(iy+#12),a:assert $==getsize('set 5,(iy+#12),a'):bank:set 6,(ix+#12),c:assert $==getsize('set 6,(ix+#12),c')" \
+":bank:set 6,(ix+#12),d:assert $==getsize('set 6,(ix+#12),d'):bank:set 6,(ix+#12),e:assert $==getsize('set 6,(ix+#12),e'):bank:set 6,(ix+#12),h:assert $==getsize('set 6,(ix+#12),h')" \
+":bank:set 6,(ix+#12),l:assert $==getsize('set 6,(ix+#12),l'):bank:set 6,(ix+#12):assert $==getsize('set 6,(ix+#12)'):bank:set 6,(ix+#12),a:assert $==getsize('set 6,(ix+#12),a')" \
+":bank:set 7,(ix+#12),b:assert $==getsize('set 7,(ix+#12),b'):bank:set 7,(ix+#12),c:assert $==getsize('set 7,(ix+#12),c'):bank:set 7,(ix+#12),d:assert $==getsize('set 7,(ix+#12),d')" \
+":bank:set 7,(ix+#12),e:assert $==getsize('set 7,(ix+#12),e'):bank:set 7,(ix+#12),h:assert $==getsize('set 7,(ix+#12),h'):bank:set 7,(ix+#12),l:assert $==getsize('set 7,(ix+#12),l')" \
+":bank:set 7,(ix+#12):assert $==getsize('set 7,(ix+#12)'):bank:set 7,(ix+#12),a:assert $==getsize('set 7,(ix+#12),a'):bank:add iy,bc:assert $==getsize('add iy,bc')" \
+":bank:add iy,de:assert $==getsize('add iy,de'):bank:ld iy,#1234:assert $==getsize('ld iy,#1234'):bank:ld (#1234),iy:assert $==getsize('ld (#1234),iy')" \
+":bank:inc iy:assert $==getsize('inc iy'):bank:inc yh:assert $==getsize('inc yh'):bank:dec yh:assert $==getsize('dec yh')" \
+":bank:ld yh,#12:assert $==getsize('ld yh,#12'):bank:add iy,iy:assert $==getsize('add iy,iy'):bank:ld iy,(#1234):assert $==getsize('ld iy,(#1234)')" \
+":bank:dec iy:assert $==getsize('dec iy'):bank:inc yl:assert $==getsize('inc yl'):bank:dec yl:assert $==getsize('dec yl')" \
+":bank:ld yl,#12:assert $==getsize('ld yl,#12'):bank:inc (iy+#12):assert $==getsize('inc (iy+#12)'):bank:dec (iy+#12):assert $==getsize('dec (iy+#12)')" \
+":bank:ld (iy+#12),#34:assert $==getsize('ld (iy+#12),#34'):bank:add iy,sp:assert $==getsize('add iy,sp'):bank:ld b,yh:assert $==getsize('ld b,yh')" \
+":bank:ld b,yl:assert $==getsize('ld b,yl'):bank:ld b,(iy+#12):assert $==getsize('ld b,(iy+#12)'):bank:ld c,yh:assert $==getsize('ld c,yh')" \
+":bank:ld c,yl:assert $==getsize('ld c,yl'):bank:ld c,(iy+#12):assert $==getsize('ld c,(iy+#12)'):bank:ld d,yh:assert $==getsize('ld d,yh')" \
+":bank:ld d,yl:assert $==getsize('ld d,yl'):bank:ld d,(iy+#12):assert $==getsize('ld d,(iy+#12)'):bank:ld e,yh:assert $==getsize('ld e,yh')" \
+":bank:ld e,yl:assert $==getsize('ld e,yl'):bank:ld e,(iy+#12):assert $==getsize('ld e,(iy+#12)'):bank:ld yh,b:assert $==getsize('ld yh,b')" \
+":bank:ld yh,c:assert $==getsize('ld yh,c'):bank:ld yh,d:assert $==getsize('ld yh,d'):bank:ld yh,e:assert $==getsize('ld yh,e')" \
+":bank:ld yh,yh:assert $==getsize('ld yh,yh'):bank:ld yh,yl:assert $==getsize('ld yh,yl'):bank:ld h,(iy+#12):assert $==getsize('ld h,(iy+#12)')" \
+":bank:ld yh,a:assert $==getsize('ld yh,a'):bank:ld yl,b:assert $==getsize('ld yl,b'):bank:ld yl,c:assert $==getsize('ld yl,c')" \
+":bank:ld yl,d:assert $==getsize('ld yl,d'):bank:ld yl,e:assert $==getsize('ld yl,e'):bank:ld yl,yh:assert $==getsize('ld yl,yh')" \
+":bank:ld yl,yl:assert $==getsize('ld yl,yl'):bank:ld l,(iy+#12):assert $==getsize('ld l,(iy+#12)'):bank:ld yl,a:assert $==getsize('ld yl,a')" \
+":bank:ld (iy+#12),b:assert $==getsize('ld (iy+#12),b'):bank:ld (iy+#12),c:assert $==getsize('ld (iy+#12),c'):bank:ld (iy+#12),d:assert $==getsize('ld (iy+#12),d')" \
+":bank:ld (iy+#12),e:assert $==getsize('ld (iy+#12),e'):bank:ld (iy+#12),h:assert $==getsize('ld (iy+#12),h'):bank:ld (iy+#12),l:assert $==getsize('ld (iy+#12),l')" \
+":bank:ld (iy+#12),a:assert $==getsize('ld (iy+#12),a'):bank:ld a,yh:assert $==getsize('ld a,yh'):bank:ld a,yl:assert $==getsize('ld a,yl')" \
+":bank:ld a,(iy+#12):assert $==getsize('ld a,(iy+#12)'):bank:add yh:assert $==getsize('add yh'):bank:add yl:assert $==getsize('add yl')" \
+":bank:add (iy+#12):assert $==getsize('add (iy+#12)'):bank:adc yh:assert $==getsize('adc yh'):bank:adc yl:assert $==getsize('adc yl')" \
+":bank:adc (iy+#12):assert $==getsize('adc (iy+#12)'):bank:sub yh:assert $==getsize('sub yh'):bank:sub yl:assert $==getsize('sub yl')" \
+":bank:sub (iy+#12):assert $==getsize('sub (iy+#12)'):bank:sbc yh:assert $==getsize('sbc yh'):bank:sbc yl:assert $==getsize('sbc yl')" \
+":bank:sbc (iy+#12):assert $==getsize('sbc (iy+#12)'):bank:and yh:assert $==getsize('and yh'):bank:and yl:assert $==getsize('and yl')" \
+":bank:and (iy+#12):assert $==getsize('and (iy+#12)'):bank:xor yh:assert $==getsize('xor yh'):bank:xor yl:assert $==getsize('xor yl')" \
+":bank:xor (iy+#12):assert $==getsize('xor (iy+#12)'):bank:or yh:assert $==getsize('or yh'):bank:or yl:assert $==getsize('or yl')" \
+":bank:or (iy+#12):assert $==getsize('or (iy+#12)'):bank:cp yh:assert $==getsize('cp yh'):bank:cp yl:assert $==getsize('cp yl')" \
+":bank:cp (iy+#12):assert $==getsize('cp (iy+#12)'):bank:pop iy:assert $==getsize('pop iy'):bank:ex (sp),iy:assert $==getsize('ex (sp),iy')" \
+":bank:push iy:assert $==getsize('push iy'):bank:jp (iy):assert $==getsize('jp (iy)'):bank:ld sp,iy:assert $==getsize('ld sp,iy')" \
+":bank:rlc (iy+#12),b:assert $==getsize('rlc (iy+#12),b'):bank:rlc (iy+#12),c:assert $==getsize('rlc (iy+#12),c'):bank:rlc (iy+#12),d:assert $==getsize('rlc (iy+#12),d')" \
+":bank:rlc (iy+#12),e:assert $==getsize('rlc (iy+#12),e'):bank:rlc (iy+#12),h:assert $==getsize('rlc (iy+#12),h'):bank:rlc (iy+#12),l:assert $==getsize('rlc (iy+#12),l')" \
+":bank:rlc (iy+#12):assert $==getsize('rlc (iy+#12)'):bank:rlc (iy+#12),a:assert $==getsize('rlc (iy+#12),a'):bank:rrc (iy+#12),b:assert $==getsize('rrc (iy+#12),b')" \
+":bank:rrc (iy+#12),c:assert $==getsize('rrc (iy+#12),c'):bank:rrc (iy+#12),d:assert $==getsize('rrc (iy+#12),d'):bank:rrc (iy+#12),e:assert $==getsize('rrc (iy+#12),e')" \
+":bank:rrc (iy+#12),h:assert $==getsize('rrc (iy+#12),h'):bank:rrc (iy+#12),l:assert $==getsize('rrc (iy+#12),l'):bank:rrc (iy+#12):assert $==getsize('rrc (iy+#12)')" \
+":bank:rrc (iy+#12),a:assert $==getsize('rrc (iy+#12),a'):bank:rl (iy+#12),b:assert $==getsize('rl (iy+#12),b'):bank:rl (iy+#12),c:assert $==getsize('rl (iy+#12),c')" \
+":bank:rl (iy+#12),d:assert $==getsize('rl (iy+#12),d'):bank:rl (iy+#12),e:assert $==getsize('rl (iy+#12),e'):bank:rl (iy+#12),h:assert $==getsize('rl (iy+#12),h')" \
+":bank:rl (iy+#12),l:assert $==getsize('rl (iy+#12),l'):bank:rl (iy+#12):assert $==getsize('rl (iy+#12)'):bank:rl (iy+#12),a:assert $==getsize('rl (iy+#12),a')" \
+":bank:rr (iy+#12),b:assert $==getsize('rr (iy+#12),b'):bank:rr (iy+#12),c:assert $==getsize('rr (iy+#12),c'):bank:rr (iy+#12),d:assert $==getsize('rr (iy+#12),d')" \
+":bank:rr (iy+#12),e:assert $==getsize('rr (iy+#12),e'):bank:rr (iy+#12),h:assert $==getsize('rr (iy+#12),h'):bank:rr (iy+#12),l:assert $==getsize('rr (iy+#12),l')" \
+":bank:rr (iy+#12):assert $==getsize('rr (iy+#12)'):bank:rr (iy+#12),a:assert $==getsize('rr (iy+#12),a'):bank:sla (iy+#12),b:assert $==getsize('sla (iy+#12),b')" \
+":bank:sla (iy+#12),c:assert $==getsize('sla (iy+#12),c'):bank:sla (iy+#12),d:assert $==getsize('sla (iy+#12),d'):bank:sla (iy+#12),e:assert $==getsize('sla (iy+#12),e')" \
+":bank:sla (iy+#12),h:assert $==getsize('sla (iy+#12),h'):bank:sla (iy+#12),l:assert $==getsize('sla (iy+#12),l'):bank:sla (iy+#12):assert $==getsize('sla (iy+#12)')" \
+":bank:sla (iy+#12),a:assert $==getsize('sla (iy+#12),a'):bank:sra (iy+#12),b:assert $==getsize('sra (iy+#12),b'):bank:sra (iy+#12),c:assert $==getsize('sra (iy+#12),c')" \
+":bank:sra (iy+#12),d:assert $==getsize('sra (iy+#12),d'):bank:sra (iy+#12),e:assert $==getsize('sra (iy+#12),e'):bank:sra (iy+#12),h:assert $==getsize('sra (iy+#12),h')" \
+":bank:sra (iy+#12),l:assert $==getsize('sra (iy+#12),l'):bank:sra (iy+#12):assert $==getsize('sra (iy+#12)'):bank:sra (iy+#12),a:assert $==getsize('sra (iy+#12),a')" \
+":bank:sll (iy+#12),b:assert $==getsize('sll (iy+#12),b'):bank:sll (iy+#12),c:assert $==getsize('sll (iy+#12),c'):bank:sll (iy+#12),d:assert $==getsize('sll (iy+#12),d')" \
+":bank:sll (iy+#12),e:assert $==getsize('sll (iy+#12),e'):bank:sll (iy+#12),h:assert $==getsize('sll (iy+#12),h'):bank:sll (iy+#12),l:assert $==getsize('sll (iy+#12),l')" \
+":bank:sll (iy+#12):assert $==getsize('sll (iy+#12)'):bank:sll (iy+#12),a:assert $==getsize('sll (iy+#12),a'):bank:srl (iy+#12),b:assert $==getsize('srl (iy+#12),b')" \
+":bank:srl (iy+#12),c:assert $==getsize('srl (iy+#12),c'):bank:srl (iy+#12),d:assert $==getsize('srl (iy+#12),d'):bank:srl (iy+#12),e:assert $==getsize('srl (iy+#12),e')" \
+":bank:srl (iy+#12),h:assert $==getsize('srl (iy+#12),h'):bank:srl (iy+#12),l:assert $==getsize('srl (iy+#12),l'):bank:srl (iy+#12):assert $==getsize('srl (iy+#12)')" \
+":bank:srl (iy+#12),a:assert $==getsize('srl (iy+#12),a'):bank:bit 0,(iy+#12):assert $==getsize('bit 0,(iy+#12)'):bank:bit 1,(iy+#12):assert $==getsize('bit 1,(iy+#12)')" \
+":bank:bit 2,(iy+#12):assert $==getsize('bit 2,(iy+#12)'):bank:bit 3,(iy+#12):assert $==getsize('bit 3,(iy+#12)'):bank:bit 4,(iy+#12):assert $==getsize('bit 4,(iy+#12)')" \
+":bank:bit 5,(iy+#12):assert $==getsize('bit 5,(iy+#12)'):bank:bit 6,(iy+#12):assert $==getsize('bit 6,(iy+#12)'):bank:bit 7,(iy+#12):assert $==getsize('bit 7,(iy+#12)')" \
+":bank:res 0,(iy+#12),b:assert $==getsize('res 0,(iy+#12),b'):bank:res 0,(iy+#12),c:assert $==getsize('res 0,(iy+#12),c'):bank:res 0,(iy+#12),d:assert $==getsize('res 0,(iy+#12),d')" \
+":bank:res 0,(iy+#12),e:assert $==getsize('res 0,(iy+#12),e'):bank:res 0,(iy+#12),h:assert $==getsize('res 0,(iy+#12),h'):bank:res 0,(iy+#12),l:assert $==getsize('res 0,(iy+#12),l')" \
+":bank:res 0,(iy+#12):assert $==getsize('res 0,(iy+#12)'):bank:res 0,(iy+#12),a:assert $==getsize('res 0,(iy+#12),a'):bank:res 1,(iy+#12),b:assert $==getsize('res 1,(iy+#12),b')" \
+":bank:res 1,(iy+#12),c:assert $==getsize('res 1,(iy+#12),c'):bank:res 1,(iy+#12),d:assert $==getsize('res 1,(iy+#12),d'):bank:res 1,(iy+#12),e:assert $==getsize('res 1,(iy+#12),e')" \
+":bank:res 1,(iy+#12),h:assert $==getsize('res 1,(iy+#12),h'):bank:res 1,(iy+#12),l:assert $==getsize('res 1,(iy+#12),l'):bank:res 1,(iy+#12):assert $==getsize('res 1,(iy+#12)')" \
+":bank:res 1,(iy+#12),a:assert $==getsize('res 1,(iy+#12),a'):bank:res 2,(iy+#12),b:assert $==getsize('res 2,(iy+#12),b'):bank:res 2,(iy+#12),c:assert $==getsize('res 2,(iy+#12),c')" \
+":bank:res 2,(iy+#12),d:assert $==getsize('res 2,(iy+#12),d'):bank:res 2,(iy+#12),e:assert $==getsize('res 2,(iy+#12),e'):bank:res 2,(iy+#12),h:assert $==getsize('res 2,(iy+#12),h')" \
+":bank:res 2,(iy+#12),l:assert $==getsize('res 2,(iy+#12),l'):bank:res 2,(iy+#12):assert $==getsize('res 2,(iy+#12)'):bank:res 2,(iy+#12),a:assert $==getsize('res 2,(iy+#12),a')" \
+":bank:res 3,(iy+#12),b:assert $==getsize('res 3,(iy+#12),b'):bank:res 3,(iy+#12),c:assert $==getsize('res 3,(iy+#12),c'):bank:res 3,(iy+#12),d:assert $==getsize('res 3,(iy+#12),d')" \
+":bank:res 3,(iy+#12),e:assert $==getsize('res 3,(iy+#12),e'):bank:res 3,(iy+#12),h:assert $==getsize('res 3,(iy+#12),h'):bank:res 3,(iy+#12),l:assert $==getsize('res 3,(iy+#12),l')" \
+":bank:res 3,(iy+#12):assert $==getsize('res 3,(iy+#12)'):bank:res 3,(iy+#12),a:assert $==getsize('res 3,(iy+#12),a'):bank:res 4,(iy+#12),b:assert $==getsize('res 4,(iy+#12),b')" \
+":bank:res 4,(iy+#12),c:assert $==getsize('res 4,(iy+#12),c'):bank:res 4,(iy+#12),d:assert $==getsize('res 4,(iy+#12),d'):bank:res 4,(iy+#12),e:assert $==getsize('res 4,(iy+#12),e')" \
+":bank:res 4,(iy+#12),h:assert $==getsize('res 4,(iy+#12),h'):bank:res 4,(iy+#12),l:assert $==getsize('res 4,(iy+#12),l'):bank:res 4,(iy+#12):assert $==getsize('res 4,(iy+#12)')" \
+":bank:res 4,(iy+#12),a:assert $==getsize('res 4,(iy+#12),a'):bank:res 5,(iy+#12),b:assert $==getsize('res 5,(iy+#12),b'):bank:res 5,(iy+#12),c:assert $==getsize('res 5,(iy+#12),c')" \
+":bank:res 5,(iy+#12),d:assert $==getsize('res 5,(iy+#12),d'):bank:res 5,(iy+#12),e:assert $==getsize('res 5,(iy+#12),e'):bank:res 5,(iy+#12),h:assert $==getsize('res 5,(iy+#12),h')" \
+":bank:res 5,(iy+#12),l:assert $==getsize('res 5,(iy+#12),l'):bank:res 5,(iy+#12):assert $==getsize('res 5,(iy+#12)'):bank:res 5,(iy+#12),a:assert $==getsize('res 5,(iy+#12),a')" \
+":bank:res 6,(iy+#12),b:assert $==getsize('res 6,(iy+#12),b'):bank:res 6,(iy+#12),c:assert $==getsize('res 6,(iy+#12),c'):bank:res 6,(iy+#12),d:assert $==getsize('res 6,(iy+#12),d')" \
+":bank:res 6,(iy+#12),e:assert $==getsize('res 6,(iy+#12),e'):bank:res 6,(iy+#12),h:assert $==getsize('res 6,(iy+#12),h'):bank:res 6,(iy+#12),l:assert $==getsize('res 6,(iy+#12),l')" \
+":bank:res 6,(iy+#12):assert $==getsize('res 6,(iy+#12)'):bank:res 6,(iy+#12),a:assert $==getsize('res 6,(iy+#12),a'):bank:res 7,(iy+#12),b:assert $==getsize('res 7,(iy+#12),b')" \
+":bank:res 7,(iy+#12),c:assert $==getsize('res 7,(iy+#12),c'):bank:res 7,(iy+#12),d:assert $==getsize('res 7,(iy+#12),d'):bank:res 7,(iy+#12),e:assert $==getsize('res 7,(iy+#12),e')" \
+":bank:res 7,(iy+#12),h:assert $==getsize('res 7,(iy+#12),h'):bank:res 7,(iy+#12),l:assert $==getsize('res 7,(iy+#12),l'):bank:res 7,(iy+#12):assert $==getsize('res 7,(iy+#12)')" \
+":bank:res 7,(iy+#12),a:assert $==getsize('res 7,(iy+#12),a'):bank:set 0,(iy+#12),b:assert $==getsize('set 0,(iy+#12),b'):bank:set 0,(iy+#12),c:assert $==getsize('set 0,(iy+#12),c')" \
+":bank:set 0,(iy+#12),d:assert $==getsize('set 0,(iy+#12),d'):bank:set 0,(iy+#12),e:assert $==getsize('set 0,(iy+#12),e'):bank:set 0,(iy+#12),h:assert $==getsize('set 0,(iy+#12),h')" \
+":bank:set 0,(iy+#12),l:assert $==getsize('set 0,(iy+#12),l'):bank:set 0,(iy+#12):assert $==getsize('set 0,(iy+#12)'):bank:set 0,(iy+#12),a:assert $==getsize('set 0,(iy+#12),a')" \
+":bank:set 1,(iy+#12),b:assert $==getsize('set 1,(iy+#12),b'):bank:set 1,(iy+#12),c:assert $==getsize('set 1,(iy+#12),c'):bank:set 1,(iy+#12),d:assert $==getsize('set 1,(iy+#12),d')" \
+":bank:set 1,(iy+#12),e:assert $==getsize('set 1,(iy+#12),e'):bank:set 1,(iy+#12),h:assert $==getsize('set 1,(iy+#12),h'):bank:set 1,(iy+#12),l:assert $==getsize('set 1,(iy+#12),l')" \
+":bank:set 1,(iy+#12):assert $==getsize('set 1,(iy+#12)'):bank:set 1,(iy+#12),a:assert $==getsize('set 1,(iy+#12),a'):bank:set 2,(iy+#12),b:assert $==getsize('set 2,(iy+#12),b')" \
+":bank:set 2,(iy+#12),c:assert $==getsize('set 2,(iy+#12),c'):bank:set 2,(iy+#12),d:assert $==getsize('set 2,(iy+#12),d'):bank:set 2,(iy+#12),e:assert $==getsize('set 2,(iy+#12),e')" \
+":bank:set 2,(iy+#12),h:assert $==getsize('set 2,(iy+#12),h'):bank:set 2,(iy+#12),l:assert $==getsize('set 2,(iy+#12),l'):bank:set 2,(iy+#12):assert $==getsize('set 2,(iy+#12)')" \
+":bank:set 2,(iy+#12),a:assert $==getsize('set 2,(iy+#12),a'):bank:set 3,(iy+#12),b:assert $==getsize('set 3,(iy+#12),b'):bank:set 3,(iy+#12),c:assert $==getsize('set 3,(iy+#12),c')" \
+":bank:set 3,(iy+#12),d:assert $==getsize('set 3,(iy+#12),d'):bank:set 3,(iy+#12),e:assert $==getsize('set 3,(iy+#12),e'):bank:set 3,(iy+#12),h:assert $==getsize('set 3,(iy+#12),h')" \
+":bank:set 3,(iy+#12),l:assert $==getsize('set 3,(iy+#12),l'):bank:set 3,(iy+#12):assert $==getsize('set 3,(iy+#12)'):bank:set 3,(iy+#12),a:assert $==getsize('set 3,(iy+#12),a')" \
+":bank:set 4,(iy+#12),b:assert $==getsize('set 4,(iy+#12),b'):bank:set 4,(iy+#12),c:assert $==getsize('set 4,(iy+#12),c'):bank:set 4,(iy+#12),d:assert $==getsize('set 4,(iy+#12),d')" \
+":bank:set 4,(iy+#12),e:assert $==getsize('set 4,(iy+#12),e'):bank:set 4,(iy+#12),h:assert $==getsize('set 4,(iy+#12),h'):bank:set 4,(iy+#12),l:assert $==getsize('set 4,(iy+#12),l')" \
+":bank:set 4,(iy+#12):assert $==getsize('set 4,(iy+#12)'):bank:set 4,(iy+#12),a:assert $==getsize('set 4,(iy+#12),a'):bank:set 5,(iy+#12),b:assert $==getsize('set 5,(iy+#12),b')" \
+":bank:set 5,(iy+#12),c:assert $==getsize('set 5,(iy+#12),c'):bank:set 5,(iy+#12),d:assert $==getsize('set 5,(iy+#12),d'):bank:set 5,(iy+#12),e:assert $==getsize('set 5,(iy+#12),e')" \
+":bank:set 5,(iy+#12),h:assert $==getsize('set 5,(iy+#12),h'):bank:set 5,(iy+#12),l:assert $==getsize('set 5,(iy+#12),l'):bank:set 5,(iy+#12):assert $==getsize('set 5,(iy+#12)')" \
+":bank:set 5,(iy+#12),a:assert $==getsize('set 5,(iy+#12),a'):bank:set 6,(iy+#12),b:assert $==getsize('set 6,(iy+#12),b'):bank:set 6,(iy+#12),c:assert $==getsize('set 6,(iy+#12),c')" \
+":bank:set 6,(iy+#12),d:assert $==getsize('set 6,(iy+#12),d'):bank:set 6,(iy+#12),e:assert $==getsize('set 6,(iy+#12),e'):bank:set 6,(iy+#12),h:assert $==getsize('set 6,(iy+#12),h')" \
+":bank:set 6,(iy+#12),l:assert $==getsize('set 6,(iy+#12),l'):bank:set 6,(iy+#12):assert $==getsize('set 6,(iy+#12)'):bank:set 6,(iy+#12),a:assert $==getsize('set 6,(iy+#12),a')" \
+":bank:set 7,(iy+#12),b:assert $==getsize('set 7,(iy+#12),b'):bank:set 7,(iy+#12),c:assert $==getsize('set 7,(iy+#12),c'):bank:set 7,(iy+#12),d:assert $==getsize('set 7,(iy+#12),d')" \
+":bank:set 7,(iy+#12),e:assert $==getsize('set 7,(iy+#12),e'):bank:set 7,(iy+#12),h:assert $==getsize('set 7,(iy+#12),h'):bank:set 7,(iy+#12),l:assert $==getsize('set 7,(iy+#12),l')" \
+":bank:set 7,(iy+#12):assert $==getsize('set 7,(iy+#12)'):bank:set 7,(iy+#12),a:assert $==getsize('set 7,(iy+#12),a'):bank:set 7,(iy+#12),a:assert $==getsize('set 7,(iy+#12),a')"
+
+#define AUTOTEST_REPEAT3 "y=0: repeat 0: y+=1: rend: assert y==0: y=0: repeat 1: y+=1: rend: assert y==1:"\
+	"y=0: repeat 5: y+=1: rend: assert y==5: y=1: repeat 5,x: assert y==x: y+=1: rend: y=2: repeat 5,x,2,2: assert x==y:"\
+	"y+=2: rend: startingindex 5: y=5: repeat 2,x: assert x==y: y+=1: rend: startingindex 5,5: y=10: repeat 3,x,10: assert x==y: "\
+	"y+=5: rend: startingindex: y=1: repeat 2,x: assert x==y: y+=1: rend: nop "
+
+#define AUTOTEST_SNASET "buildsna:bank 0:nop:"\
+	":snaset Z80_AF,0x1234 :snaset Z80_A,0x11 :snaset Z80_F,0x11 :snaset Z80_BC,0x11 :snaset Z80_B,0x11 :snaset Z80_C,0x11 :snaset Z80_DE,0x11 :snaset Z80_D,0x11"\
+	":snaset Z80_E,0x11 :snaset Z80_HL,0x11 :snaset Z80_H,0x11 :snaset Z80_L,0x11 :snaset Z80_R,0x11 :snaset Z80_I,0x11 :snaset Z80_IFF0,0x11 :snaset Z80_IFF1,0x11"\
+	":snaset Z80_IX,0x11 :snaset Z80_IY,0x11 :snaset Z80_IXL,0x11 :snaset Z80_IXH,0x11 :snaset Z80_IYL,0x11 :snaset Z80_IYH,0x11 :snaset Z80_SP,0x11 :snaset Z80_PC,0x11"\
+	":snaset Z80_IM,0x11 :snaset Z80_AFX,0x11 :snaset Z80_AX,0x11 :snaset Z80_FX,0x11 :snaset Z80_BCX,0x11 :snaset Z80_BX,0x11 :snaset Z80_CX,0x11 :snaset Z80_DEX,0x11"\
+	":snaset Z80_DX,0x11 :snaset Z80_EX,0x11 :snaset Z80_HLX,0x11 :snaset Z80_HX,0x11 :snaset Z80_LX,0x11 :snaset FDD_MOTOR,0x11 :snaset FDD_TRACK,0x11 :snaset PRNT_DATA,0x11"\
+	":snaset PPI_A,0x1 :snaset PPI_B,0x1 :snaset PPI_C,0x1 :snaset PPI_CTL,0x1 :snaset INT_NUM,0x1 :snaset INT_REQ,0x11 :snaset PSG_SEL,0x1 :snaset CRTC_SEL,0x1"\
+	":snaset CRTC_TYPE,0x1 :snaset CRTC_HCC,0x11 :snaset CRTC_CLC,0x11 :snaset CRTC_RLC,0x11 :snaset CRTC_VAC,0x11 :snaset CRTC_VSWC,0x11 :snaset CRTC_HSWC,0x11"\
+	":snaset CRTC_STATE,0x11 :snaset GA_VSC,0x11 :snaset GA_ISC,0x11 :snaset GA_PEN,0x11 :snaset GA_ROMCFG,0x11 :snaset GA_RAMCFG,0x11 :snaset ROM_UP,0x11"\
+	":snaset CRTC_REG,0,0x11 :snaset CRTC_REG,1,0x11 :snaset CRTC_REG,16,0x11 :snaset PSG_REG,0,0x11 :snaset PSG_REG,5,0x11 :snaset PSG_REG,15,0x11: bank : nop"
+
+#define AUTOTEST_INKCONV "assert s2h_ink(0)==0x54 :assert s2h_ink(1)==0x44 :assert s2h_ink(2)==0x55 :assert s2h_ink(3)==0x5C :assert s2h_ink(4)==0x58 :assert s2h_ink(5)==0x5D "\
+":assert s2h_ink(6)==0x4C :assert s2h_ink(7)==0x45 :assert s2h_ink(8)==0x4D :assert s2h_ink(9)==0x56 :assert s2h_ink(10)==0x46 :assert s2h_ink(11)==0x57 "\
+":assert s2h_ink(12)==0x5E :assert s2h_ink(13)==0x40 :assert soft2hard_ink(14)==0x5F :assert soft2hard_ink(15)==0x4E :assert soft2hard_ink(16)==0x47 "\
+":assert soft2hard_ink(17)==0x4F :assert soft2hard_ink(18)==0x52 :assert soft2hard_ink(19)==0x42 :assert soft2hard_ink(20)==0x53 :assert soft2hard_ink(21)==0x5A "\
+":assert soft2hard_ink(22)==0x59 :assert soft2hard_ink(23)==0x5B :assert soft2hard_ink(24)==0x4A :assert soft2hard_ink(25)==0x43 :assert soft2hard_ink(26)==0x4B "\
+":nop :assert h2s_ink(0)==13 :assert h2s_ink(0x40)==13 :assert h2s_ink(1)==13 :assert h2s_ink(2)==19 :assert h2s_ink(3)==25 :assert h2s_ink(4)==1 "\
+":assert h2s_ink(5)==7 :assert h2s_ink(6)==10 :assert h2s_ink(7)==16 :assert h2s_ink(8)==7 :assert h2s_ink(9)==25 :assert h2s_ink(10)==24 "\
+":assert h2s_ink(11)==26 :assert h2s_ink(12)==6 :assert h2s_ink(13)==8 :assert h2s_ink(14)==15 :assert hard2soft_ink(15)==17 :assert hard2soft_ink(16)==1 "\
+":assert hard2soft_ink(17)==19 :assert hard2soft_ink(18)==18 :assert hard2soft_ink(19)==20 :assert hard2soft_ink(20)==0 :assert hard2soft_ink(21)==2 "\
+":assert hard2soft_ink(22)==9 :assert hard2soft_ink(23)==11 :assert hard2soft_ink(24)==4 :assert hard2soft_ink(25)==22 :assert hard2soft_ink(26)==21 "\
+":assert hard2soft_ink(27)==23 :assert hard2soft_ink(28)==3 :assert hard2soft_ink(29)==5 :assert h2s_ink(30)==12 :assert h2s_ink(31)==14 :nop "
+
+#define AUTOTEST_ECPR1 "buildcpr extended : bank 32 : label1 : assert {bank}label1==32 : nop"
+
+#define AUTOTEST_BANKPROX " buildcpr: bank 0: grouik: .tape1: nop: ld hl,{bank}.tape2: bank 1: ld hl,{bank}.tape2: defw {bank}.tape2: .tape2: nop: "
+
+#define AUTOTEST_INTORAM1 " buildsna : bankset 0 :  org #3FF8 : defb 'roudoudou in da house' "
+
+#define AUTOTEST_DEFMOD "nbt=0: module preums: label1 nop: label3: label4: ifdef label1:nbt+=1:endif: ifdef label3:nbt+=1:endif:"\
+"ifdef label4:nbt+=1:endif: ifndef label5:nbt+=1:endif: module deuze: label1 nop: label3: label5: ifdef label1:nbt+=1:endif:"\
+"ifdef label3:nbt+=1:endif: ifndef label4:nbt+=1:endif: ifdef label5:nbt+=1:endif: assert nbt==8:"\
+"module grouik: plop: ifused plop : glop=1 : endif:assert glop==1"
+
+#define AUTOTEST_GTILES    "incbin 'autotest_include.raw',GTILES,4"
+#define AUTOTEST_ITILES    "incbin 'autotest_include.raw',ITILES,4"
+#define AUTOTEST_GTILES_KO "incbin 'autotest_include.raw',GTILES,5"
+#define AUTOTEST_ITILES_KO "incbin 'autotest_include.raw',ITILES,5"
 
 
 struct s_autotest_keyword {
@@ -16062,6 +22013,12 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"jr z,$",0},{"jr 0",0},{"jr jr",1},{"jr (hl)",1},{"jr a",1},
 	{"jr nz,$",0},{"jr 0",0},{"jr jr",1},{"jr (hl)",1},{"jr a",1},
 	{"jp $",0},{"jp 0",0},{"jp jp",1},{"jp (hl)",0},{"jp (ix)",0},{"jp (iy)",0},{"jp (de)",1},{"jp a",1},
+	{"jp (ix+5)",1}, {"jp (ix-5)",1}, {"jp (iy-5)",1}, {"jp (iy+5)",1},
+
+	// new unsupported test cases
+	{"jp (ix+1)",1},{"ld iy,(ix+1)",1},{"ld ix,(iy+1)",1},{"ld ix,(ix+2)",1},{"ld ixh,(ix+1)",1},{"ld sp,(ix+0)",1},
+	{"ld (hl),(ix+0)",1},{"ld (iy+0),(iy+1)",1},{"ld (iy+0),(ix+1)",1},{"ld (ix+0),(iy+1)",1},{"ld (ix+0),(ix+1)",1},
+
 	{"jp c,$",0},{"jp c,0",0},{"jp c,jp",1},   {"jp c,(hl)",1}, {"jp c,(ix)",1}, {"jp c,(iy)",1},{"jp c,(de)",1},{"jp c,a",1},
 	{"jp nc,$",0},{"jp nc,0",0},{"jp nc,jp",1},{"jp nc,(hl)",1},{"jp nc,(ix)",1},{"jp nc,(iy)",1},{"jp nc,(de)",1},{"jp nc,a",1},
 	{"jp z,$",0},{"jp z,0",0},{"jp z,jp",1},   {"jp z,(hl)",1}, {"jp z,(ix)",1}, {"jp z,(iy)",1},{"jp z,(de)",1},{"jp z,a",1},
@@ -16071,9 +22028,9 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"jp p,$",0},{"jp p,0",0},{"jp p,jp",1},   {"jp p,(hl)",1}, {"jp p,(ix)",1}, {"jp p,(iy)",1},{"jp p,(de)",1},{"jp p,a",1},
 	{"jp m,$",0},{"jp m,0",0},{"jp m,jp",1},   {"jp m,(hl)",1}, {"jp m,(ix)",1}, {"jp m,(iy)",1},{"jp m,(de)",1},{"jp m,a",1},
 	{"ret",0},{"ret c",0},{"ret nc",0},{"ret pe",0},{"ret po",0},{"ret m",0},{"ret p",0},{"reti",0},{"ret ret",1},{"ret 5",1},{"ret (hl)",1},{"ret a",1},
-	{"xor a",0},{"xor a,b",1},{"xor",1},{"xor (de)",1},{"xor (hl)",0},{"xor (bc)",1},{"xor (ix+0)",0},{"xor (iy+0)",},{"xor xor",1},
-	{"and a",0},{"and a,b",1},{"xor",1},{"and (de)",1},{"and (hl)",0},{"and (bc)",1},{"and (ix+0)",0},{"and (iy+0)",},{"and xor",1},
-	{"or a",0},{"or a,b",1},{"xor",1},{"or (de)",1},{"or (hl)",0},{"or (bc)",1},{"or (ix+0)",0},{"or (iy+0)",},{"or xor",1},
+	{"xor a",0},{"xor a,b",1},{"xor",1},{"xor (de)",1},{"xor (hl)",0},{"xor (bc)",1},{"xor (ix+0)",0},{"xor (iy+0)",0},{"xor xor",1},
+	{"and a",0},{"and a,b",1},{"xor",1},{"and (de)",1},{"and (hl)",0},{"and (bc)",1},{"and (ix+0)",0},{"and (iy+0)",0},{"and xor",1},
+	{"or a",0},{"or a,b",1},{"xor",1},{"or (de)",1},{"or (hl)",0},{"or (bc)",1},{"or (ix+0)",0},{"or (iy+0)",0},{"or xor",1},
 	{"add",1},{"add a",0},{"add a,a",0},{"add add",1},{"add (hl)",0},{"add (de)",1},{"add xh",0},{"add grouik",1},
 	{"add hl,ix",1},{"add hl,iy",1},{"add ix,iy",1},{"add iy,ix",1},{"add hl,0",1},{"add hl,grouik",1},{"add ix,hl",1},{"add iy,hl",1},
 	{"adc",1},{"adc a",0},{"adc a,a",0},{"adc adc",1},{"adc (hl)",0},{"adc (de)",1},{"adc xh",0},{"adc grouik",1},
@@ -16084,7 +22041,7 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"sbc hl,ix",1},{"sbc hl,iy",1},{"sbc ix,iy",1},{"sbc iy,ix",1},{"sbc hl,0",1},{"sbc hl,grouik",1},{"sbc ix,hl",1},{"sbc iy,hl",1},
 	{"exx",0},{"exx hl",1},{"exx hl,de",1},{"exx af,af'",1},{"exx exx",1},{"exx 5",1},
 	{"ex",1},{"ex af,af'",0},{"ex hl,de",0},{"ex hl,bc",1},{"ex hl,hl",1},{"ex hl,ix",1},
-	{"cp",1},{"cp cp ",1},{"cp 5",0},{"cp c",0},{"cp a,5",0},{"cp a,c",0},{"cp hl",1},{"cp (hl)",0},{"cp a,(hl)",0},{"cp (de)",1},{"cp de",1},
+	{"cp",1},{"cp cp ",1},{"cp $",0},{"cp '$'",0},{"cp 'c'",0},{"cp 5",0},{"cp c",0},{"cp a,5",0},{"cp a,c",0},{"cp hl",1},{"cp (hl)",0},{"cp a,(hl)",0},{"cp (de)",1},{"cp de",1},
 	{"cpi",0},{"cpi (hl)",1},{"cpi a",1},{"cpi 5",1},
 	{"cpd",0},{"cpd (hl)",1},{"cpd a",1},{"cpd 5",1},
 	{"cpir",0},{"cpir (hl)",1},{"cpir a",1},{"cpir 5",1},
@@ -16107,6 +22064,7 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"ccf ccf",1},{"ccf 0",1},{"ccf (hl)",1},
 	{"out",1},{"out out",1},{"out (c)",1},{"out (c),xh",1},{"out 0",1},
 	{"out (c),hl",1},{"out (hl),c",1},{"out (c),(ix+0)",1},{"out (c),a,b",1},
+	{"v nop:v0 nop:x=1:v{x} nop",0},
 	{"outi 0",1},{"outi (hl)",1},
 	{"otir 0",1},{"otir (hl)",1},
 	{"otdr 0",1},{"otdr (hl)",1},
@@ -16125,7 +22083,147 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"repeat 5:nop:rend",0},{"repeat 100000:a=5:rend",1},{"repeat -5:nop:rend",1},{"repeat repeat:nop:rend",1},
 	{"macro bidule:nop:mend:bidule",0},{"macro bidule:nop:macro glop:nop:mend:mend:bidule",1},
 	{"macro bidule:nop",1},{"macro bidule:nop:mend:macro glop:nop:bidule",1},
+
+
+	{"defb getnop(1)",1},{"defb getnop(-1)",1},{"defb getnop(10)",1},{"defb getnop(\"rien\")",1},{"defb getnop()",1},{"defb getnop(\"djNz\")",0},
+	{"assert getnop('nop')==1 : nop",0},
+	{"assert getnop('ldi')==5 : nop",0}, {"assert getnop('ldd')==5 : nop",0},
+	{"assert getnop('dec a')==1 : nop",0}, {"assert getnop('dec b')==1 : nop",0}, {"assert getnop('dec c')==1 : nop",0},
+	{"assert getnop('dec d')==1 : nop",0}, {"assert getnop('dec e')==1 : nop",0}, {"assert getnop('dec h')==1 : nop",0},
+	{"assert getnop('dec l')==1 : nop",0}, {"assert getnop('dec xl')==2 : nop",0}, {"assert getnop('dec yl')==2 : nop",0},
+	{"assert getnop('dec xh')==2 : nop",0}, {"assert getnop('dec yh')==2 : nop",0}, {"assert getnop('dec bc')==2 : nop",0},
+	{"assert getnop('dec de')==2 : nop",0}, {"assert getnop('dec hl')==2 : nop",0}, {"assert getnop('dec sp')==2 : nop",0},
+	{"assert getnop('dec ix')==3 : nop",0}, {"assert getnop('dec iy')==3 : nop",0}, {"assert getnop('dec (hl)')==3 : nop",0},
+	{"assert getnop('dec (ix-50)')==6 : nop",0}, {"assert getnop('dec (iy+1)')==6 : nop",0},
+	{"assert getnop('set 0,a')==2 : nop",0}, {"assert getnop('set 2,a')==2 : nop",0}, {"assert getnop('set 5,a')==2 : nop",0},
+	{"assert getnop('set 0,b')==2 : nop",0}, {"assert getnop('set 0,c')==2 : nop",0}, {"assert getnop('set 0,d')==2 : nop",0},
+	{"assert getnop('set 0,e')==2 : nop",0}, {"assert getnop('set 0,h')==2 : nop",0}, {"assert getnop('set 0,l')==2 : nop",0},
+	{"assert getnop('set 0,(hl)')==4 : nop",0}, {"assert getnop('set 1,(ix+12),d')==7 : nop",0}, {"assert getnop('set 3,(iy-34),h')==7 : nop",0},
+	{"assert getnop('res 0,a')==2 : nop",0}, {"assert getnop('res 2,a')==2 : nop",0}, {"assert getnop('res 5,a')==2 : nop",0},
+	{"assert getnop('res 0,b')==2 : nop",0}, {"assert getnop('res 0,c')==2 : nop",0}, {"assert getnop('res 0,d')==2 : nop",0},
+	{"assert getnop('res 0,e')==2 : nop",0}, {"assert getnop('res 0,h')==2 : nop",0}, {"assert getnop('res 0,l')==2 : nop",0},
+	{"assert getnop('res 0,(hl)')==4 : nop",0}, {"assert getnop('res 1,(ix+12),d')==7 : nop",0}, {"assert getnop('res 3,(iy-34),h')==7 : nop",0},
+	{"assert getnop('bit 0,a')==2 : nop",0}, {"assert getnop('bit 2,a')==2 : nop",0}, {"assert getnop('bit 5,a')==2 : nop",0},
+	{"assert getnop('bit 0,b')==2 : nop",0}, {"assert getnop('bit 0,c')==2 : nop",0}, {"assert getnop('bit 0,d')==2 : nop",0},
+	{"assert getnop('bit 0,e')==2 : nop",0}, {"assert getnop('bit 0,h')==2 : nop",0}, {"assert getnop('bit 0,l')==2 : nop",0},
+	{"assert getnop('bit 0,(hl)')==3 : nop",0}, {"assert getnop('bit 1,(ix+12),d')==6 : nop",0}, {"assert getnop('bit 3,(iy-34),h')==6 : nop",0},
+	{"assert getnop(\"ex af,af' \")==1 : nop",0}, {"assert getnop('ex hl,de ')==1 : nop",0}, {"assert getnop('ex de,hl ')==1 : nop",0},
+	{"assert getnop('ex (sp),hl')==6 : nop",0}, {"assert getnop('ex (sp),ix ')==7 : nop",0}, {"assert getnop('ex (sp),iy ')==7 : nop",0},
+
+	{"assert getnop('exx ')==1 : nop",0}, {"assert getnop('rla ')==1 : nop",0}, {"assert getnop('rlca')==1 : nop",0}, {"assert getnop('rrca')==1 : nop",0},
+	{"assert getnop('rra')==1 : nop",0}, {"assert getnop('ccf')==1 : nop",0}, {"assert getnop('daa')==1 : nop",0}, {"assert getnop('scf')==1 : nop",0},
+	{"assert getnop('cpl')==1 : nop",0}, {"assert getnop('ei')==1 : nop",0}, {"assert getnop('di')==1 : nop",0}, {"assert getnop('im')==2 : nop",0},
+	{"assert getnop('neg')==2 : nop",0}, {"assert getnop('rst')==4 : nop",0}, {"assert getnop('retn')==4 : nop",0}, {"assert getnop('reti')==4 : nop",0},
+	{"assert getnop('rld')==5 : nop",0}, {"assert getnop('rrd')==5 : nop",0}, {"assert getnop('outi')==5 : nop",0}, {"assert getnop('outd')==5 : nop",0},
+	{"assert getnop('ind')==5 : nop",0}, {"assert getnop('ini')==5 : nop",0}, {"assert getnop(\"ret\")==3 : nop",0}, {"assert getnop(\"ret nz\")==2 : nop",0},
+	{"assert getnop(\"djNz\")==3 : nop",0}, {"assert getnop(\"jr\")==3 : nop",0}, {"assert getnop(\"jr nz\")==3 : nop",0}, {"assert getnop(\"jp (ix)\")==2 : nop",0},
+	{"assert getnop(\"jp (iy)\")==2 : nop",0}, {"assert getnop(\"jp (hl)\")==1 : nop",0},
+
+	{"assert getnop(' pop af ' )==3 : nop",0}, {"assert getnop(' pop bc ' )==3 : nop",0}, {"assert getnop(' pop de ' )==3 : nop",0},
+	{"assert getnop(' pop hl ' )==3 : nop",0}, {"assert getnop(' pop ix ' )==4 : nop",0}, {"assert getnop(' pop iy ' )==4 : nop",0},
+	{"assert getnop(' push af ' )==4 : nop",0}, {"assert getnop(' push bc ' )==4 : nop",0}, {"assert getnop(' push de ' )==4 : nop",0},
+	{"assert getnop(' push hl ' )==4 : nop",0}, {"assert getnop(' push ix ' )==5 : nop",0}, {"assert getnop(' push iy ' )==5 : nop",0},
+
+	{"assert getnop('add a,a')==1 : nop",0}, {"assert getnop('add a,b')==1 : nop",0}, {"assert getnop('add a,c')==1 : nop",0},
+	{"assert getnop('add a,d')==1 : nop",0}, {"assert getnop('add a,e')==1 : nop",0}, {"assert getnop('add a,h')==1 : nop",0}, {"assert getnop('add a,l')==1 : nop",0},
+	{"assert getnop('add a')==1 : nop",0}, {"assert getnop('add b')==1 : nop",0}, {"assert getnop('add c')==1 : nop",0},
+	{"assert getnop('add d')==1 : nop",0}, {"assert getnop('add e')==1 : nop",0}, {"assert getnop('add h')==1 : nop",0}, {"assert getnop('add l')==1 : nop",0},
+	{"assert getnop('add a,#12')==2 : nop",0}, {"assert getnop('add #12')==2 : nop",0}, {"assert getnop('add a,(hl)')==2 : nop",0},
+	{"assert getnop('add (hl)')==2 : nop",0}, {"assert getnop('add a,xl')==2 : nop",0}, {"assert getnop('add xl')==2 : nop",0},
+	{"assert getnop('add hl,bc')==3 : nop",0}, {"assert getnop('add hl,de')==3 : nop",0}, {"assert getnop('add hl,hl')==3 : nop",0}, {"assert getnop('add hl,sp')==3 : nop",0},
+	{"assert getnop('add ix,bc')==4 : nop",0}, {"assert getnop('add ix,de')==4 : nop",0}, {"assert getnop('add ix,ix')==4 : nop",0}, {"assert getnop('add ix,sp')==4 : nop",0},
+	{"assert getnop('add a,(ix+12)' )==5 : nop",0}, {"assert getnop('add (iy-102)' )==5 : nop",0},
+
+	{"assert getnop('adc a,a')==1 : nop",0}, {"assert getnop('adc a,b')==1 : nop",0}, {"assert getnop('adc a,c')==1 : nop",0},
+	{"assert getnop('adc a,d')==1 : nop",0}, {"assert getnop('adc a,e')==1 : nop",0}, {"assert getnop('adc a,h')==1 : nop",0}, {"assert getnop('adc a,l')==1 : nop",0},
+	{"assert getnop('adc a')==1 : nop",0}, {"assert getnop('adc b')==1 : nop",0}, {"assert getnop('adc c')==1 : nop",0},
+	{"assert getnop('adc d')==1 : nop",0}, {"assert getnop('adc e')==1 : nop",0}, {"assert getnop('adc h')==1 : nop",0}, {"assert getnop('adc l')==1 : nop",0},
+	{"assert getnop('adc a,#12')==2 : nop",0}, {"assert getnop('adc #12')==2 : nop",0}, {"assert getnop('adc a,(hl)')==2 : nop",0},
+	{"assert getnop('adc (hl)')==2 : nop",0}, {"assert getnop('adc a,xl')==2 : nop",0}, {"assert getnop('adc xl')==2 : nop",0},
+	{"assert getnop('adc hl,bc')==4 : nop",0}, {"assert getnop('adc hl,de')==4 : nop",0}, {"assert getnop('adc hl,hl')==4 : nop",0}, {"assert getnop('adc hl,sp')==4 : nop",0},
+	{"assert getnop('adc a,(ix+12)' )==5 : nop",0}, {"assert getnop('adc (iy-102)' )==5 : nop",0},
+
+	{"assert getnop('sbc a,a')==1 : nop",0}, {"assert getnop('sbc a,b')==1 : nop",0}, {"assert getnop('sbc a,c')==1 : nop",0},
+	{"assert getnop('sbc a,d')==1 : nop",0}, {"assert getnop('sbc a,e')==1 : nop",0}, {"assert getnop('sbc a,h')==1 : nop",0}, {"assert getnop('sbc a,l')==1 : nop",0},
+	{"assert getnop('sbc a')==1 : nop",0}, {"assert getnop('sbc b')==1 : nop",0}, {"assert getnop('sbc c')==1 : nop",0},
+	{"assert getnop('sbc d')==1 : nop",0}, {"assert getnop('sbc e')==1 : nop",0}, {"assert getnop('sbc h')==1 : nop",0}, {"assert getnop('sbc l')==1 : nop",0},
+	{"assert getnop('sbc a,#12')==2 : nop",0}, {"assert getnop('sbc #12')==2 : nop",0}, {"assert getnop('sbc a,(hl)')==2 : nop",0},
+	{"assert getnop('sbc (hl)')==2 : nop",0}, {"assert getnop('sbc a,xl')==2 : nop",0}, {"assert getnop('sbc xl')==2 : nop",0},
+	{"assert getnop('sbc hl,bc')==4 : nop",0}, {"assert getnop('sbc hl,de')==4 : nop",0}, {"assert getnop('sbc hl,hl')==4 : nop",0}, {"assert getnop('sbc hl,sp')==4 : nop",0},
+	{"assert getnop('sbc a,(ix+12)' )==5 : nop",0}, {"assert getnop('sbc (iy-102)' )==5 : nop",0},
+
+	{"assert getnop('sub a,a')==1 : nop",0}, {"assert getnop('sub a,b')==1 : nop",0}, {"assert getnop('sub a,c')==1 : nop",0},
+	{"assert getnop('sub a,d')==1 : nop",0}, {"assert getnop('sub a,e')==1 : nop",0}, {"assert getnop('sub a,h')==1 : nop",0}, {"assert getnop('sub a,l')==1 : nop",0},
+	{"assert getnop('sub a')==1 : nop",0}, {"assert getnop('sub b')==1 : nop",0}, {"assert getnop('sub c')==1 : nop",0},
+	{"assert getnop('sub d')==1 : nop",0}, {"assert getnop('sub e')==1 : nop",0}, {"assert getnop('sub h')==1 : nop",0}, {"assert getnop('sub l')==1 : nop",0},
+	{"assert getnop('sub a,#12')==2 : nop",0}, {"assert getnop('sub #12')==2 : nop",0}, {"assert getnop('sub a,(hl)')==2 : nop",0},
+	{"assert getnop('sub (hl)')==2 : nop",0}, {"assert getnop('sub a,xl')==2 : nop",0}, {"assert getnop('sub xl')==2 : nop",0},
+	{"assert getnop('sub a,(ix+12)' )==5 : nop",0}, {"assert getnop('sub (iy-102)' )==5 : nop",0},
+
+	{"assert getnop('out (c),a' )==4 : nop",0}, {"assert getnop('out (c),b' )==4 : nop",0}, {"assert getnop('out (c),c' )==4 : nop",0},
+	{"assert getnop('out (c),d' )==4 : nop",0}, {"assert getnop('out (c),e' )==4 : nop",0}, {"assert getnop('out (c),h' )==4 : nop",0},
+	{"assert getnop('out (c),l' )==4 : nop",0}, {"assert getnop('out (c),0' )==4 : nop",0}, {"assert getnop('out (12),a')==3 : nop",0},
+	{"assert getnop('out (c),l : out (c),0 : out (12),a')==11 : nop",0},
+	{"assert getnop('in a,(c)' )==4 : nop",0}, {"assert getnop('in b,(c)' )==4 : nop",0}, {"assert getnop('in a,(0)' )==3 : nop",0},
+	{"assert getnop('in a,(0) : in a,(c)' )==7 : nop",0},
+
+	{"assert getnop('or a')==1 : nop",0}, {"assert getnop('or b')==1 : nop",0}, {"assert getnop('or c')==1 : nop",0},
+	{"assert getnop('or d')==1 : nop",0}, {"assert getnop('or e')==1 : nop",0}, {"assert getnop('or h')==1 : nop",0},
+	{"assert getnop('or l')==1 : nop",0}, {"assert getnop('or (hl)')==2 : nop",0}, {"assert getnop('or ixl')==2 : nop",0},
+	{"assert getnop('or ixh')==2 : nop",0}, {"assert getnop('or xl')==2 : nop",0}, {"assert getnop('or xh')==2 : nop",0},
+	{"assert getnop('or lx')==2 : nop",0}, {"assert getnop('or hx')==2 : nop",0}, {"assert getnop('or (ix+d)')==5 : nop",0},
+	{"assert getnop('or (iy-d)')==5 : nop",0}, {"assert getnop('or a,(iy-d)')==5 : nop",0},
+	{"assert getnop('xor a')==1 : nop",0}, {"assert getnop('xor b')==1 : nop",0}, {"assert getnop('xor c')==1 : nop",0},
+	{"assert getnop('xor d')==1 : nop",0}, {"assert getnop('xor e')==1 : nop",0}, {"assert getnop('xor h')==1 : nop",0},
+	{"assert getnop('xor l')==1 : nop",0}, {"assert getnop('xor (hl)')==2 : nop",0}, {"assert getnop('xor ixl')==2 : nop",0},
+	{"assert getnop('xor ixh')==2 : nop",0}, {"assert getnop('xor xl')==2 : nop",0}, {"assert getnop('xor xh')==2 : nop",0},
+	{"assert getnop('xor lx')==2 : nop",0}, {"assert getnop('xor hx')==2 : nop",0}, {"assert getnop('xor (ix+d)')==5 : nop",0},
+	{"assert getnop('xor (iy-d)')==5 : nop",0}, {"assert getnop('xor a,(iy-d)')==5 : nop",0},
+	{"assert getnop('and a')==1 : nop",0}, {"assert getnop('and b')==1 : nop",0}, {"assert getnop('and c')==1 : nop",0},
+	{"assert getnop('and d')==1 : nop",0}, {"assert getnop('and e')==1 : nop",0}, {"assert getnop('and h')==1 : nop",0},
+	{"assert getnop('and l')==1 : nop",0}, {"assert getnop('and (hl)')==2 : nop",0}, {"assert getnop('and ixl')==2 : nop",0},
+	{"assert getnop('and ixh')==2 : nop",0}, {"assert getnop('and xl')==2 : nop",0}, {"assert getnop('and xh')==2 : nop",0},
+	{"assert getnop('and lx')==2 : nop",0}, {"assert getnop('and hx')==2 : nop",0}, {"assert getnop('and (ix+d)')==5 : nop",0},
+	{"assert getnop('and (iy-d)')==5 : nop",0}, {"assert getnop('and a,(iy-d)')==5 : nop",0},
+
+	{"assert getnop('rr a')==2 : nop",0}, {"assert getnop('rr b')==2 : nop",0}, {"assert getnop('rr (hl)')==4 : nop",0},
+	{"assert getnop('rr (ix+5)')==7 : nop",0}, {"assert getnop('rr (iy-111)')==7 : nop",0}, {"assert getnop('rr (ix+2),b')==7 : nop",0},
+	{"assert getnop('rl a')==2 : nop",0}, {"assert getnop('rl b')==2 : nop",0}, {"assert getnop('rl (hl)')==4 : nop",0},
+	{"assert getnop('rl (ix+5)')==7 : nop",0}, {"assert getnop('rl (iy-111)')==7 : nop",0}, {"assert getnop('rl (ix+2),b')==7 : nop",0},
+	{"assert getnop('rrc a')==2 : nop",0}, {"assert getnop('rrc b')==2 : nop",0}, {"assert getnop('rrc (hl)')==4 : nop",0},
+	{"assert getnop('rrc (ix+5)')==7 : nop",0}, {"assert getnop('rrc (iy-111)')==7 : nop",0}, {"assert getnop('rrc (ix+2),b')==7 : nop",0},
+	{"assert getnop('rlc a')==2 : nop",0}, {"assert getnop('rlc b')==2 : nop",0}, {"assert getnop('rlc (hl)')==4 : nop",0},
+	{"assert getnop('rlc (ix+5)')==7 : nop",0}, {"assert getnop('rlc (iy-111)')==7 : nop",0}, {"assert getnop('rlc (ix+2),b')==7 : nop",0},
+	{"assert getnop('sla a')==2 : nop",0}, {"assert getnop('sla b')==2 : nop",0}, {"assert getnop('sla (hl)')==4 : nop",0},
+	{"assert getnop('sla (ix+5)')==7 : nop",0}, {"assert getnop('sla (iy-111)')==7 : nop",0}, {"assert getnop('sla (ix+2),b')==7 : nop",0},
+	{"assert getnop('sra a')==2 : nop",0}, {"assert getnop('sra b')==2 : nop",0}, {"assert getnop('sra (hl)')==4 : nop",0},
+	{"assert getnop('sra (ix+5)')==7 : nop",0}, {"assert getnop('sra (iy-111)')==7 : nop",0}, {"assert getnop('sra (ix+2),b')==7 : nop",0},
+	{"assert getnop('sll a')==2 : nop",0}, {"assert getnop('sll b')==2 : nop",0}, {"assert getnop('sll (hl)')==4 : nop",0},
+	{"assert getnop('sll (ix+5)')==7 : nop",0}, {"assert getnop('sll (iy-111)')==7 : nop",0}, {"assert getnop('sll (ix+2),b')==7 : nop",0},
+	{"assert getnop('srl a')==2 : nop",0}, {"assert getnop('srl b')==2 : nop",0}, {"assert getnop('srl (hl)')==4 : nop",0},
+	{"assert getnop('srl (ix+5)')==7 : nop",0}, {"assert getnop('srl (iy-111)')==7 : nop",0}, {"assert getnop('srl (ix+2),b')==7 : nop",0},
+
+	/* wrong snapshot settings */
+	{"buildsna:bank 0:nop:snaset crtc_type",1},
+	{"buildsna:bank 0:nop:snaset crtc_type,3,2",1},
+	{"buildsna:bank 0:nop:snaset crtc_reg,3",1},
+	{"buildsna:bank 0:nop:snaset crtc_reg,20,0",1},
+	{"buildsna:bank 0:nop:snaset crtc_reg,-1,0",1},
+	{"buildsna:bank 0:nop:snaset psg_reg,3",1},
+	{"buildsna:bank 0:nop:snaset psg_reg,20,0",1},
+	{"buildsna:bank 0:nop:snaset psg_reg,-1,0",1},
+	{"buildsna:bank 0:nop:snaset ga_pal,3",1},
+	{"buildsna:bank 0:nop:snaset ga_pal,20,0",1},
+	{"buildsna:bank 0:nop:snaset ga_pal,-1,0",1},
+	{"glop=rnd(5):nop",0},{"glop=rnd(0):nop",1},{"glop=rnd():nop",1},{"glop=rnd(-1):nop",1},{"pifou=8:glop=rnd(pifou):defb glop",0},
+	/* wrong include usage */
+	{"incbin",1},{"include",1},{"incbin'",1},{"include'",1},{"'include",1}, {"'incbin",1},
+	{"incexo",1},{"inczx7",1},{"incaaa",0}, {"inc",1}, {"incl48",1},{"incl49",1},{"incapu",1},{"inclz4",1},
+	{"incexo'",1},{"inczx7'",1},{"incaaa'",1}, {"inc'",1}, {"incl48'",1},{"incl49'",1},{"incapu'",1},{"inclz4'",1},
+	{"incexb",0}, {"includee",0}, {"incexb'",1}, {"includee'",1}, 
 	/*
+	{"",},{"",},{"",},{"",},{"",},
+	{"",},{"",},{"",},{"",},{"",},{"",},
 	{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},
 	{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},
 	{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},
@@ -16140,7 +22238,7 @@ void MiniDump(unsigned char *opcode, int opcodelen) {
 	int i;
 	printf("%d byte%s to dump\n",opcodelen,opcodelen>1?"s":"");
 	for (i=0;i<opcodelen;i++) {
-		printf("%02X \n",opcode[i]);
+		printf("%02X ",opcode[i]);
 	}
 	printf("\n");
 }
@@ -16150,70 +22248,19 @@ void RasmAutotest(void)
 	#undef FUNC
 	#define FUNC "RasmAutotest"
 
+	struct s_parameter param;
 	struct s_rasm_info *debug;
 	unsigned char *opcode=NULL;
-	int opcodelen,ret,filelen;
-	int cpt=0,chk,i,idx;
-	char tmpstr1[256],tmpstr2[256],*tmpstr3,**tmpsplit;
+	int opcodelen,ret;
+	int cpt=0,chk,i,j,k,idx,sko=0;
+	char *tmpstr3,**tmpsplit;
+	unsigned char RealDump[65]={00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x80,0x00,0x00,0x00,0x80,0x80,0x00,0x00,0x80,
+		0x2d,0x86,0x9e,0xda,0x0f,0x49,0x82,0x00,0x00,0x00,0x80,0x7f,0x20,0x84,0xdb,0x7f,0x80,0xcd,0x85,0xdb,0x7f,
+		0x80,0x20,0x84,0xdb,0xff,0x80,0xcd,0x85,0xdb,0xff,0x80,0xc8,0xdd,0xd6,0x7c,0x7d,0x53,0x51,0x06,0x1e,0x81,
+		0xBE,0xF6,0xCC,0x12,0x73};
 
 #ifdef RDD
 	printf("\n%d bytes\n",_static_library_memory_used);
-#endif
-#if 0
-	/* Autotest CORE */
-	#ifdef OS_WIN
-	printf(".");fflush(stdout);
-	strcpy(tmpstr1,".\\archives\\job.asm");
-	strcpy(tmpstr2,".\\archives\\job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath0) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	strcpy(tmpstr1,".\\archives\\..\\job.asm");
-	strcpy(tmpstr2,".\\job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath1) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	strcpy(tmpstr1,".\\archives\\gruik\\..\\..\\job.asm");
-	strcpy(tmpstr2,".\\job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath2) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	strcpy(tmpstr1,".\\archives\\..\\gruik\\..\\job.asm");
-	strcpy(tmpstr2,".\\job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath3) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	strcpy(tmpstr1,"..\\archives\\job.asm");
-	strcpy(tmpstr2,"..\\archives\\job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath4) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}	
-	strcpy(tmpstr1,".\\src\\..\\..\\src\\job.asm");
-	strcpy(tmpstr2,"..\\src\\job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath5) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	strcpy(tmpstr1,"src\\..\\..\\src\\job.asm");
-	strcpy(tmpstr2,"..\\src\\job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath6) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	cpt++;
-	#else
-	printf(".");fflush(stdout);
-	strcpy(tmpstr1,"./archives/job.asm");
-	strcpy(tmpstr2,"./archives/job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath0) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	strcpy(tmpstr1,"./archives/../job.asm");
-	strcpy(tmpstr2,"./job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath1) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	strcpy(tmpstr1,"./archives/gruik/../../job.asm");
-	strcpy(tmpstr2,"./job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath2) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	strcpy(tmpstr1,"./archives/../gruik/../job.asm");
-	strcpy(tmpstr2,"./job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath3) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	strcpy(tmpstr1,"../archives/job.asm");
-	strcpy(tmpstr2,"../archives/job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath4) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}	
-	strcpy(tmpstr1,"./src/../../src/job.asm");
-	strcpy(tmpstr2,"../src/job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath5) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	strcpy(tmpstr1,"src/../../../src/job.asm");
-	strcpy(tmpstr2,"../../src/job.asm");
-	SimplifyPath(tmpstr1);if (strcmp(tmpstr1,tmpstr2)) {printf("Autotest %03d ERROR (Core:SimplifyPath6) %s!=%s\n",cpt,tmpstr1,tmpstr2);exit(-1);}
-	cpt++;
-	printf(".");fflush(stdout);
-	if (strcmp(GetPath("/home/roudoudou/"),"/home/roudoudou/")) {printf("Autotest %03d ERROR (Core:GetPath0) [%s]\n",cpt,GetPath("/home/roudoudou/"));exit(-1);}
-	if (strcmp(GetPath("/home/roudoudou"),"/home/")) {printf("Autotest %03d ERROR (Core:GetPath1) [%s]\n",cpt,GetPath("/home/roudoudou"));exit(-1);}
-	cpt++;
-	#endif
 #endif
 	
 	/* Autotest preprocessing */
@@ -16264,9 +22311,24 @@ printf("testing Maxam operator conversion OK\n");
 printf("testing modulo operator conversion OK\n");
 	
 	ret=RasmAssemble(AUTOTEST_NOINCLUDE,strlen(AUTOTEST_NOINCLUDE),&opcode,&opcodelen);
-	if (!ret) {} else {printf("Autotest %03d ERROR (include missing file)\n",cpt);exit(-1);}
+	if (!ret) {} else {printf("Autotest %03d ERROR (include missing file)\n",cpt);exit(-1);} // file not found MUST trigger an error! => NOT ANYMORE
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
-printf("include on a missing file OK\n");
+printf("testing include on a missing file OK\n");
+	
+	ret=RasmAssemble(AUTOTEST_BADINCLUDE,strlen(AUTOTEST_BADINCLUDE),&opcode,&opcodelen);
+	if (ret) {} else {printf("Autotest %03d ERROR (bad include test)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing include filename on multiple lines OK\n");
+	
+	ret=RasmAssemble(AUTOTEST_BADINCLUDE02,strlen(AUTOTEST_BADINCLUDE02),&opcode,&opcodelen);
+	if (ret) {} else {printf("Autotest %03d ERROR (bad include test 2)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing wrong READ usage OK\n");
+	
+	ret=RasmAssemble(AUTOTEST_BADINCBIN,strlen(AUTOTEST_BADINCBIN),&opcode,&opcodelen);
+	if (ret) {} else {printf("Autotest %03d ERROR (bad incbin test)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing incbin filename on multiple lines OK\n");
 	
 	ret=RasmAssemble(AUTOTEST_FORMAT,strlen(AUTOTEST_FORMAT),&opcode,&opcodelen);
 	if (!ret) {} else {printf("Autotest %03d ERROR (digit formats)\n",cpt);exit(-1);}
@@ -16278,6 +22340,95 @@ printf("testing digit formats OK\n");
 	if (!ret) {} else {printf("Autotest %03d ERROR (all opcodes)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing all opcodes OK\n");
+
+	/********************************************
+	           Autotest assembly options
+	*********************************************/
+
+	#define AUTOTEST_PARAM_AMPER "ld a,&10 : assert &10==#10"
+	memset(&param,0,sizeof(struct s_parameter));
+	param.noampersand=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_PARAM_AMPER,strlen(AUTOTEST_PARAM_AMPER),&opcode,&opcodelen,&debug,&param);
+	if (!ret) {} else {printf("Autotest %03d ERROR (testing compilation option -amper)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing command line parameter -amper OK\n");
+
+	#define AUTOTEST_PARAM_MAXAM "aaa=10+5*3 : assert aaa==45 : nop"
+	memset(&param,0,sizeof(struct s_parameter));
+	param.rough=0.0; // 0.5 as default
+	ret=RasmAssembleInfoParam(AUTOTEST_PARAM_MAXAM,strlen(AUTOTEST_PARAM_MAXAM),&opcode,&opcodelen,&debug,&param);
+	if (!ret) {} else {printf("Autotest %03d ERROR (testing compilation option -m)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing command line parameter -m OK\n");
+
+	#define AUTOTEST_PARAM_DAMS ".grouik : djnz grouik"
+	memset(&param,0,sizeof(struct s_parameter));
+	param.dams=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_PARAM_DAMS,strlen(AUTOTEST_PARAM_DAMS),&opcode,&opcodelen,&debug,&param);
+	if (!ret) {} else {printf("Autotest %03d ERROR (testing compilation option -dams)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing command line parameter -dams OK\n");
+
+	#define AUTOTEST_PARAM_PASMO "org #1234 : defw $,$"
+	memset(&param,0,sizeof(struct s_parameter));
+	param.pasmo=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_PARAM_PASMO,strlen(AUTOTEST_PARAM_PASMO),&opcode,&opcodelen,&debug,&param);
+	if (!ret && opcodelen==4 && opcode[0]==opcode[2] && opcode[1]==opcode[3]) {} else {printf("Autotest %03d ERROR (testing compilation option -pasmo)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing command line parameter -pasmo OK\n");
+
+	#define AUTOTEST_PARAM_VOID "macro grouik : nop : mend : grouik"
+	memset(&param,0,sizeof(struct s_parameter));
+	param.macrovoid=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_PARAM_VOID,strlen(AUTOTEST_PARAM_VOID),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (testing compilation option -void)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing command line parameter -void OK\n");
+
+	#define AUTOTEST_PARAM_VOID2 "macro grouik : nop : mend : grouik (void)"
+	memset(&param,0,sizeof(struct s_parameter));
+	param.macrovoid=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_PARAM_VOID2,strlen(AUTOTEST_PARAM_VOID2),&opcode,&opcodelen,&debug,&param);
+	if (!ret) {} else {printf("Autotest %03d ERROR (testing compilation option (bis) -void)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing command line parameter (bis) -void OK\n");
+
+	#define AUTOTEST_PARAM_TWE "ld a,300"
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_PARAM_TWE,strlen(AUTOTEST_PARAM_TWE),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (testing compilation option -twe)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing command line parameter -twe OK\n");
+
+/*
+	#define AUTOTEST_PARAM_ ""
+	memset(&param,0,sizeof(struct s_parameter));
+	param.dams=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_PARAM_,strlen(AUTOTEST_PARAM_),&opcode,&opcodelen,&debug,&param);
+	if (!ret) {} else {printf("Autotest %03d ERROR (testing compilation option -)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing command line parameter - OK\n");
+
+	#define AUTOTEST_PARAM_ ""
+	memset(&param,0,sizeof(struct s_parameter));
+	param.dams=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_PARAM_,strlen(AUTOTEST_PARAM_),&opcode,&opcodelen,&debug,&param);
+	if (!ret) {} else {printf("Autotest %03d ERROR (testing compilation option -)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing command line parameter - OK\n");
+*/
+
+
 
 	/* Autotest single instruction writes that must failed */
 	tmpstr3=TxtStrDup(AUTOTEST_INSTRMUSTFAILED);
@@ -16299,14 +22450,30 @@ printf("testing various opcode tests OK\n");
 		if (!ret && !autotest_keyword[idx].result) {
 		} else if (ret && autotest_keyword[idx].result) {
 		} else {
-			printf("Autotest %03d ERROR ([%s] test) is %s instead of %s\n",cpt,autotest_keyword[idx].keywordtest,!ret?"ok":"ko",ret?"ok":"ko");
+			printf("Autotest %03d ERROR ([%s] test) has %d error%s instead of %serror expected\n",cpt,autotest_keyword[idx].keywordtest,ret,ret>1?"s":"",autotest_keyword[idx].result?"":"no ");
+			sko++;
 		}
 		if (opcode) MemFree(opcode);opcode=NULL;
 		idx++;
 	}
 	cpt++;
 printf("testing moar various opcode tests OK\n");
-	
+
+	{
+		unsigned char RAMEMU[65536*2];
+
+		for (i=0;i<65536*2;i++) RAMEMU[i]=0xDD;
+		ret=RasmAssembleInfoIntoRAM(AUTOTEST_INTORAM1,strlen(AUTOTEST_INTORAM1),&debug, RAMEMU,65536*2);
+		if (ret || RAMEMU[0]!=0xDD || RAMEMU[0x8000]!=0xDD || RAMEMU[0xC000]!=0xDD || memcmp(&RAMEMU[0x3FF8],"roudoudou",9)) {printf("Autotest %03d ERROR (Assemble into emulator RAM)\n",cpt);
+			RAMEMU[0x4020]=0;
+			printf("ret=%d R[0]=%02X R[0xC000]=%02X str=[%s]\n ",ret,RAMEMU[0],RAMEMU[0xC000],&RAMEMU[0x3FF8]);
+			
+			exit(-1);}
+		if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+		RasmFreeInfoStruct(debug);
+printf("testing assembling into external RAM OK\n");
+	}
+
 	ret=RasmAssemble(AUTOTEST_ORG,strlen(AUTOTEST_ORG),&opcode,&opcodelen);
 	if (!ret && opcodelen==4 && opcode[1]==0x80 && opcode[2]==2 && opcode[3]==0x10) {} else {printf("Autotest %03d ERROR (ORG relocation)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
@@ -16357,6 +22524,16 @@ printf("testing opcode overriding LIMIT OK\n");
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing opcode with variable overriding LIMIT OK\n");
 	
+	ret=RasmAssemble(AUTOTEST_ALIGN,strlen(AUTOTEST_ALIGN),&opcode,&opcodelen);
+	if (!ret && opcodelen==257 && opcode[64]==64 && opcode[128]==128 && opcode[256]==255) {} else {printf("Autotest %03d ERROR (ALIGN directive)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing ALIGN OK\n");
+	
+	ret=RasmAssemble(AUTOTEST_CONFINE,strlen(AUTOTEST_CONFINE),&opcode,&opcodelen);
+	if (!ret && opcodelen==501 && opcode[256]==0xAA && opcode[500]==0xBB) {} else {printf("Autotest %03d ERROR (HICONFINE directive)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing CONFINE OK\n");
+	
 	ret=RasmAssemble(AUTOTEST_DELAYED_RUN,strlen(AUTOTEST_DELAYED_RUN),&opcode,&opcodelen);
 	if (!ret) {} else {printf("Autotest %03d ERROR (delayed RUN set)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
@@ -16366,12 +22543,37 @@ printf("testing delayed RUN OK\n");
 	if (!ret && opcodelen==23 && opcode[1]==21 && opcode[9]==23) {} else {printf("Autotest %03d ERROR (LZ segment relocation)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing LZ segment relocation OK\n");
+
+#ifndef NOAPULTRA
+#ifndef NO_3RD_PARTIES
+	ret=RasmAssemble(AUTOTEST_MULTILZ,strlen(AUTOTEST_MULTILZ),&opcode,&opcodelen);
+	if (!ret && opcodelen==43 && opcode[3]==6 && opcode[11]==0x1F) {} else {printf("Autotest %03d ERROR (multi-LZ segment relocation with multiple BANK)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing multi-LZ segment relocation with multiple banks OK\n");
+#else
+printf("*** multi-LZ segment test disabled as there is no APUltra support for this version ***\n");
+#endif
+#else
+printf("*** multi-LZ segment test disabled as there is no APUltra support for this version ***\n");
+#endif
+	ret=RasmAssemble(AUTOTEST_MULTILZORG,strlen(AUTOTEST_MULTILZORG),&opcode,&opcodelen);
+	if (!ret && opcodelen==38 && opcode[0]==6 && opcode[2]==0x10
+			&& opcode[4]==0x1A && opcode[0x23]==0xFF && opcode[0x24]==0xFB) {} else {printf("Autotest %03d ERROR (LZ segments mixed with ORG)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZ segment + ORG relocation OK\n");
+
+
+	ret=RasmAssemble(AUTOTEST_LZDEFERED,strlen(AUTOTEST_LZDEFERED),&opcode,&opcodelen);
+	if (!ret && opcodelen==7 && opcode[6]==6) {} else {printf("Autotest %03d ERROR (LZ segment + defered $)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZ segment + defered $ OK\n");
 	
+#ifndef NO_3RD_PARTIES
 	ret=RasmAssemble(AUTOTEST_LZ4,strlen(AUTOTEST_LZ4),&opcode,&opcodelen);
 	if (!ret && opcodelen==49 && opcode[0]==0x15 && opcode[4]==0x44 && opcode[0xB]==0xF0) {} else {printf("Autotest %03d ERROR (LZ4 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing LZ4 segment OK\n");
-	
+#endif	
 	ret=RasmAssemble(AUTOTEST_DEFS,strlen(AUTOTEST_DEFS),&opcode,&opcodelen);
 	if (!ret && opcodelen==256 && opcode[0]==0) {} else {printf("Autotest %03d ERROR (defs)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
@@ -16482,6 +22684,26 @@ printf("testing NOT operator OK\n");
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing macro usage OK\n");
 	
+	ret=RasmAssemble(AUTOTEST_MACRO_CONF01,strlen(AUTOTEST_MACRO_CONF01),&opcode,&opcodelen);
+	if (ret) {} else {printf("Autotest %03d ERROR (macro name conflict with another macro)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing macro usage 2 OK\n");
+	
+	ret=RasmAssemble(AUTOTEST_MACRO_CONF02,strlen(AUTOTEST_MACRO_CONF02),&opcode,&opcodelen);
+	if (ret) {} else {printf("Autotest %03d ERROR (macro name conflict with a variable)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing macro usage 3 OK\n");
+	
+	ret=RasmAssemble(AUTOTEST_MACRO_CONF03,strlen(AUTOTEST_MACRO_CONF03),&opcode,&opcodelen);
+	if (ret) {} else {printf("Autotest %03d ERROR (macro name conflict with an alias)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing macro usage 4 OK\n");
+	
+	ret=RasmAssemble(AUTOTEST_MACRO_CONF04,strlen(AUTOTEST_MACRO_CONF04),&opcode,&opcodelen);
+	if (ret) {} else {printf("Autotest %03d ERROR (macro name conflict with a label)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing macro usage 5 OK\n");
+	
 	ret=RasmAssemble(AUTOTEST_ASSERT,strlen(AUTOTEST_ASSERT),&opcode,&opcodelen);
 	if (!ret) {} else {printf("Autotest %03d ERROR (assert usage)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
@@ -16517,15 +22739,46 @@ printf("testing variables in labels OK\n");
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing variables in aliases OK\n");
 
+	ret=RasmAssemble(AUTOTEST_EQUDOLLAR,strlen(AUTOTEST_EQUDOLLAR),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (delayed EQU + $) r=%d l=%d\n",cpt,ret,opcodelen);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing delayed EQU + $ OK\n");
+
 	ret=RasmAssemble(AUTOTEST_DELAYNUM,strlen(AUTOTEST_DELAYNUM),&opcode,&opcodelen);
 	if (!ret && opcodelen==9 && opcode[0]==6 && opcode[2]==7 && opcode[4]==8) {} else {printf("Autotest %03d ERROR (delayed expr labels) r=%d l=%d\n",cpt,ret,opcodelen);MiniDump(opcode,opcodelen);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing delayed expression labels OK\n");
 
+	ret=RasmAssemble(AUTOTEST_MODULE01,strlen(AUTOTEST_MODULE01),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (modules)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing modules + proximity OK\n");
+
+	ret=RasmAssemble(AUTOTEST_MODULE02,strlen(AUTOTEST_MODULE02),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (modules 2)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing modules + proximity (bis) OK\n");
+
+	ret=RasmAssemble(AUTOTEST_MODULE03,strlen(AUTOTEST_MODULE03),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (modules 3)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing modules + endmodule OK\n");
+
+	ret=RasmAssemble(AUTOTEST_DEFMOD,strlen(AUTOTEST_DEFMOD),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (modules & IFDEF)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing modules + IFDEF OK\n");
+
 	ret=RasmAssemble(AUTOTEST_PROXIM,strlen(AUTOTEST_PROXIM),&opcode,&opcodelen);
 	if (!ret && opcode[1]==3) {} else {printf("Autotest %03d ERROR (proximity labels)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing proximity labels OK\n");
+
+	ret=RasmAssembleInfo(AUTOTEST_BANKPROX,strlen(AUTOTEST_BANKPROX),&opcode,&opcodelen,&debug);
+	if (!ret) {} else {printf("Autotest %03d ERROR (BANK tag + proximity labels)\n",cpt);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing BANK tag + proximity labels OK\n");
 
 	ret=RasmAssemble(AUTOTEST_STRUCT,strlen(AUTOTEST_STRUCT),&opcode,&opcodelen);
 	if (!ret) {} else {printf("Autotest %03d ERROR (structs)\n",cpt);exit(-1);}
@@ -16541,6 +22794,11 @@ printf("testing SIZEOF struct fields OK\n");
 	if (!ret) {} else {printf("Autotest %03d ERROR (extended repeat)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing REPEAT cases OK\n");
+
+	ret=RasmAssemble(AUTOTEST_REPEAT3,strlen(AUTOTEST_REPEAT3),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (repeat options + startingindex)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing REPEAT+STARTINGINDEX cases OK\n");
 
 	ret=RasmAssemble(AUTOTEST_REPEATKO,strlen(AUTOTEST_REPEATKO),&opcode,&opcodelen);
 	if (ret) {} else {printf("Autotest %03d ERROR (repeat without end must return error)\n",cpt);exit(-1);}
@@ -16559,6 +22817,11 @@ printf("testing ticker OK\n");
 	if (!ret) {} else {printf("Autotest %03d ERROR (ifdef ifused)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing IFDEF / IFUSED OK\n");
+
+	ret=RasmAssemble(AUTOTEST_SAVEINVALID0,strlen(AUTOTEST_SAVEINVALID0),&opcode,&opcodelen);
+	if (!ret && FileGetSize("rasmoutput.bin")==256) { } else {printf("Autotest %03d ERROR (invalid file size on DISK with SAVE => mostly a pure windows compilation error)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing correct file size on DISK with SAVE OK\n");
 
 	ret=RasmAssemble(AUTOTEST_SAVEINVALID1,strlen(AUTOTEST_SAVEINVALID1),&opcode,&opcodelen);
 	if (ret) {} else {printf("Autotest %03d ERROR (invalid size for SAVE)\n",cpt);exit(-1);}
@@ -16600,6 +22863,11 @@ printf("testing global label back as reference when leaving macro and loops OK\n
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing far access of a proximity label refering to local OK\n");
 
+	ret=RasmAssemble(AUTOTEST_PUSHPOPGLOBAL,strlen(AUTOTEST_PUSHPOPGLOBAL),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (get back global for proximity inside macro+loops)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing push/pop global label for proximity inside macro+loops OK\n");
+
 	ret=RasmAssemble(AUTOTEST_NEGATIVE,strlen(AUTOTEST_NEGATIVE),&opcode,&opcodelen);
 	if (!ret) {} else {printf("Autotest %03d ERROR (formula case 0)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
@@ -16613,8 +22881,18 @@ printf("testing operator assignment OK\n");
 	ret=RasmAssemble(AUTOTEST_OPERATORASSIGN2,strlen(AUTOTEST_OPERATORASSIGN2),&opcode,&opcodelen);
 	if (!ret && opcodelen==1) {} else {printf("Autotest %03d ERROR (operator assignment + repeat)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
-printf("testing operator assignment OK\n");
+printf("testing operator assignment + repeat OK\n");
 	
+	ret=RasmAssemble(AUTOTEST_OPERATORASSIGN3,strlen(AUTOTEST_OPERATORASSIGN3),&opcode,&opcodelen);
+	if (!ret && opcodelen==1) {} else {printf("Autotest %03d ERROR (operator assignment + repeat)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing operator assignment + repeat + spacing OK\n");
+	
+	ret=RasmAssemble(AUTOTEST_REAL,strlen(AUTOTEST_REAL),&opcode,&opcodelen);
+	if (!ret && opcodelen==sizeof(RealDump) && memcmp(RealDump,opcode,sizeof(RealDump))==0) {} else {printf("Autotest %03d ERROR (DEFR conversion to REAL)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing Amstrad REAL OK\n");
+
 	ret=RasmAssemble(AUTOTEST_FORMULA1,strlen(AUTOTEST_FORMULA1),&opcode,&opcodelen);
 	if (!ret) {} else {printf("Autotest %03d ERROR (formula case 1)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
@@ -16635,6 +22913,27 @@ printf("testing code skip OK\n");
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing formula functions + multiple parenthesis OK\n");
 
+	ret=RasmAssembleInfo(AUTOTEST_GETSIZE,strlen(AUTOTEST_GETSIZE),&opcode,&opcodelen,&debug);
+	if (!ret) {} else {printf("Autotest %03d ERROR (math function GETSIZE)\n",cpt);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing GETSIZE integrity on ALL opcodes OK\n");
+
+	ret=RasmAssemble(AUTOTEST_GETNOP_LD,strlen(AUTOTEST_GETNOP_LD),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (math function GETNOP with multiple LD syncronised with TICKER)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing synchronisation between TICKER and GETNOP on multiple LD OK\n");
+
+	ret=RasmAssemble(AUTOTEST_TICKERNOP_FULL,strlen(AUTOTEST_TICKERNOP_FULL),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (math function GETNOP with almost full instruction set)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing synchronisation between TICKER and GETNOP on almost full instruction set OK\n");
+
+	ret=RasmAssemble(AUTOTEST_TICKER_FULL,strlen(AUTOTEST_TICKER_FULL),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (math function GETTICK with almost full instruction set)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing synchronisation between TICKER and GETTICK on almost full instruction set OK\n");
+
 	ret=RasmAssemble(AUTOTEST_SHIFTMAX,strlen(AUTOTEST_SHIFTMAX),&opcode,&opcodelen);
 	if (!ret) {} else {printf("Autotest %03d ERROR (shifting more than 31 must give zero result)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
@@ -16649,6 +22948,11 @@ printf("testing formula function for Plus color management OK\n");
 	if (!ret) {} else {printf("Autotest %03d ERROR (formula func FRAC)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing formula FRAC function OK\n");
+	
+	ret=RasmAssemble(AUTOTEST_RND,strlen(AUTOTEST_RND),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (formula func RND)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing formula RND function OK\n");
 	
 	ret=RasmAssemble(AUTOTEST_UNDERVAR,strlen(AUTOTEST_UNDERVAR),&opcode,&opcodelen);
 	if (!ret && opcodelen==4) {} else {printf("Autotest %03d ERROR (var starting with _)\n",cpt);exit(-1);}
@@ -16670,10 +22974,81 @@ printf("testing enhanced LD OK\n");
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing enhanced LD variante OK\n");
 	
+	ret=RasmAssemble(AUTOTEST_ENHANCED_LD3,strlen(AUTOTEST_ENHANCED_LD3),&opcode,&opcodelen);
+	if (!ret && memcmp(opcode,opcode+opcodelen/2,opcodelen/2)==0) {} else {printf("Autotest %03d ERROR (enhanced LD 3)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing enhanced LD variante OK\n");
+	
 	ret=RasmAssemble(AUTOTEST_ENHANCED_PUSHPOP,strlen(AUTOTEST_ENHANCED_PUSHPOP),&opcode,&opcodelen);
 	if (!ret && memcmp(opcode,opcode+opcodelen/2,opcodelen/2)==0) {} else {printf("Autotest %03d ERROR (enhanced PUSH/POP/NOP)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing enhanced PUSH/POP OK\n");
+
+	ret=RasmAssembleInfo(AUTOTEST_INKCONV,strlen(AUTOTEST_INKCONV),&opcode,&opcodelen,&debug);
+	if (!ret && opcodelen==2) {} else {printf("Autotest %03d ERROR (gate array color conversion)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing gate array color conversion OK\n");
+
+	FileRemoveIfExists("autotest_include.raw");
+	opcode=MemMalloc(256);
+	for (i=0;i<256;i++) opcode[i]=i;
+	FileWriteBinary("autotest_include.raw",(char *)opcode,256);
+	FileWriteBinaryClose("autotest_include.raw");
+	MemFree(opcode);opcode=NULL;
+
+	ret=RasmAssembleInfo(AUTOTEST_GTILES,strlen(AUTOTEST_GTILES),&opcode,&opcodelen,&debug);
+	if (!ret && opcodelen==256 && opcode[0]==0 && opcode[3]==3 && opcode[4]==4 && opcode[8]==12 && opcode[12]==8 && opcode[16]==24 && opcode[20]==28 && opcode[24]==20 && opcode[28]==16) {} // minimal check
+	else {printf("Autotest %03d ERROR (INCBIN GTILES import)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing gray coding tile import OK\n");
+
+	ret=RasmAssembleInfo(AUTOTEST_ITILES,strlen(AUTOTEST_ITILES),&opcode,&opcodelen,&debug);
+	if (!ret && opcodelen==256 && opcode[0]==0 && opcode[3]==3 && opcode[4]==7 && opcode[8]==12 && opcode[12]==11 && opcode[16]==24 && opcode[20]==31 && opcode[24]==20 && opcode[28]==19) {} // minimal check
+	else {printf("Autotest %03d ERROR (INCBIN ITILES import)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing zigzag gray coding tile import OK\n");
+
+	ret=RasmAssembleInfo(AUTOTEST_GTILES_KO,strlen(AUTOTEST_GTILES_KO),&opcode,&opcodelen,&debug);
+	if (ret) {} // must be error
+	else {printf("Autotest %03d ERROR (INCBIN GTILES import check)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing gray coding tile size check error OK\n");
+
+	ret=RasmAssembleInfo(AUTOTEST_ITILES_KO,strlen(AUTOTEST_ITILES_KO),&opcode,&opcodelen,&debug);
+	if (ret) {} // must be error
+	else {printf("Autotest %03d ERROR (INCBIN ITILES import check)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing zigzag gray coding tile size check error OK\n");
+
+
+/************************** segfault test **********************/
+	ret=RasmAssembleInfo(AUTOTEST_ACCENT,strlen(AUTOTEST_ACCENT),&opcode,&opcodelen,&debug);
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing segfault bugfix for accent in quote OK\n");
+	ret=RasmAssembleInfo(AUTOTEST_QUOTELAST,strlen(AUTOTEST_QUOTELAST),&opcode,&opcodelen,&debug);
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing segfault bugfix for opened quote with SAVE as last directive used OK\n");
+	ret=RasmAssembleInfo(AUTOTEST_DELAYED_EQU,strlen(AUTOTEST_DELAYED_EQU),&opcode,&opcodelen,&debug);
+	if (!ret && opcodelen>2 && opcode[2]==1) {} else {printf("Autotest %03d ERROR (DELAYED EQU regression test)\n",cpt);MiniDump(opcode,opcodelen);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing delayed alias regression bugfix OK\n");
+
+/*************************************************************/
+
+
+	ret=RasmAssembleInfo(AUTOTEST_SNASET,strlen(AUTOTEST_SNASET),&opcode,&opcodelen,&debug);
+	if (!ret) {} else {printf("Autotest %03d ERROR (snapshot settings)\n",cpt);MiniDump(opcode,opcodelen);for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	RasmFreeInfoStruct(debug);
+printf("testing snapshot settings OK\n");
 
 	ret=RasmAssemble(AUTOTEST_PAGELABELGEN,strlen(AUTOTEST_PAGELABELGEN),&opcode,&opcodelen);
 	if (!ret) {} else {printf("Autotest %03d ERROR (pagelabelgen)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
@@ -16690,8 +23065,8 @@ printf("testing page tag with generated label name OK\n");
 		for (i=0;i<debug->nbsymbol;i++) {
 			printf("%d -> %s=%d\n",i,debug->symbol[i].name,debug->symbol[i].v);
 		}
-		RasmFreeInfoStruct(debug);
 */
+		RasmFreeInfoStruct(debug);
 	} else {printf("Autotest %03d ERROR (embedded error struct) err=%d nberr=%d (2) nbsymb=%d (3)\n",cpt,ret,debug->nberror,debug->nbsymbol);MiniDump(opcode,opcodelen);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing internal error struct OK\n");
@@ -16710,20 +23085,390 @@ printf("testing internal label struct OK\n");
 
 #ifdef RDD
 	printf("\n%d bytes\n",_static_library_memory_used);
-
+	{
+		int filelen;
 	tmpstr3=FileReadContent("./test/PlayerAky.asm",&filelen);
 	printf(".");fflush(stdout);ret=RasmAssembleInfo(tmpstr3,filelen,&opcode,&opcodelen,&debug);
 	if (!ret) {} else {printf("Autotest %03d ERROR (PlayerAky)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 	RasmFreeInfoStruct(debug);
 	MemFree(tmpstr3);
+	}
 
 	printf("\n%d bytes\n",_static_library_memory_used);
 #endif
-	
+
+	/************************** include testing + crunch ****************/		
+	idx=0;
+	opcode=MemMalloc(8000);
+	for (k=40;k>1;k--) {
+		for (i='A';i<'F';i++) {
+			for (j=0;j<k;j++) opcode[idx++]=i;
+		}
+	}
+	for (k=1;k<40;k++) {
+		for (i='A';i<'F';i++) {
+			for (j=0;j<k;j++) opcode[idx++]=i;
+		}
+	}
+	FileRemoveIfExists("autotest_include.raw");
+	FileWriteBinary("autotest_include.raw",(char *)opcode,idx);
+	FileWriteBinaryClose("autotest_include.raw");
+	MemFree(opcode);opcode=NULL;
+
+	ret=RasmAssemble(AUTOTEST_INCBIN1,strlen(AUTOTEST_INCBIN1),&opcode,&opcodelen);
+	if (!ret && opcodelen==7995) {} else {printf("Autotest %03d ERROR (INCBIN)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN OK\n");
+
+	ret=RasmAssemble(AUTOTEST_INCBIN2,strlen(AUTOTEST_INCBIN2),&opcode,&opcodelen);
+	if (!ret && opcodelen==6995) {} else {printf("Autotest %03d ERROR (INCBIN+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_INCBIN3,strlen(AUTOTEST_INCBIN3),&opcode,&opcodelen);
+	if (!ret && opcodelen==1000) {} else {printf("Autotest %03d ERROR (INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN+size OK\n");
+
+#ifndef NO_3RD_PARTIES
+	ret=RasmAssemble(AUTOTEST_LZ4_A,strlen(AUTOTEST_LZ4_A),&opcode,&opcodelen);
+	if (!ret && opcodelen==544) {} else {printf("Autotest %03d ERROR (INCBIN + LZ4 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZ4 segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZ4_B,strlen(AUTOTEST_LZ4_B),&opcode,&opcodelen);
+	if (!ret && opcodelen==544) {} else {printf("Autotest %03d ERROR (INCLZ4)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCLZ4 OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZ4_C,strlen(AUTOTEST_LZ4_C),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCLZ4+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZ4_D,strlen(AUTOTEST_LZ4_D),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZ4+INCBIN+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZ4 variant+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZ4_E,strlen(AUTOTEST_LZ4_E),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCLZ4+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZ4_F,strlen(AUTOTEST_LZ4_F),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZ4+INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZ4 variant+size OK\n");
+#else
+printf("*** LZ4/LZEXO/LZX0/LZX7tests disabled as there is no 3rd parties support for this version ***\n");
+#endif
+
+	ret=RasmAssemble(AUTOTEST_LZ48_A,strlen(AUTOTEST_LZ48_A),&opcode,&opcodelen);
+	if (!ret && opcodelen==738) {} else {printf("Autotest %03d ERROR (INCBIN + LZ48 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZ48 segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZ48_B,strlen(AUTOTEST_LZ48_B),&opcode,&opcodelen);
+	if (!ret && opcodelen==738) {} else {printf("Autotest %03d ERROR (INCL48)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCL48 OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZ48_C,strlen(AUTOTEST_LZ48_C),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCL48+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZ48_D,strlen(AUTOTEST_LZ48_D),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZ48+INCBIN+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZ48 variant+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZ48_E,strlen(AUTOTEST_LZ48_E),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCLZ48+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZ48_F,strlen(AUTOTEST_LZ48_F),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZ48+INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZ48 variant+size OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZ49_A,strlen(AUTOTEST_LZ49_A),&opcode,&opcodelen);
+	if (!ret && opcodelen==717) {} else {printf("Autotest %03d ERROR (INCBIN + LZ49 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZ49 segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZ49_B,strlen(AUTOTEST_LZ49_B),&opcode,&opcodelen);
+	if (!ret && opcodelen==717) {} else {printf("Autotest %03d ERROR (INCL49)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCL49 OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZ49_C,strlen(AUTOTEST_LZ49_C),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCL49+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZ49_D,strlen(AUTOTEST_LZ49_D),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZ49+INCBIN+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZ49 variant+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZ49_E,strlen(AUTOTEST_LZ49_E),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCL49+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZ49_F,strlen(AUTOTEST_LZ49_F),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZ49+INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZ49 variant+size OK\n");
+
+#ifndef NO_3RD_PARTIES
+	ret=RasmAssemble(AUTOTEST_LZEXO_A,strlen(AUTOTEST_LZEXO_A),&opcode,&opcodelen);
+	if (!ret && opcodelen==335) {} else {printf("Autotest %03d ERROR (INCBIN + LZEXO segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZEXO segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZEXO_B,strlen(AUTOTEST_LZEXO_B),&opcode,&opcodelen);
+	if (!ret && opcodelen==335) {} else {printf("Autotest %03d ERROR (INCEXO)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCEXO OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZEXO_C,strlen(AUTOTEST_LZEXO_C),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCEXO+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZEXO_D,strlen(AUTOTEST_LZEXO_D),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZEXO+INCBIN+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZEXO variant+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZEXO_E,strlen(AUTOTEST_LZEXO_E),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCEXO+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZEXO_F,strlen(AUTOTEST_LZEXO_F),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZEXO+INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZEXO variant+size OK\n");
+
+
+	ret=RasmAssemble(AUTOTEST_LZX0_A,strlen(AUTOTEST_LZX0_A),&opcode,&opcodelen);
+	if (!ret && opcodelen==384) {} else {printf("Autotest %03d ERROR (INCBIN + LZX0 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	i=opcodelen;
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZX0 segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZX0_B,strlen(AUTOTEST_LZX0_B),&opcode,&opcodelen);
+	if (!ret && opcodelen==i) {} else {printf("Autotest %03d ERROR (INCZX0 must crunch like LZX0 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCZX0 OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZX0_C,strlen(AUTOTEST_LZX0_C),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCZX0+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZX0_D,strlen(AUTOTEST_LZX0_D),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZX0+INCBIN+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZX0 variant+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZX0_E,strlen(AUTOTEST_LZX0_E),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCZX0+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZX0_F,strlen(AUTOTEST_LZX0_F),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZX0+INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZX0 variant+size OK\n");
+
+
+
+	ret=RasmAssemble(AUTOTEST_LZX0B_A,strlen(AUTOTEST_LZX0B_A),&opcode,&opcodelen);
+	if (!ret && opcodelen==386) {} else {printf("Autotest %03d ERROR (INCBIN + LZX0B segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	i=opcodelen;
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZX0B segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZX0B_B,strlen(AUTOTEST_LZX0B_B),&opcode,&opcodelen);
+	if (!ret && opcodelen==i) {} else {printf("Autotest %03d ERROR (INCZX0B must crunch like LZX0B segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCZX0B OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZX0B_C,strlen(AUTOTEST_LZX0B_C),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCZX0B+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZX0B_D,strlen(AUTOTEST_LZX0B_D),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZX0B+INCBIN+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZX0B variant+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZX0B_E,strlen(AUTOTEST_LZX0B_E),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCZX0B+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZX0B_F,strlen(AUTOTEST_LZX0B_F),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZX0B+INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZX0B variant+size OK\n");
+
+
+
+	ret=RasmAssemble(AUTOTEST_LZX7_A,strlen(AUTOTEST_LZX7_A),&opcode,&opcodelen);
+	if (!ret && opcodelen==535) {} else {printf("Autotest %03d ERROR (INCBIN + LZX7 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZX7 segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZX7_B,strlen(AUTOTEST_LZX7_B),&opcode,&opcodelen);
+	if (!ret && opcodelen==535) {} else {printf("Autotest %03d ERROR (INCZX7)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCZX7 OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZX7_C,strlen(AUTOTEST_LZX7_C),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCZX7+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZX7_D,strlen(AUTOTEST_LZX7_D),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZX7+INCBIN+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZX7 variant+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZX7_E,strlen(AUTOTEST_LZX7_E),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCZX7+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZX7_F,strlen(AUTOTEST_LZX7_F),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZX7+INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZX7 variant+size OK\n");
+
+
+#ifndef NOAPULTRA
+	ret=RasmAssemble(AUTOTEST_LZAPU_A,strlen(AUTOTEST_LZAPU_A),&opcode,&opcodelen);
+	if (!ret && opcodelen==396) {} else {printf("Autotest %03d ERROR (INCBIN + LZAPU segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZAPU segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZAPU_B,strlen(AUTOTEST_LZAPU_B),&opcode,&opcodelen);
+	if (!ret && opcodelen==396) {} else {printf("Autotest %03d ERROR (INCAPU)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCAPU OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZAPU_C,strlen(AUTOTEST_LZAPU_C),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCAPU+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZAPU_D,strlen(AUTOTEST_LZAPU_D),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZAPU+INCBIN+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZAPU variant+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZAPU_E,strlen(AUTOTEST_LZAPU_E),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCAPU+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZAPU_F,strlen(AUTOTEST_LZAPU_F),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZAPU+INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZAPU variant+size OK\n");
+
+
+
+	ret=RasmAssemble(AUTOTEST_LZSA1_A,strlen(AUTOTEST_LZSA1_A),&opcode,&opcodelen);
+	if (!ret && opcodelen<=442) {} else {printf("Autotest %03d ERROR (INCBIN + LZSA1 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZSA1 segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZSA1_Abis,strlen(AUTOTEST_LZSA1_Abis),&opcode,&opcodelen);
+	if (!ret && opcodelen<=437) {} else {printf("Autotest %03d ERROR (INCBIN + LZSA1 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZSA1 segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZSA1_B,strlen(AUTOTEST_LZSA1_B),&opcode,&opcodelen);
+	if (!ret && opcodelen<=442) {} else {printf("Autotest %03d ERROR (INCLZSA1)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCLZSA1 OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZSA1_C,strlen(AUTOTEST_LZSA1_C),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCLZSA1+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZSA1_D,strlen(AUTOTEST_LZSA1_D),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZSA1+INCBIN+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZSA1 variant+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZSA1_E,strlen(AUTOTEST_LZSA1_E),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCLZSA1+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZSA1_F,strlen(AUTOTEST_LZSA1_F),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZSA1+INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZSA1 variant+size OK\n");
+
+
+
+
+	ret=RasmAssemble(AUTOTEST_LZSA2_A,strlen(AUTOTEST_LZSA2_A),&opcode,&opcodelen);
+	if (!ret && opcodelen<=463) {} else {printf("Autotest %03d ERROR (INCBIN + LZSA2 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZSA2 segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZSA2_Abis,strlen(AUTOTEST_LZSA2_Abis),&opcode,&opcodelen);
+	if (!ret && opcodelen<=462) {} else {printf("Autotest %03d ERROR (INCBIN + LZSA2 segment)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN + LZSA2 segment OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZSA2_B,strlen(AUTOTEST_LZSA2_B),&opcode,&opcodelen);
+	if (!ret && opcodelen<=463) {} else {printf("Autotest %03d ERROR (INCLZSA2)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCLZSA2 OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZSA2_C,strlen(AUTOTEST_LZSA2_C),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCLZSA2+offset)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZSA2_D,strlen(AUTOTEST_LZSA2_D),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZSA2+INCBIN+offset) %d!=%d\n",cpt,i,opcodelen);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZSA2 variant+offset OK\n");
+
+	ret=RasmAssemble(AUTOTEST_LZSA2_E,strlen(AUTOTEST_LZSA2_E),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (INCLZSA2+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+	i=opcodelen;
+	ret=RasmAssemble(AUTOTEST_LZSA2_F,strlen(AUTOTEST_LZSA2_F),&opcode,&opcodelen);
+	if (!ret && i==opcodelen) {} else {printf("Autotest %03d ERROR (LZSA2+INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing LZSA2 variant+size OK\n");
+#endif
+#else
+printf("*** LZAPU and INCAPU   tests disabled as there is no APUltra support for this version ***\n");
+printf("*** LZSA1 and INCLZSA1 tests disabled as there is no LZSA v1 support for this version ***\n");
+printf("*** LZSA2 and INCLZSA2 tests disabled as there is no LZSA v2 support for this version ***\n");
+#endif
+
+
+	ret=RasmAssemble(AUTOTEST_ECPR1,strlen(AUTOTEST_ECPR1),&opcode,&opcodelen);
+	if (!ret) {} else {printf("Autotest %03d ERROR (extended CPR test 1)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing simple extended CPR behaviour OK\n");
+
+
+
+	FileRemoveIfExists("autotest_include.raw");
+	FileRemoveIfExists("rasmoutput.xpr");
 	FileRemoveIfExists("rasmoutput.cpr");
+	FileRemoveIfExists("rasmoutput.sna");
 	
-	printf("All internal tests OK\n");
+	ret=RasmAssemble(NULL,0,&opcode,&opcodelen)+RasmAssembleInfo(NULL,0,&opcode,&opcodelen,&debug)+RasmAssembleInfoParam(NULL,0,&opcode,&opcodelen,&debug,&param);
+
+	if (sko) {
+		printf("ERROR => various opcode tests did not pass! (check backlog)\n");
+		printf("All other tests OK => %d tests done\n",ret);
+	} else {
+		printf("All internal tests OK => %d tests done\n",ret);
+	}
+
+
 	#ifdef RDD
 	/* private dev lib tools */
 printf("checking memory\n");
@@ -16970,9 +23715,9 @@ void Usage(int help)
 	#undef FUNC
 	#define FUNC "Usage"
 	
-	printf("%s (c) 2017 Edouard BERGE (use -n option to display all licenses)\n",RASM_VERSION);
+	printf("%s (c) 2017 Edouard BERGE (use -n option to display all licenses / -autotest for self-testing)\n",RASM_VERSION);
 	#ifndef NO_3RD_PARTIES
-	printf("LZ4 (c) Yann Collet / ZX7 (c) Einar Saukas / Exomizer 2 (c) Magnus Lind\n");
+	printf("LZ4 (c) Yann Collet / ZX0 & ZX7 (c) Einar Saukas / Exomizer 2 (c) Magnus Lind / LZSA & AP-Ultra (c) Emmanuel Marty\n");
 	#endif
 	printf("\n");
 	printf("SYNTAX: rasm <inputfile> [options]\n");
@@ -16982,8 +23727,10 @@ void Usage(int help)
 		printf("FILENAMES:\n");
 		printf("-oa                      automatic radix from input filename\n");
 		printf("-o  <outputfile radix>   choose a common radix for all files\n");
+		printf("-or <ROM filename(s)>    choose a radix filename for ROM output\n");
 		printf("-ob <binary filename>    choose a full filename for binary output\n");
 		printf("-oc <cartridge filename> choose a full filename for cartridge output\n");
+		printf("-ol <ROM label filename> choose a full filename for ROM label output\n");
 		printf("-oi <snapshot filename>  choose a full filename for snapshot output\n");
 		printf("-os <symbol filename>    choose a full filename for symbol output\n");
 		printf("-ot <tape filename>      choose a full filename for tape output\n");
@@ -17002,6 +23749,8 @@ void Usage(int help)
 		printf("-ss export symbols in the snapshot (SYMB chunk for ACE)\n");
 		printf("-sc <format> export symbols with source code convention\n");
 		printf("-sm export symbol in multiple files (one per bank)\n");
+		printf("-ec export labels with original case\n");
+		printf("-er export ROM labels\n");
 		printf("-l  <labelfile> import symbol file (winape,pasmo,rasm)\n");
 		printf("-eb export breakpoints\n");
 		printf("-wu warn for unused symbols (alias, var or label)\n");
@@ -17012,11 +23761,18 @@ void Usage(int help)
 		printf("-sa export all symbols (like -sl -sv -sq option)\n");
 		printf("-Dvariable=value import value for variable\n");
 		printf("COMPATIBILITY:\n");
-		printf("-m    Maxam style calculations\n");
-		printf("-dams Dams 'dot' label convention\n");
-		printf("-ass  AS80 behaviour mimic\n");
-		printf("-uz   UZ80 behaviour mimic\n");
-		
+		printf("-m     Maxam style calculations\n");
+		printf("-dams  Dams 'dot' label convention\n");
+		printf("-ass   AS80  behaviour mimic\n");
+		printf("-uz    UZ80  behaviour mimic\n");
+		printf("-pasmo PASMO behaviour mimic\n");
+		printf("-amper use ampersand for hex values\n");
+		printf("-msep <separator> set separator for modules\n");
+		printf("-utf8 convert symbols from french or spanish keyboard inside quotes\n");
+		printf("-fq   do not bother with special chars inside quotes\n");
+		printf("MISCELLANEOUS:\n");
+		printf("-quick          enable fast mode for ZX0 crunching\n");
+		printf("-cprquiet       do not display ROM detailed informations\n");
 		printf("EDSK generation/update:\n");
 		printf("-eo overwrite files on disk if it already exists\n");
 		printf("SNAPSHOT:\n");
@@ -17025,6 +23781,7 @@ void Usage(int help)
 		printf("-v2 export snapshot version 2 instead of version 3\n");
 		printf("PARSING:\n");
 		printf("-me <value>    set maximum number of error (0 means no limit)\n");
+		printf("-twe           treat warnings as errors\n");
 		printf("-xr            extended error display\n");
 		printf("-w             disable warnings\n");
 		printf("-void          force void usage with macro without parameter\n");
@@ -17079,7 +23836,7 @@ printf("Software. \"\n");
 
 #ifndef NO_3RD_PARTIES
 printf("\n\n\n\n");
-printf("******* license of LZ4 cruncher / sources were modified ***********\n\n\n\n");
+printf("******* license for LZ4 cruncher / sources were modified ***********\n\n\n\n");
 
 printf("BSD 2-Clause License (http://www.opensource.org/licenses/bsd-license.php)\n");
 
@@ -17112,10 +23869,9 @@ printf(" - LZ4 source repository : https://github.com/lz4/lz4\n");
 
 
 printf("\n\n\n\n");
-printf("******* license of ZX7 cruncher / sources were modified ***********\n\n\n\n");
-
-
-printf(" * (c) Copyright 2012 by Einar Saukas. All rights reserved.\n");
+printf("******* license for ZX0 / ZX7 cruncher / sources were modified ***********\n\n\n\n");
+printf("BSD 3-Clause License\n");
+printf(" * (c) Copyright 2012/2021 by Einar Saukas. All rights reserved.\n");
 printf(" *\n");
 printf(" * Redistribution and use in source and binary forms, with or without\n");
 printf(" * modification, are permitted provided that the following conditions are met:\n");
@@ -17139,9 +23895,9 @@ printf(" * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 printf(" * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n");
 
 
-printf("\n\n\n\n");
-printf("******* license of exomizer cruncher / sources were modified ***********\n\n\n\n");
 
+printf("\n\n\n\n");
+printf("******* license for exomizer cruncher / sources were modified ***********\n\n\n\n");
 
 printf(" * Copyright (c) 2005 Magnus Lind.\n");
 printf(" *\n");
@@ -17166,6 +23922,45 @@ printf(" *\n");
 printf(" *   4. The names of this software and/or it's copyright holders may not be\n");
 printf(" *   used to endorse or promote products derived from this software without\n");
 printf(" *   specific prior written permission.\n");
+
+
+printf("\n\n\n\n");
+printf("******* license for AP-Ultra & LZSA crunchers ****************************\n\n\n\n");
+printf(" * apultra.c - command line compression utility for the apultra library\n");
+printf(" * Copyright (C) 2019 Emmanuel Marty\n");
+printf(" *          https://github.com/emmanuel-marty\n");
+printf(" *\n");
+printf(" LZSA code use Zlib license\n");
+printf(" Match finder use CC0 license due to using portions of code from Eric Bigger's\n");
+printf("                                  Wimlib in the suffix array-based matchfinder\n");
+printf(" *\n");
+printf(" * This software is provided 'as-is', without any express or implied\n");
+printf(" * warranty.  In no event will the authors be held liable for any damages\n");
+printf(" * arising from the use of this software.\n");
+printf(" *\n");
+printf(" * Permission is granted to anyone to use this software for any purpose,\n");
+printf(" * including commercial applications, and to alter it and redistribute it\n");
+printf(" * freely, subject to the following restrictions:\n");
+printf(" *\n");
+printf(" * 1. The origin of this software must not be misrepresented; you must not\n");
+printf(" *    claim that you wrote the original software. If you use this software\n");
+printf(" *    in a product, an acknowledgment in the product documentation would be\n");
+printf(" *    appreciated but is not required.\n");
+printf(" * 2. Altered source versions must be plainly marked as such, and must not be\n");
+printf(" *    misrepresented as being the original software.\n");
+printf(" * 3. This notice may not be removed or altered from any source distribution.\n");
+printf(" *\n");
+printf(" * Uses the libdivsufsort library Copyright (c) 2003-2008 Yuta Mori\n");
+printf(" *\n");
+printf(" * Inspired by cap by Sven-Ake Dahl. https://github.com/svendahl/cap\n");
+printf(" * Also inspired by Charles Bloom's compression blog. http://cbloomrants.blogspot.com/\n");
+printf(" * With ideas from LZ4 by Yann Collet. https://github.com/lz4/lz4\n");
+printf(" * With help and support from spke <zxintrospec@gmail.com>\n");
+printf("\n\n\n\n");
+printf("*** license for CDT export (record11() function and some other code extracts) ***\n\n\n\n");
+printf("Author: CNGSoft http://cngsoft.no-ip.org , the tool is in GPL2 licence,\nCopyright (C) 2007 Free Software Foundation, Inc. https://fsf.org\n");
+printf("\n");
+printf("\n");
 #endif
 
 printf("\n\n");
@@ -17217,15 +24012,39 @@ int ParseOptions(char **argv,int argc, struct s_parameter *param)
 		RasmAutotest();
 	} else if (strcmp(argv[i],"-uz")==0) {
 		param->as80=2;
+	} else if (strcmp(argv[i],"-quick")==0) {
+		MAX_OFFSET_ZX0=2176;
+	} else if (strcmp(argv[i],"-msep")==0) {
+		if (i+1<argc) {
+			param->module_separator=argv[++i][0];
+		} else Usage(1);
+	} else if (strcmp(argv[i],"-fq")==0) {
+		param->freequote=1;
+	} else if (strcmp(argv[i],"-utf8")==0) {
+		param->utf8enable=1;
+	} else if (strcmp(argv[i],"-twe")==0) {
+		param->erronwarn=1;
+	} else if (strcmp(argv[i],"-pasmo")==0) {
+		param->pasmo=1;
+	} else if (strcmp(argv[i],"-cprquiet")==0) {
+		param->cprinfo=0;
 	} else if (strcmp(argv[i],"-ass")==0) {
 		param->as80=1;
+	} else if (strcmp(argv[i],"-amper")==0 || strcmp(argv[i],"--noampersand")==0) {
+		param->noampersand=1;
 	} else if (strcmp(argv[i],"-eb")==0) {
 		param->export_brk=1;
 	} else if (strcmp(argv[i],"-wu")==0) {
 		param->warn_unused=1;
+	} else if (strcmp(argv[i],"-xpr")==0) {
+		param->xpr=1;
 	} else if (strcmp(argv[i],"-dams")==0) {
 	} else if (strcmp(argv[i],"-void")==0) {
 		param->macrovoid=1;
+	} else if (strcmp(argv[i],"-ec")==0) {
+		param->enforce_symbol_case=1;
+	} else if (strcmp(argv[i],"-er")==0) {
+		param->cprinfoexport=1;
 	} else if (strcmp(argv[i],"-xr")==0) {
 		param->extended_error=1;
 	} else if (strcmp(argv[i],"-eo")==0) {
@@ -17250,11 +24069,15 @@ int ParseOptions(char **argv,int argc, struct s_parameter *param)
 					l=strlen(argv[i]);
 					curpath=MemMalloc(l); /* strlen(path)+2 */
 					strcpy(curpath,argv[i]+2);
+					
 #ifdef OS_WIN
 					if (argv[i][l-1]!='/' && argv[i][l-1]!='\\') strcat(curpath,"\\");
 #else
 					if (argv[i][l-1]!='/' && argv[i][l-1]!='\\') strcat(curpath,"/");
 #endif
+
+printf("curpath=[%s]\n",curpath);
+
 					FieldArrayAddDynamicValueConcat(&param->pathdef,&param->npath,&param->mpath,curpath);
 					MemFree(curpath);
 				} else {
@@ -17283,12 +24106,15 @@ int ParseOptions(char **argv,int argc, struct s_parameter *param)
 							param->maxerr=atoi(argv[++i]);
 							return i;
 						}
-					default:Usage(1);
+						Usage(1);
+						break;
+					default:Usage(1);break;
 				}
 				Usage(1);
 				break;
 			case 's':
 				if (argv[i][2] && argv[i][3]) Usage(1);
+
 				switch (argv[i][2]) {
 					case 0:param->export_sym=1;return 0;
 					case 'z':
@@ -17311,6 +24137,7 @@ int ParseOptions(char **argv,int argc, struct s_parameter *param)
 							if (_internal_check_flexible(param->flexible_export)) return i; else Usage(1);
 						}
 						Usage(1);
+						break;
 					case 'l':
 						param->export_local=1;return 0;
 					case 'v':
@@ -17327,9 +24154,11 @@ int ParseOptions(char **argv,int argc, struct s_parameter *param)
 						param->export_sym=1;
 						param->export_sna=1;return 0;
 					default:
-					break;
+						Usage(1);
+						break;
 				}
 				Usage(1);
+				break;
 			case 'l':
 				if (argv[i][2]) Usage(1);
 				if (i+1<argc) {
@@ -17337,9 +24166,7 @@ int ParseOptions(char **argv,int argc, struct s_parameter *param)
 					break;
 				}	
 				Usage(1);
-		case 'i':
-printf("@@@\n@@@ --> deprecated option, there is no need to use -i option to set input file <--\n@@@\n");
-				Usage(0);
+				break;
 			case 'o':
 				if (argv[i][2] && argv[i][3]) Usage(1);
 				switch (argv[i][2]) {
@@ -17349,6 +24176,7 @@ printf("@@@\n@@@ --> deprecated option, there is no need to use -i option to set
 							break;
 						}	
 						Usage(1);
+						break;
 					case 'a':
 						param->automatic_radix=1;
 						break;
@@ -17358,38 +24186,59 @@ printf("@@@\n@@@ --> deprecated option, there is no need to use -i option to set
 							break;
 						}
 						Usage(1);
+						break;
+					case 'r':
+						if (i+1<argc && param->rom_name==NULL) {
+							param->rom_name=argv[++i];
+							break;
+						}
+						Usage(1);
+						break;
 					case 'i':
 						if (i+1<argc && param->snapshot_name==NULL) {
 							param->snapshot_name=argv[++i];
 							break;
 						}
 						Usage(1);
+						break;
+					case 'l':
+						if (i+1<argc && param->cprinfo_name==NULL) {
+							param->cprinfo_name=argv[++i];
+							break;
+						}
+						Usage(1);
+						break;
 					case 'b':
 						if (i+1<argc && param->binary_name==NULL) {
 							param->binary_name=argv[++i];
 							break;
 						}
 						Usage(1);
+						break;
 					case 'c':
 						if (i+1<argc && param->cartridge_name==NULL) {
 							param->cartridge_name=argv[++i];
 							break;
 						}
 						Usage(1);
+						break;
 					case 'k':
 						if (i+1<argc && param->breakpoint_name==NULL) {
 							param->breakpoint_name=argv[++i];
 							break;
 						}
 						Usage(1);
+						break;
 					case 's':
 						if (i+1<argc && param->symbol_name==NULL) {
 							param->symbol_name=argv[++i];
 							break;
 						}
 						Usage(1);
+						break;
 					default:
 						Usage(1);
+						break;
 				}
 				break;
 			case 'd':if (!argv[i][2]) printf("deprecated option -d\n"); else Usage(1);
@@ -17400,15 +24249,15 @@ printf("@@@\n@@@ --> deprecated option, there is no need to use -i option to set
 				break;
 			case 'v':
 				if (!argv[i][2]) {
-					printf("deprecated option -v\n");
+					param->display_stats=1;
 				} else if (argv[i][2]=='2') {
 					param->v2=1;
 				}
 				break;
 			case 'n':if (!argv[i][2]) Licenses(); else Usage(1);
-			case 'h':Usage(1);
+			case 'h':Usage(1);break;
 			default:
-				Usage(1);
+				Usage(1);break;
 		}
 	} else {
 		if (param->filename==NULL) {
@@ -17453,8 +24302,10 @@ int main(int argc, char **argv)
 	struct s_parameter param={0};
 	int ret;
 
+	param.cprinfo=1;
 	param.maxerr=20;
 	param.rough=0.5;
+	param.module_separator='_';
 
 	GetParametersFromCommandLine(argc,argv,&param);
 	ret=Rasm(&param);
@@ -17468,5 +24319,3 @@ printf("checking memory\n");
 }
 
 #endif
-
-

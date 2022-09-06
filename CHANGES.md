@@ -1,3 +1,7 @@
+## Release 1.1.11 - 2022-??-??
+
+ - Updated rasm to 1.7
+
 ## Release 1.1.10 - 2022-04-27
 
  - Updated apultra to 1.4.6

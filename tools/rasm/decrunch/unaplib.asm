@@ -3,10 +3,10 @@
 ;hl = source
 ;de = dest
 
-ap_bits: .db 0
-ap_byte: .db 0
-lwm:	.db 0
-r0:	.dw 0
+ap_bits: db 0
+ap_byte: db 0
+lwm:	db 0
+r0:	dw 0
 
 ap_getbit:
 	push bc

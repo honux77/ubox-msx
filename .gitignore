@@ -28,3 +28,4 @@ game/generated
 game/build
 docs/reference.*
 docs/*.html
+tools/rasm/*/*.o
