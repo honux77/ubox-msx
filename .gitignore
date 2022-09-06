@@ -22,7 +22,7 @@ src/*/*.asm
 *.pyc
 Makefile.deps
 bin/
-lib/
+./lib/
 game/bin
 game/generated
 game/build
