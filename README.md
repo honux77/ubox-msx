@@ -104,6 +104,7 @@ Some advice if you want to make a successful contribution:
  - Be cordial
  - Get early feedback, specially when working on a large contribution
  - Contributions always require a pull request and a review
+ - Check the [TODO.md](TODO.md) file for ideas!
 
 ### Formatting
 
