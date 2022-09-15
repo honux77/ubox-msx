@@ -8,10 +8,10 @@ $(OUTPUT)/tiles.h: tiles.png
 	../../tools/png2tiles.py -i tiles $< > $@
 
 $(OUTPUT)/player.h: player.png
-	../../tools/png2sprites.py -i player_sprite $< > $@
+	../../tools/png2sprites.py -c -i player_sprite $< > $@
 
 $(OUTPUT)/enemy.h: enemy.png
-	../../tools/png2sprites.py -i enemy_sprite $< > $@
+	../../tools/png2sprites.py -c -i enemy_sprite $< > $@
 
 $(OUTPUT)/map.h: map.json map_conf.json
 	../../tools/map.py --aplib --max-ents 11 --room-height 21 map.json map > $@
