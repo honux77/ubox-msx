@@ -12,7 +12,7 @@ There are three main components:
     priority based one channel sound effects.
 
 There are also some utilities (e.g. compression), and tools to process data and
-help you building your games
+help you building your games.
 
 The aim is making MSX games in C, without writing Z80 assembler or having a
 deep knowledge of the system.
