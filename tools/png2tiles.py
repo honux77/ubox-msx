@@ -97,7 +97,7 @@ def read_image(image_name, out, color):
             # get the attibutes of the tile
             # FIXME: this may not be right
             for i in range(0, len(tile), DEF_W):
-                cols = list(set(tile[i : i + DEF_W]))
+                cols = list(sorted(set(tile[i : i + DEF_W])))
 
                 if len(cols) > 2:
                     raise Exception(

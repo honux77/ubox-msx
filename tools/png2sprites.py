@@ -109,7 +109,7 @@ def main():
             tile = [
                 data[x + i + ((y + j) * w)] for j in range(DEF_H) for i in range(DEF_W)
             ]
-            cols = set([c for c in tile if c != TRANS])
+            cols = sorted(set([c for c in tile if c != TRANS]))
 
             if not cols:
                 continue
