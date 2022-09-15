@@ -1,7 +1,8 @@
-## Release 1.1.11 - 2022-??-??
+## Release 1.1.11 - 2022-09-15
 
  - Updated rasm to 1.7
  - Updated apultra to 1.4.7
+ - Small bug fixes and improvements to the build system
 
 ## Release 1.1.10 - 2022-04-27
 
