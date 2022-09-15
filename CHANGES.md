@@ -1,3 +1,8 @@
+## Release 1.1.12 - 2022-??-??
+
+ - Fix in `png2sprites.py` and `png2tiles.py`: ensure the order of the colours
+  is always the same
+
 ## Release 1.1.11 - 2022-09-15
 
  - Updated rasm to 1.7
