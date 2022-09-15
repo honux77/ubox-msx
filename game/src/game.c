@@ -361,13 +361,13 @@ void update_player()
     sp.y = self->y - 1;
     // find which pattern to show
     sp.pattern = self->pat + (walk_frames[self->frame] + self->dir * 3) * 8;
-    // white
-    sp.attr = 15;
+    // green
+    sp.attr = 12;
     spman_alloc_fixed_sprite(&sp);
     // second one is 4 patterns away (16x16 sprites)
     sp.pattern += 4;
-    // green
-    sp.attr = 12;
+    // white
+    sp.attr = 15;
     spman_alloc_fixed_sprite(&sp);
 }
 
