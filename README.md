@@ -80,6 +80,28 @@ An example game is included with the libraries and it can be built with:
 
 After a successful build, the game ROM should be in `./bin`.
 
+#### CAS support
+
+Although the focus is cartridge ROMs, CAS files (and audio) is still one of the
+cheapest ways of loading homebrew games on a real MSX.
+
+Optionally, is possible to generate a CAS file of the example game running:
+
+    make game-cas
+
+After a successful build, the game CAS should be in `./bin`.
+
+The CAS support has some limitations:
+
+ - It requires 32K of extra RAM.
+ - The compressed ROM must be less than 24576 bytes.
+ - The loader uses the BIOS, so it won't be fast.
+ - Machines with disk must have it disabled (by pressing shift on boot), to
+  have more memory available.
+
+Despite these limitations, it is worth considering releasing your game in CAS
+format as well as cartridge ROM.
+
 ### Building the docs
 
 The documentation is available at

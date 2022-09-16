@@ -8,6 +8,10 @@ game: bin libs
 	make -C tools
 	make -C game all
 
+game-cas: bin libs
+	make -C tools
+	make -C game cas
+
 test: game
 	make -C tests test
 
@@ -32,7 +36,7 @@ ap:
 bin/apultra: bin
 	make -C tools ../bin/apultra
 
-.PHONY: clean cleanall docs libs game
+.PHONY: clean cleanall docs libs game game-cas
 clean:
 	make -C src/ubox clean
 	make -C src/spman clean
