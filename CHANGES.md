@@ -1,4 +1,4 @@
-## Release 1.1.12 - 2022-??-??
+## Release 1.1.12 - 2022-09-16
 
  - Added CAS support to the example game, introducing new tools: `mkcas.py` and
   `png2scr.py`.
