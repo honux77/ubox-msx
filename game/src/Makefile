@@ -32,6 +32,9 @@ all: $(TMPDIR)/$(TARGET).rom
 	@$(CHKSIZE) $(ROM_MAX) 4000 $(TMPDIR)/$(TARGET).map
 	@cp $(TMPDIR)/$(TARGET).rom $(OUTDIR)
 
+cas: $(TMPDIR)/$(TARGET).cas
+	@cp $(TMPDIR)/$(TARGET).cas $(OUTDIR)
+
 openmsx: all
 	openmsx -carta $(OUTDIR)/$(TARGET).rom -machine msx1
 
@@ -51,10 +54,31 @@ $(TMPDIR)/$(TARGET).rom: $(OBJS) $(TMPDIR)/crt0.rel $(UBOX_LIBS)
 	hex2bin -e bin -p 00 -l $(ROM_MAX) $(TMPDIR)/$(TARGET).ihx
 	@cp $(TMPDIR)/$(TARGET).bin $(TMPDIR)/$(TARGET).rom
 
+LOADER_ADDR=0xe000
+LOADER_WORK_ADDR=0x8000
+$(TMPDIR)/$(TARGET).cas: $(TMPDIR)/$(TARGET).rom cas/loader.bas $(TMPDIR)/loader.bin $(TMPDIR)/loading.ap
+	apultra -v $(TMPDIR)/$(TARGET).rom $(TMPDIR)/$(TARGET).ap
+	../../tools/mkcas.py --name $(TARGET) $@ ascii cas/loader.bas
+	../../tools/mkcas.py -a --name loader --addr $(LOADER_ADDR) --exec $(LOADER_ADDR) $@ binary $(TMPDIR)/loader.bin
+	../../tools/mkcas.py -a --addr $(LOADER_WORK_ADDR) $@ custom-header $(TMPDIR)/loading.ap
+	../../tools/mkcas.py -a --addr $(LOADER_WORK_ADDR) $@ custom-header $(TMPDIR)/$(TARGET).ap
+
+$(TMPDIR)/loader.bin: $(TMPDIR)/loader.rel
+	$(CC) $(CFLAGS) $(LDFLAGS) --code-loc $(LOADER_ADDR) --data-loc 0 -lap $< -o $(TMPDIR)/loader.ihx
+	hex2bin -p 00 $(TMPDIR)/loader.ihx
+
+$(TMPDIR)/loading.ap: ../data/loading.png
+	../../tools/png2scr.py ../data/loading.png > $(TMPDIR)/loading.bin
+	apultra -v $(TMPDIR)/loading.bin $(TMPDIR)/loading.ap
+
+$(TMPDIR)/loader.rel: cas/loader.z80
+	$(AS) -g -o $@ $<
+
 clean:
 	rm -f $(TMPDIR)/*
 	rm -f $(OUTDIR)/$(TARGET).rom
+	rm -f $(OUTDIR)/$(TARGET).cas
 
-.PHONY: all clean
+.PHONY: all cas clean
 
 include Makefile.deps

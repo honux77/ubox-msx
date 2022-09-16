@@ -14,6 +14,7 @@ compile:
   stage: build
   script:
     - make game
+    - make game-cas
 
 test:
   stage: test

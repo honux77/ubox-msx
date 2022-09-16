@@ -197,6 +197,38 @@ The entities are encoded in a stream that ends with the byte `0xff` as terminato
 
 Refer to the example game and `init_map_entities()` in `game.c` for a full example.
 
+### mkcas.py
+
+This is a simple tool to make CAS files to be used in different MSX emulators.
+
+It supports the following block types:
+
+ - binary: binary executable data, include loading and execution addresses.
+ - basic: tokenized BASIC code.
+ - ascii: ASCII text, can be BASIC for example. In case of BASIC code, the CR
+   LF is expected as end of line.
+ - custom-header: no block type, header with loading address and block length
+   followed by the data.
+ - custom: no block type, data stored "as-is".
+
+Use `-h` flag to get command line help, and check the example game for sample on
+how to build a CAS file with a loading screen.
+
+### png2scr.py
+
+This tools converts an PNG RGB image into a Screen 2 SCR image.
+
+The image is expected to use an approximation to RGB for the colours in the
+Toshiba palette (see `png2tiles.py` for the palette values).
+
+The image must be 256x192 pixels.
+
+The SCR file is 768 background tiles (6144 bytes) followed by the
+background colours for the 3 areas of the screen (6144 bytes), that can be
+uploaded to the VDP "as is".
+
+Check the example game for a sample on how to use it.
+
 ## Build helpers
 
 ### chksize

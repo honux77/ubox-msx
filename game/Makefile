@@ -6,6 +6,9 @@ all: generated bin build
 	cd src && ../../tools/mkdeps.py -b ../build -I ../generated:../../include ./ Makefile.deps
 	make -C src all
 
+cas: all
+	make -C src cas
+
 generated:
 	mkdir -p ./generated
 
@@ -18,7 +21,7 @@ build:
 openmsx: all
 	make -C src openmsx
 
-.PHONY: all clean default
+.PHONY: all cas clean default
 clean:
 	rm -rf ./generated ./bin ./build
 	make -C src clean

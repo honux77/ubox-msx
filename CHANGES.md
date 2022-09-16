@@ -1,5 +1,7 @@
 ## Release 1.1.12 - 2022-??-??
 
+ - Added CAS support to the example game, introducing new tools: `mkcas.py` and
+  `png2scr.py`.
  - Fix in `png2sprites.py` and `png2tiles.py`: ensure the order of the colours
   is always the same
 
