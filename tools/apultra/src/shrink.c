@@ -164,7 +164,7 @@ static inline int apultra_get_offset_varlen_size(const int nLength, const int nM
  *
  * @return number of extra bits required
  */
-static inline int apultra_get_match_varlen_size(int nLength, const int nMatchOffset) {
+static inline int apultra_get_match_varlen_size(const int nLength, const int nMatchOffset) {
    if (nLength <= 3 && nMatchOffset < 128)
       return 0;
    else {
@@ -220,7 +220,7 @@ static void apultra_insert_forward_match(apultra_compressor *pCompressor, const 
                            const int nLen1 = rle_len[nRepPos];
                            const int nMinLen = (nLen0 < nLen1) ? nLen0 : nLen1;
 
-                           int nMaxRepLen = nEndOffset - nRepPos;
+                           unsigned int nMaxRepLen = nEndOffset - nRepPos;
                            if (nMaxRepLen > LCP_MAX)
                               nMaxRepLen = LCP_MAX;
 
@@ -237,14 +237,14 @@ static void apultra_insert_forward_match(apultra_compressor *pCompressor, const 
                            while (pInWindowAtRepOffset < pInWindowMax && pInWindowAtRepOffset[0] == pInWindowAtRepOffset[-nMatchOffset])
                               pInWindowAtRepOffset++;
 
-                           const int nCurRepLen = (const int)(pInWindowAtRepOffset - pInWindowStart);
+                           const unsigned int nCurRepLen = (const unsigned int)(pInWindowAtRepOffset - pInWindowStart);
 
                            unsigned short* fwd_depth = pCompressor->match_depth + ((nRepPos - nStartOffset) << MATCHES_PER_INDEX_SHIFT);
                            int r;
 
                            for (r = 0; fwd_match[r].length; r++) {
                               if (fwd_match[r].offset == nMatchOffset && (fwd_depth[r] & 0x3fff) == 0) {
-                                 if ((const int)fwd_match[r].length < nCurRepLen) {
+                                 if (fwd_match[r].length < nCurRepLen) {
                                     fwd_match[r].length = nCurRepLen;
                                     fwd_depth[r] = 0;
                                  }
@@ -729,10 +729,10 @@ static void apultra_optimize_forward(apultra_compressor *pCompressor, const unsi
    }
    
    if (!nInsertForwardReps) {
-      const apultra_arrival* end_arrival = &arrival[(i * nArrivalsPerPosition) + 0];
+      const apultra_arrival* end_arrival = &arrival[i * nArrivalsPerPosition];
       apultra_final_match* pBestMatch = pCompressor->best_match - nStartOffset;
 
-      while (end_arrival->from_slot > 0 && end_arrival->from_pos >= 0 && (const int)end_arrival->from_pos < nEndOffset) {
+      while (end_arrival->from_slot > 0 && end_arrival->from_pos < (const unsigned int)nEndOffset) {
          pBestMatch[end_arrival->from_pos].length = end_arrival->match_len;
          pBestMatch[end_arrival->from_pos].offset = (end_arrival->match_len >= 2) ? end_arrival->rep_offset : end_arrival->short_offset;
 
@@ -773,8 +773,7 @@ static int apultra_reduce_commands(apultra_compressor *pCompressor, const unsign
          i >= pBestMatch[i + 1].offset &&
          (i + pBestMatch[i + 1].length + 1) <= nEndOffset &&
          !memcmp(pInWindow + i - (pBestMatch[i + 1].offset), pInWindow + i, pBestMatch[i + 1].length + 1)) {
-         if ((pBestMatch[i + 1].offset < MINMATCH3_OFFSET || (pBestMatch[i + 1].length + 1) >= 3 || (pBestMatch[i + 1].offset == nRepMatchOffset && nFollowsLiteral)) &&
-            (pBestMatch[i + 1].offset < MINMATCH4_OFFSET || (pBestMatch[i + 1].length + 1) >= 4 || (pBestMatch[i + 1].offset == nRepMatchOffset && nFollowsLiteral))) {
+         if (pBestMatch[i + 1].offset < MINMATCH4_OFFSET || (pBestMatch[i + 1].length + 1) >= 4 || (pBestMatch[i + 1].offset == nRepMatchOffset && nFollowsLiteral)) {
 
             int nCurPartialCommandSize = (pMatch->length == 1) ? (TOKEN_SIZE_4BIT_MATCH + 4) : (1 /* literal bit */ + 8 /* literal size */);
             if (pBestMatch[i + 1].offset == nRepMatchOffset /* always follows a literal, the one at the current position */) {
@@ -786,10 +785,10 @@ static int apultra_reduce_commands(apultra_compressor *pCompressor, const unsign
 
             int nReducedPartialCommandSize;
             if (pBestMatch[i + 1].offset == nRepMatchOffset && nFollowsLiteral) {
-               nReducedPartialCommandSize = TOKEN_SIZE_LARGE_MATCH + 2 /* apultra_get_gamma2_size(2) */ + apultra_get_gamma2_size(pBestMatch[i + 1].length);
+               nReducedPartialCommandSize = TOKEN_SIZE_LARGE_MATCH + 2 /* apultra_get_gamma2_size(2) */ + apultra_get_gamma2_size(pBestMatch[i + 1].length + 1);
             }
             else {
-               nReducedPartialCommandSize = apultra_get_offset_varlen_size(pBestMatch[i + 1].length, pBestMatch[i + 1].offset, nFollowsLiteral) + apultra_get_match_varlen_size(pBestMatch[i + 1].length, pBestMatch[i + 1].offset);
+               nReducedPartialCommandSize = apultra_get_offset_varlen_size(pBestMatch[i + 1].length + 1, pBestMatch[i + 1].offset, nFollowsLiteral) + apultra_get_match_varlen_size(pBestMatch[i + 1].length + 1, pBestMatch[i + 1].offset);
             }
 
             if (nReducedPartialCommandSize < nCurPartialCommandSize || (nFollowsLiteral == 0 && nLastMatchLen >= LCP_MAX)) {
@@ -805,8 +804,7 @@ static int apultra_reduce_commands(apultra_compressor *pCompressor, const unsign
       }
 
       if (pMatch->length >= 2) {
-         if (pMatch->length < 32 && /* Don't waste time considering large matches, they will always win over literals */
-             (i + pMatch->length) < nEndOffset /* Don't consider the last match in the block, we can only reduce a match inbetween other tokens */) {
+         if (pMatch->length < 32 /* Don't waste time considering large matches, they will always win over literals */) {
             int nNextIndex = i + pMatch->length;
             int nNextFollowsLiteral = 0;
 
@@ -821,11 +819,13 @@ static int apultra_reduce_commands(apultra_compressor *pCompressor, const unsign
                if (nRepMatchOffset && nRepMatchOffset != pMatch->offset && pBestMatch[nNextIndex].offset && pMatch->offset != pBestMatch[nNextIndex].offset &&
                   nNextFollowsLiteral) {
                   /* Try to gain a match forward */
-                  if (i >= pBestMatch[nNextIndex].offset && (i - pBestMatch[nNextIndex].offset + pMatch->length) <= nEndOffset) {
+                  if (i >= pBestMatch[nNextIndex].offset && (i + pMatch->length) <= nEndOffset) {
                      if ((pBestMatch[nNextIndex].offset < MINMATCH3_OFFSET || pMatch->length >= 3) &&
                         (pBestMatch[nNextIndex].offset < MINMATCH4_OFFSET || pMatch->length >= 4)) {
                         int nMaxLen = 0;
                         const unsigned char* pInWindowAtPos = pInWindow + i;
+                        while ((nMaxLen + 8) < pMatch->length && !memcmp(pInWindowAtPos + nMaxLen - pBestMatch[nNextIndex].offset, pInWindowAtPos + nMaxLen, 8))
+                           nMaxLen += 8;
                         while ((nMaxLen + 4) < pMatch->length && !memcmp(pInWindowAtPos + nMaxLen - pBestMatch[nNextIndex].offset, pInWindowAtPos + nMaxLen, 4))
                            nMaxLen += 4;
                         while (nMaxLen < pMatch->length && pInWindowAtPos[nMaxLen - pBestMatch[nNextIndex].offset] == pInWindowAtPos[nMaxLen])
@@ -870,7 +870,6 @@ static int apultra_reduce_commands(apultra_compressor *pCompressor, const unsign
                                   * we have calculated that this is shorter */
 
                                  const int nOrigLen = pMatch->length;
-                                 int j;
 
                                  pMatch->offset = pBestMatch[nNextIndex].offset;
                                  pMatch->length = nMaxLen;
@@ -938,7 +937,6 @@ static int apultra_reduce_commands(apultra_compressor *pCompressor, const unsign
                if (nOriginalCombinedCommandSize > nReducedCommandSize && !nCannotEncode) {
                   /* Reduce */
                   const int nMatchLen = pMatch->length;
-                  int j;
 
                   for (j = 0; j < nMatchLen; j++) {
                      pBestMatch[i + j].offset = match1[i + j];
@@ -1059,7 +1057,7 @@ static int apultra_reduce_commands(apultra_compressor *pCompressor, const unsign
  *
  * @return size of compressed data in output buffer, or -1 if the data is uncompressible
  */
-static int apultra_write_block(apultra_compressor *pCompressor, apultra_final_match *pBestMatch, const unsigned char *pInWindow, const int nStartOffset, const int nEndOffset, unsigned char *pOutData, const int nMaxOutDataSize, int *nCurBitsOffset, int *nCurBitShift, int *nFollowsLiteral, int *nCurRepMatchOffset, const int nBlockFlags) {
+static int apultra_write_block(apultra_compressor *pCompressor, const apultra_final_match *pBestMatch, const unsigned char *pInWindow, const int nStartOffset, const int nEndOffset, unsigned char *pOutData, const int nMaxOutDataSize, int *nCurBitsOffset, int *nCurBitShift, int *nFollowsLiteral, int *nCurRepMatchOffset, const int nBlockFlags) {
    int i;
    int nRepMatchOffset = *nCurRepMatchOffset;
    int nCurFollowsLiteral = *nFollowsLiteral;
@@ -1640,7 +1638,7 @@ static int apultra_compressor_shrink_block(apultra_compressor *pCompressor, cons
  *
  * @return maximum compressed size
  */
-size_t apultra_get_max_compressed_size(size_t nInputSize) {
+size_t apultra_get_max_compressed_size(const size_t nInputSize) {
    return ((nInputSize * 9 /* literals + literal bits */ + 1 /* match bit */ + 2 /* 7+1 command bits */ + 8 /* EOD offset bits */) + 7) >> 3;
 }
 
@@ -1659,8 +1657,8 @@ size_t apultra_get_max_compressed_size(size_t nInputSize) {
  *
  * @return actual compressed size, or -1 for error
  */
-size_t apultra_compress(const unsigned char *pInputData, unsigned char *pOutBuffer, size_t nInputSize, size_t nMaxOutBufferSize,
-      const unsigned int nFlags, size_t nMaxWindowSize, size_t nDictionarySize, void(*progress)(long long nOriginalSize, long long nCompressedSize), apultra_stats *pStats) {
+size_t apultra_compress(const unsigned char *pInputData, unsigned char *pOutBuffer, const size_t nInputSize, const size_t nMaxOutBufferSize,
+      const unsigned int nFlags, const size_t nMaxWindowSize, const size_t nDictionarySize, void(*progress)(long long nOriginalSize, long long nCompressedSize), apultra_stats *pStats) {
    apultra_compressor compressor;
    size_t nOriginalSize = 0;
    size_t nCompressedSize = 0L;
@@ -1724,12 +1722,10 @@ size_t apultra_compress(const unsigned char *pInputData, unsigned char *pOutBuff
          if (nOutDataSize >= 0) {
             /* Write compressed block */
 
-            if (!nError) {
-               nOriginalSize += nInDataSize;
-               nCompressedSize += nOutDataSize;
-               if (nCurBitShift != -1)
-                  nCurBitsOffset -= nOutDataSize;
-            }
+            nOriginalSize += nInDataSize;
+            nCompressedSize += nOutDataSize;
+            if (nCurBitShift != -1)
+               nCurBitsOffset -= nOutDataSize;
          }
          else {
             nError = -1;

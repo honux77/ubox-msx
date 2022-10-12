@@ -45,7 +45,7 @@
 #define OPT_STATS          2
 #define OPT_BACKWARD       4
 
-#define TOOL_VERSION "1.4.7"
+#define TOOL_VERSION "1.4.8"
 
 /*---------------------------------------------------------------------------*/
 
@@ -87,8 +87,8 @@ static long long do_get_time() {
    return nTime;
 }
 
-static void do_reverse_buffer(unsigned char *pBuffer, size_t nBufferSize) {
-   size_t nMidPoint = nBufferSize / 2;
+static void do_reverse_buffer(unsigned char *pBuffer, const size_t nBufferSize) {
+   const size_t nMidPoint = nBufferSize / 2;
    size_t i, j;
 
    for (i = 0, j = nBufferSize - 1; i < nMidPoint; i++, j--) {
@@ -110,7 +110,6 @@ static void compression_progress(long long nOriginalSize, long long nCompressedS
 static int do_compress(const char *pszInFilename, const char *pszOutFilename, const char *pszDictionaryFilename, const unsigned int nOptions, const unsigned int nMaxWindowSize) {
    long long nStartTime = 0LL, nEndTime = 0LL;
    size_t nOriginalSize = 0L, nCompressedSize = 0L, nMaxCompressedSize;
-   int nFlags = 0;
    apultra_stats stats;
    unsigned char *pDecompressedData;
    unsigned char *pCompressedData;
@@ -154,7 +153,7 @@ static int do_compress(const char *pszInFilename, const char *pszOutFilename, co
    if (!pDecompressedData) {
       fclose(f_in);
       if (f_dict) fclose(f_dict);
-      fprintf(stderr, "out of memory for reading '%s', %zd bytes needed\n", pszInFilename, nOriginalSize);
+      fprintf(stderr, "out of memory for reading '%s', %zu bytes needed\n", pszInFilename, nOriginalSize);
       return 100;
    }
 
@@ -192,15 +191,15 @@ static int do_compress(const char *pszInFilename, const char *pszOutFilename, co
    pCompressedData = (unsigned char*)malloc(nMaxCompressedSize);
    if (!pCompressedData) {
       free(pDecompressedData);
-      fprintf(stderr, "out of memory for compressing '%s', %zd bytes needed\n", pszInFilename, nMaxCompressedSize);
+      fprintf(stderr, "out of memory for compressing '%s', %zu bytes needed\n", pszInFilename, nMaxCompressedSize);
       return 100;
    }
 
    memset(pCompressedData, 0, nMaxCompressedSize);
 
-   nCompressedSize = apultra_compress(pDecompressedData, pCompressedData, nDictionarySize + nOriginalSize, nMaxCompressedSize, nFlags, nMaxWindowSize, nDictionarySize, compression_progress, &stats);
+   nCompressedSize = apultra_compress(pDecompressedData, pCompressedData, nDictionarySize + nOriginalSize, nMaxCompressedSize, 0U /* nFlags */, nMaxWindowSize, nDictionarySize, compression_progress, &stats);
 
-   if ((nOptions & OPT_VERBOSE)) {
+   if (nOptions & OPT_VERBOSE) {
       nEndTime = do_get_time();
    }
 
@@ -214,27 +213,28 @@ static int do_compress(const char *pszInFilename, const char *pszOutFilename, co
    if (nOptions & OPT_BACKWARD)
       do_reverse_buffer(pCompressedData, nCompressedSize);
 
-   if (pszOutFilename) {
-      FILE *f_out;
+   /* Write whole compressed file out */
 
-      /* Write whole compressed file out */
-
-      f_out = fopen(pszOutFilename, "wb");
-      if (f_out) {
-         fwrite(pCompressedData, 1, nCompressedSize, f_out);
-         fclose(f_out);
-      }
+   FILE *f_out = fopen(pszOutFilename, "wb");
+   if (!f_out) {
+      free(pCompressedData);
+      free(pDecompressedData);
+      fprintf(stderr, "error opening '%s' for writing\n", pszOutFilename);
+      return 100;
    }
+   
+   fwrite(pCompressedData, 1, nCompressedSize, f_out);
+   fclose(f_out);
 
    free(pCompressedData);
    free(pDecompressedData);
 
-   if ((nOptions & OPT_VERBOSE)) {
+   if (nOptions & OPT_VERBOSE) {
       double fDelta = ((double)(nEndTime - nStartTime)) / 1000000.0;
       double fSpeed = ((double)nOriginalSize / 1048576.0) / fDelta;
-      fprintf(stdout, "\rCompressed '%s' in %g seconds, %.02g Mb/s, %d tokens (%g bytes/token), %d into %d bytes ==> %g %%\n",
+      fprintf(stdout, "\rCompressed '%s' in %g seconds, %.02g Mb/s, %d tokens (%g bytes/token), %zu into %zu bytes ==> %g %%\n",
          pszInFilename, fDelta, fSpeed, stats.commands_divisor, (double)nOriginalSize / (double)stats.commands_divisor,
-         (int)nOriginalSize, (int)nCompressedSize, (double)(nCompressedSize * 100.0 / nOriginalSize));
+         nOriginalSize, nCompressedSize, (double)(nCompressedSize * 100.0 / nOriginalSize));
    }
 
    if (nOptions & OPT_STATS) {
@@ -272,7 +272,6 @@ static int do_decompress(const char *pszInFilename, const char *pszOutFilename, 
    size_t nCompressedSize, nMaxDecompressedSize, nOriginalSize;
    unsigned char *pCompressedData;
    unsigned char *pDecompressedData;
-   int nFlags = 0;
 
    /* Read the whole compressed file in memory */
 
@@ -289,7 +288,7 @@ static int do_decompress(const char *pszInFilename, const char *pszOutFilename, 
    pCompressedData = (unsigned char*)malloc(nCompressedSize);
    if (!pCompressedData) {
       fclose(f_in);
-      fprintf(stderr, "out of memory for reading '%s', %zd bytes needed\n", pszInFilename, nCompressedSize);
+      fprintf(stderr, "out of memory for reading '%s', %zu bytes needed\n", pszInFilename, nCompressedSize);
       return 100;
    }
 
@@ -307,7 +306,7 @@ static int do_decompress(const char *pszInFilename, const char *pszOutFilename, 
 
    /* Get max decompressed size */
 
-   nMaxDecompressedSize = apultra_get_max_decompressed_size(pCompressedData, nCompressedSize, nFlags);
+   nMaxDecompressedSize = apultra_get_max_decompressed_size(pCompressedData, nCompressedSize, 0U /* nFlags */);
    if (nMaxDecompressedSize == -1) {
       free(pCompressedData);
       fprintf(stderr, "invalid compressed format for file '%s'\n", pszInFilename);
@@ -320,6 +319,7 @@ static int do_decompress(const char *pszInFilename, const char *pszOutFilename, 
       /* Open the dictionary */
       f_dict = fopen(pszDictionaryFilename, "rb");
       if (!f_dict) {
+         free(pCompressedData);
          fprintf(stderr, "error opening dictionary '%s' for reading\n", pszDictionaryFilename);
          return 100;
       }
@@ -338,7 +338,7 @@ static int do_decompress(const char *pszInFilename, const char *pszOutFilename, 
    if (!pDecompressedData) {
       free(pCompressedData);
       if (f_dict) fclose(f_dict);
-      fprintf(stderr, "out of memory for decompressing '%s', %zd bytes needed\n", pszInFilename, nMaxDecompressedSize);
+      fprintf(stderr, "out of memory for decompressing '%s', %zu bytes needed\n", pszInFilename, nMaxDecompressedSize);
       return 100;
    }
 
@@ -348,7 +348,7 @@ static int do_decompress(const char *pszInFilename, const char *pszOutFilename, 
       /* Read dictionary data */
       if (fread(pDecompressedData, 1, nDictionarySize, f_dict) != nDictionarySize) {
          free(pDecompressedData);
-         fclose(f_in);
+         free(pCompressedData);
          fclose(f_dict);
          fprintf(stderr, "I/O error while reading dictionary '%s'\n", pszDictionaryFilename);
          return 100;
@@ -365,7 +365,7 @@ static int do_decompress(const char *pszInFilename, const char *pszOutFilename, 
       nStartTime = do_get_time();
    }
 
-   nOriginalSize = apultra_decompress(pCompressedData, pDecompressedData, nCompressedSize, nMaxDecompressedSize, nDictionarySize, nFlags);
+   nOriginalSize = apultra_decompress(pCompressedData, pDecompressedData, nCompressedSize, nMaxDecompressedSize, nDictionarySize, 0U /* nFlags */);
    if (nOriginalSize == -1) {
       free(pDecompressedData);
       free(pCompressedData);
@@ -374,26 +374,31 @@ static int do_decompress(const char *pszInFilename, const char *pszOutFilename, 
       return 100;
    }
 
+   if (nOptions & OPT_VERBOSE) {
+      nEndTime = do_get_time();
+   }
+
    if (nOptions & OPT_BACKWARD)
       do_reverse_buffer(pDecompressedData + nDictionarySize, nOriginalSize);
 
-   if (pszOutFilename) {
-      FILE *f_out;
+   /* Write whole decompressed file out */
 
-      /* Write whole decompressed file out */
+   FILE *f_out = fopen(pszOutFilename, "wb");
+   if (!f_out) {
+      free(pDecompressedData);
+      free(pCompressedData);
 
-      f_out = fopen(pszOutFilename, "wb");
-      if (f_out) {
-         fwrite(pDecompressedData + nDictionarySize, 1, nOriginalSize, f_out);
-         fclose(f_out);
-      }
+      fprintf(stderr, "error opening '%s' for writing\n", pszOutFilename);
+      return 100;
    }
+   
+   fwrite(pDecompressedData + nDictionarySize, 1, nOriginalSize, f_out);
+   fclose(f_out);
 
    free(pDecompressedData);
    free(pCompressedData);
 
    if (nOptions & OPT_VERBOSE) {
-      nEndTime = do_get_time();
       double fDelta = ((double)(nEndTime - nStartTime)) / 1000000.0;
       double fSpeed = ((double)nOriginalSize / 1048576.0) / fDelta;
       fprintf(stdout, "Decompressed '%s' in %g seconds, %g Mb/s\n",
@@ -411,7 +416,6 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
    unsigned char *pCompressedData = NULL;
    unsigned char *pOriginalData = NULL;
    unsigned char *pDecompressedData = NULL;
-   int nFlags = 0;
 
    /* Read the whole compressed file in memory */
 
@@ -428,7 +432,7 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
    pCompressedData = (unsigned char*)malloc(nCompressedSize);
    if (!pCompressedData) {
       fclose(f_in);
-      fprintf(stderr, "out of memory for reading '%s', %zd bytes needed\n", pszInFilename, nCompressedSize);
+      fprintf(stderr, "out of memory for reading '%s', %zu bytes needed\n", pszInFilename, nCompressedSize);
       return 100;
    }
 
@@ -461,7 +465,7 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
    if (!pOriginalData) {
       fclose(f_in);
       free(pCompressedData);
-      fprintf(stderr, "out of memory for reading '%s', %zd bytes needed\n", pszInFilename, nOriginalSize);
+      fprintf(stderr, "out of memory for reading '%s', %zu bytes needed\n", pszInFilename, nOriginalSize);
       return 100;
    }
 
@@ -477,7 +481,7 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
 
    /* Get max decompressed size */
 
-   nMaxDecompressedSize = apultra_get_max_decompressed_size(pCompressedData, nCompressedSize, nFlags);
+   nMaxDecompressedSize = apultra_get_max_decompressed_size(pCompressedData, nCompressedSize, 0U /* nFlags */);
    if (nMaxDecompressedSize == -1) {
       free(pOriginalData);
       free(pCompressedData);
@@ -491,6 +495,8 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
       /* Open the dictionary */
       f_dict = fopen(pszDictionaryFilename, "rb");
       if (!f_dict) {
+         free(pOriginalData);
+         free(pCompressedData);
          fprintf(stderr, "error opening dictionary '%s' for reading\n", pszDictionaryFilename);
          return 100;
       }
@@ -510,7 +516,7 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
       free(pOriginalData);
       free(pCompressedData);
       if (f_dict) fclose(f_dict);
-      fprintf(stderr, "out of memory for decompressing '%s', %zd bytes needed\n", pszInFilename, nMaxDecompressedSize);
+      fprintf(stderr, "out of memory for decompressing '%s', %zu bytes needed\n", pszInFilename, nMaxDecompressedSize);
       return 100;
    }
 
@@ -520,7 +526,8 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
       /* Read dictionary data */
       if (fread(pDecompressedData, 1, nDictionarySize, f_dict) != nDictionarySize) {
          free(pDecompressedData);
-         fclose(f_in);
+         free(pOriginalData);
+         free(pCompressedData);
          fclose(f_dict);
          fprintf(stderr, "I/O error while reading dictionary '%s'\n", pszDictionaryFilename);
          return 100;
@@ -537,7 +544,7 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
       nStartTime = do_get_time();
    }
 
-   nDecompressedSize = apultra_decompress(pCompressedData, pDecompressedData, nCompressedSize, nMaxDecompressedSize, nDictionarySize, nFlags);
+   nDecompressedSize = apultra_decompress(pCompressedData, pDecompressedData, nCompressedSize, nMaxDecompressedSize, nDictionarySize, 0U /* nFlags */);
    if (nDecompressedSize == -1) {
       free(pDecompressedData);
       free(pOriginalData);
@@ -547,10 +554,17 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
       return 100;
    }
 
+   if (nOptions & OPT_VERBOSE) {
+      nEndTime = do_get_time();
+   }
+
    if (nOptions & OPT_BACKWARD)
       do_reverse_buffer(pDecompressedData + nDictionarySize, nDecompressedSize);
 
    if (nDecompressedSize != nOriginalSize || memcmp(pDecompressedData + nDictionarySize, pOriginalData, nOriginalSize)) {
+      free(pDecompressedData);
+      free(pOriginalData);
+      free(pCompressedData);
       fprintf(stderr, "error comparing compressed file '%s' with original '%s'\n", pszInFilename, pszOutFilename);
       return 100;
    }
@@ -560,7 +574,6 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
    free(pCompressedData);
 
    if (nOptions & OPT_VERBOSE) {
-      nEndTime = do_get_time();
       double fDelta = ((double)(nEndTime - nStartTime)) / 1000000.0;
       double fSpeed = ((double)nOriginalSize / 1048576.0) / fDelta;
       fprintf(stdout, "Compared '%s' in %g seconds, %g Mb/s\n",
@@ -572,13 +585,13 @@ static int do_compare(const char *pszInFilename, const char *pszOutFilename, con
 
 /*---------------------------------------------------------------------------*/
 
-static void generate_compressible_data(unsigned char *pBuffer, size_t nBufferSize, unsigned int nSeed, int nNumLiteralValues, float fMatchProbability) {
+static void generate_compressible_data(unsigned char *pBuffer, const size_t nBufferSize, const unsigned int nSeed, const int nNumLiteralValues, const float fMatchProbability) {
    size_t nIndex = 0;
-   int nMatchProbability = (int)(fMatchProbability * 1023.0f);
+   const int nMatchProbability = (const int)(fMatchProbability * 1023.0f);
 
    srand(nSeed);
    
-   if (nIndex >= nBufferSize) return;
+   if (nBufferSize == 0) return;
    pBuffer[nIndex++] = rand() % nNumLiteralValues;
 
    while (nIndex < nBufferSize) {
@@ -612,13 +625,11 @@ static void generate_compressible_data(unsigned char *pBuffer, size_t nBufferSiz
    }
 }
 
-static void xor_data(unsigned char *pBuffer, size_t nBufferSize, unsigned int nSeed, float fXorProbability) {
+static void xor_data(unsigned char *pBuffer, const size_t nBufferSize, const unsigned int nSeed, const float fXorProbability) {
    size_t nIndex = 0;
-   int nXorProbability = (int)(fXorProbability * 1023.0f);
+   const int nXorProbability = (int)(fXorProbability * 1023.0f);
 
    srand(nSeed);
-
-   if (nIndex >= nBufferSize) return;
 
    while (nIndex < nBufferSize) {
       if ((rand() & 1023) < nXorProbability) {
@@ -636,7 +647,6 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
    size_t nGeneratedDataSize;
    size_t nMaxCompressedDataSize;
    unsigned int nSeed = 123;
-   int nFlags = 0;
    int i;
 
    pGeneratedData = (unsigned char*)malloc(4 * BLOCK_SIZE);
@@ -651,7 +661,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
       free(pGeneratedData);
       pGeneratedData = NULL;
 
-      fprintf(stderr, "out of memory, %zd bytes needed\n", nMaxCompressedDataSize);
+      fprintf(stderr, "out of memory, %zu bytes needed\n", nMaxCompressedDataSize);
       return 100;
    }
 
@@ -662,7 +672,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
       free(pGeneratedData);
       pGeneratedData = NULL;
 
-      fprintf(stderr, "out of memory, %zd bytes needed\n", nMaxCompressedDataSize);
+      fprintf(stderr, "out of memory, %zu bytes needed\n", nMaxCompressedDataSize);
       return 100;
    }
 
@@ -686,7 +696,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
    /* Test compressing with a too small buffer to do anything, expect to fail cleanly */
    for (i = 0; i < 12; i++) {
       generate_compressible_data(pGeneratedData, i, nSeed, 256, 0.5f);
-      apultra_compress(pGeneratedData, pCompressedData, i, i, nFlags, nMaxWindowSize, 0 /* dictionary size */, NULL, NULL);
+      apultra_compress(pGeneratedData, pCompressedData, i, i, 0U /* nFlags */, nMaxWindowSize, 0 /* dictionary size */, NULL, NULL);
    }
 
    size_t nDataSizeStep = 128;
@@ -695,7 +705,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
    for (nGeneratedDataSize = 1024; nGeneratedDataSize <= (nIsQuickTest ? 1024U : (4U * BLOCK_SIZE)); nGeneratedDataSize += nDataSizeStep) {
       float fMatchProbability;
 
-      fprintf(stdout, "size %zd", nGeneratedDataSize);
+      fprintf(stdout, "size %zu", nGeneratedDataSize);
       for (fMatchProbability = 0; fMatchProbability <= 0.995f; fMatchProbability += fProbabilitySizeStep) {
          int nNumLiteralValues[12] = { 1, 2, 3, 15, 30, 56, 96, 137, 178, 191, 255, 256 };
          float fXorProbability;
@@ -709,7 +719,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
 
             /* Try to compress it, expected to succeed */
             size_t nActualCompressedSize = apultra_compress(pGeneratedData, pCompressedData, nGeneratedDataSize, apultra_get_max_compressed_size(nGeneratedDataSize),
-               nFlags, nMaxWindowSize, 0 /* dictionary size */, NULL, NULL);
+               0U /* nFlags */, nMaxWindowSize, 0 /* dictionary size */, NULL, NULL);
             if (nActualCompressedSize == -1 || nActualCompressedSize < (1 + 1 + 1 /* footer */)) {
                free(pTmpDecompressedData);
                pTmpDecompressedData = NULL;
@@ -720,13 +730,13 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
                free(pGeneratedData);
                pGeneratedData = NULL;
 
-               fprintf(stderr, "\nself-test: error compressing size %zd, seed %d, match probability %f, literals range %d\n", nGeneratedDataSize, nSeed, fMatchProbability, nNumLiteralValues[i]);
+               fprintf(stderr, "\nself-test: error compressing size %zu, seed %u, match probability %f, literals range %d\n", nGeneratedDataSize, nSeed, fMatchProbability, nNumLiteralValues[i]);
                return 100;
             }
 
             /* Try to decompress it, expected to succeed */
             size_t nActualDecompressedSize;
-            nActualDecompressedSize = apultra_decompress(pCompressedData, pTmpDecompressedData, nActualCompressedSize, nGeneratedDataSize, 0 /* dictionary size */, nFlags);
+            nActualDecompressedSize = apultra_decompress(pCompressedData, pTmpDecompressedData, nActualCompressedSize, nGeneratedDataSize, 0 /* dictionary size */, 0U /* nFlags */);
             if (nActualDecompressedSize == -1) {
                free(pTmpDecompressedData);
                pTmpDecompressedData = NULL;
@@ -737,7 +747,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
                free(pGeneratedData);
                pGeneratedData = NULL;
 
-               fprintf(stderr, "\nself-test: error decompressing size %zd, seed %d, match probability %f, literals range %d\n", nGeneratedDataSize, nSeed, fMatchProbability, nNumLiteralValues[i]);
+               fprintf(stderr, "\nself-test: error decompressing size %zu, seed %u, match probability %f, literals range %d\n", nGeneratedDataSize, nSeed, fMatchProbability, nNumLiteralValues[i]);
                return 100;
             }
 
@@ -751,7 +761,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
                free(pGeneratedData);
                pGeneratedData = NULL;
 
-               fprintf(stderr, "\nself-test: error comparing decompressed and original data, size %zd, seed %d, match probability %f, literals range %d\n", nGeneratedDataSize, nSeed, fMatchProbability, nNumLiteralValues[i]);
+               fprintf(stderr, "\nself-test: error comparing decompressed and original data, size %zu, seed %u, match probability %f, literals range %d\n", nGeneratedDataSize, nSeed, fMatchProbability, nNumLiteralValues[i]);
                return 100;
             }
 
@@ -759,7 +769,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
             for (fXorProbability = 0.05f; fXorProbability <= 0.5f; fXorProbability += 0.05f) {
                memcpy(pTmpCompressedData, pCompressedData, nActualCompressedSize);
                xor_data(pTmpCompressedData, nActualCompressedSize, nSeed, fXorProbability);
-               apultra_decompress(pTmpCompressedData, pGeneratedData, nActualCompressedSize, nGeneratedDataSize, 0 /* dictionary size */, nFlags);
+               apultra_decompress(pTmpCompressedData, pGeneratedData, nActualCompressedSize, nGeneratedDataSize, 0 /* dictionary size */, 0U /* nFlags */);
             }
          }
 
@@ -799,7 +809,6 @@ static int do_compr_benchmark(const char *pszInFilename, const char *pszOutFilen
    size_t nFileSize, nMaxCompressedSize;
    unsigned char *pFileData;
    unsigned char *pCompressedData;
-   int nFlags = 0;
    int i;
 
    if (pszDictionaryFilename) {
@@ -822,7 +831,7 @@ static int do_compr_benchmark(const char *pszInFilename, const char *pszOutFilen
    pFileData = (unsigned char*)malloc(nFileSize);
    if (!pFileData) {
       fclose(f_in);
-      fprintf(stderr, "out of memory for reading '%s', %zd bytes needed\n", pszInFilename, nFileSize);
+      fprintf(stderr, "out of memory for reading '%s', %zu bytes needed\n", pszInFilename, nFileSize);
       return 100;
    }
 
@@ -845,7 +854,7 @@ static int do_compr_benchmark(const char *pszInFilename, const char *pszOutFilen
    pCompressedData = (unsigned char*)malloc(nMaxCompressedSize + 2048);
    if (!pCompressedData) {
       free(pFileData);
-      fprintf(stderr, "out of memory for compressing '%s', %zd bytes needed\n", pszInFilename, nMaxCompressedSize);
+      fprintf(stderr, "out of memory for compressing '%s', %zu bytes needed\n", pszInFilename, nMaxCompressedSize);
       return 100;
    }
 
@@ -865,7 +874,7 @@ static int do_compr_benchmark(const char *pszInFilename, const char *pszOutFilen
       memset(pCompressedData + 1024 + nRightGuardPos, nGuard, 1024);
 
       long long t0 = do_get_time();
-      nActualCompressedSize = apultra_compress(pFileData, pCompressedData + 1024, nFileSize, nRightGuardPos, nFlags, nMaxWindowSize, 0 /* dictionary size */, NULL, NULL);
+      nActualCompressedSize = apultra_compress(pFileData, pCompressedData + 1024, nFileSize, nRightGuardPos, 0U /* nFlags */, nMaxWindowSize, 0 /* dictionary size */, NULL, NULL);
       long long t1 = do_get_time();
       if (nActualCompressedSize == -1) {
          free(pCompressedData);
@@ -919,7 +928,7 @@ static int do_compr_benchmark(const char *pszInFilename, const char *pszOutFilen
    free(pCompressedData);
    free(pFileData);
 
-   fprintf(stdout, "compressed size: %zd bytes\n", nActualCompressedSize);
+   fprintf(stdout, "compressed size: %zu bytes\n", nActualCompressedSize);
    fprintf(stdout, "compression time: %lld microseconds (%g Mb/s)\n", nBestCompTime, ((double)nActualCompressedSize / 1024.0) / ((double)nBestCompTime / 1000.0));
 
    return 0;
@@ -931,7 +940,6 @@ static int do_dec_benchmark(const char *pszInFilename, const char *pszOutFilenam
    size_t nFileSize, nMaxDecompressedSize;
    unsigned char *pFileData;
    unsigned char *pDecompressedData;
-   int nFlags = 0;
    int i;
 
    if (pszDictionaryFilename) {
@@ -954,7 +962,7 @@ static int do_dec_benchmark(const char *pszInFilename, const char *pszOutFilenam
    pFileData = (unsigned char*)malloc(nFileSize);
    if (!pFileData) {
       fclose(f_in);
-      fprintf(stderr, "out of memory for reading '%s', %zd bytes needed\n", pszInFilename, nFileSize);
+      fprintf(stderr, "out of memory for reading '%s', %zu bytes needed\n", pszInFilename, nFileSize);
       return 100;
    }
 
@@ -972,7 +980,7 @@ static int do_dec_benchmark(const char *pszInFilename, const char *pszOutFilenam
 
    /* Allocate max decompressed size */
 
-   nMaxDecompressedSize = apultra_get_max_decompressed_size(pFileData, nFileSize, nFlags);
+   nMaxDecompressedSize = apultra_get_max_decompressed_size(pFileData, nFileSize, 0U /* nFlags */);
    if (nMaxDecompressedSize == -1) {
       free(pFileData);
       fprintf(stderr, "invalid compressed format for file '%s'\n", pszInFilename);
@@ -982,7 +990,7 @@ static int do_dec_benchmark(const char *pszInFilename, const char *pszOutFilenam
    pDecompressedData = (unsigned char*)malloc(nMaxDecompressedSize);
    if (!pDecompressedData) {
       free(pFileData);
-      fprintf(stderr, "out of memory for decompressing '%s', %zd bytes needed\n", pszInFilename, nMaxDecompressedSize);
+      fprintf(stderr, "out of memory for decompressing '%s', %zu bytes needed\n", pszInFilename, nMaxDecompressedSize);
       return 100;
    }
 
@@ -993,7 +1001,7 @@ static int do_dec_benchmark(const char *pszInFilename, const char *pszOutFilenam
    size_t nActualDecompressedSize = 0;
    for (i = 0; i < 50; i++) {
       long long t0 = do_get_time();
-      nActualDecompressedSize = apultra_decompress(pFileData, pDecompressedData, nFileSize, nMaxDecompressedSize, 0 /* dictionary size */, nFlags);
+      nActualDecompressedSize = apultra_decompress(pFileData, pDecompressedData, nFileSize, nMaxDecompressedSize, 0 /* dictionary size */, 0U /* nFlags */);
       long long t1 = do_get_time();
       if (nActualDecompressedSize == -1) {
          free(pDecompressedData);
@@ -1025,7 +1033,7 @@ static int do_dec_benchmark(const char *pszInFilename, const char *pszOutFilenam
    free(pDecompressedData);
    free(pFileData);
 
-   fprintf(stdout, "decompressed size: %zd bytes\n", nActualDecompressedSize);
+   fprintf(stdout, "decompressed size: %zu bytes\n", nActualDecompressedSize);
    fprintf(stdout, "decompression time: %lld microseconds (%g Mb/s)\n", nBestDecTime, ((double)nActualDecompressedSize / 1024.0) / ((double)nBestDecTime / 1000.0));
 
    return 0;
