@@ -161,7 +161,7 @@ def main():
     if mh < args.rh or mh % args.rh:
         parser.error("Map size height not multiple of the room size")
     if mw < args.rw or mw % args.rw:
-        parser.error("Map size witdh not multiple of the room size")
+        parser.error("Map size width not multiple of the room size")
 
     tilewidth = data["tilewidth"]
     tileheight = data["tileheight"]
