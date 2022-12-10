@@ -94,7 +94,7 @@ def read_image(image_name, out, color):
                 data[x + i + ((y + j) * w)] for j in range(DEF_H) for i in range(DEF_W)
             ]
 
-            # get the attibutes of the tile
+            # get the attributes of the tile
             # FIXME: this may not be right
             for i in range(0, len(tile), DEF_W):
                 cols = list(sorted(set(tile[i : i + DEF_W])))
