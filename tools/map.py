@@ -220,8 +220,16 @@ def main():
         # ents size placeholder 0
         out[i] = [size & 0xFF, size >> 8, 0] + out[i]
 
-    entities_layer = find_name(data["layers"], "Entities")
-    if len(entities_layer):
+    try:
+        entities_layer = find_name(data["layers"], "Entities")
+    except ValueError:
+        entities_layer = []
+        if not args.quiet:
+            print(
+                "%s: warning: 'Entities' layer not found" % path.basename(sys.argv[0]),
+                file=sys.stderr,
+            )
+    if len(entities_layer) and entities_layer["visible"]:
         map_ents = defaultdict(list)
         map_ents_w = defaultdict(int)
         map_ents_bytes = defaultdict(int)

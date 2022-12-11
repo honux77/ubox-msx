@@ -88,7 +88,7 @@ This is a map importer to use with [tiled](https://www.mapeditor.org/) JSON form
 
 The map importer supports:
 
-- **entities**: an object layer describing game entities such as enemies.
+- **entities**: an optional object layer describing game entities such as enemies. If the "visible" property on this layer is set to "false", the layer will be ignored even if present.
 - **map**: a tile layer describing the map itself.
 
 #### Map requirements
