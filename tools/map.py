@@ -148,10 +148,6 @@ def main():
     with open(args.conf, "rt") as fd:
         conf = json.load(fd)
 
-    et_names = [d["name"] for d in conf["entities"]]
-    et_weigths = dict((d["name"], d["w"]) for d in conf["entities"])
-    et_bytes = dict((d["name"], d["bytes"]) for d in conf["entities"])
-
     with open(args.map_json, "rt") as fd:
         data = json.load(fd)
 
@@ -230,6 +226,9 @@ def main():
                 file=sys.stderr,
             )
     if len(entities_layer) and entities_layer["visible"]:
+        et_names = [d["name"] for d in conf["entities"]]
+        et_weigths = dict((d["name"], d["w"]) for d in conf["entities"])
+        et_bytes = dict((d["name"], d["bytes"]) for d in conf["entities"])
         map_ents = defaultdict(list)
         map_ents_w = defaultdict(int)
         map_ents_bytes = defaultdict(int)
