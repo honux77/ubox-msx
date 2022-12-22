@@ -145,9 +145,6 @@ def main():
 
     args = parser.parse_args()
 
-    with open(args.conf, "rt") as fd:
-        conf = json.load(fd)
-
     with open(args.map_json, "rt") as fd:
         data = json.load(fd)
 
@@ -226,6 +223,8 @@ def main():
                 file=sys.stderr,
             )
     if len(entities_layer) and entities_layer["visible"]:
+        with open(args.conf, "rt") as fd:
+            conf = json.load(fd)
         et_names = [d["name"] for d in conf["entities"]]
         et_weigths = dict((d["name"], d["w"]) for d in conf["entities"])
         et_bytes = dict((d["name"], d["bytes"]) for d in conf["entities"])
