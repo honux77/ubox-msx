@@ -105,8 +105,8 @@ Please check `map.json` of the example game for a reference.
 
 #### Configuration
 
-If the `Entities` layer is used (it must exists and be "visible"), the map
-importer will reuire a configuration file in JSON format that provides
+If the `Entities` layer is used (it must exist and be "visible"), the map
+importer will require a configuration file in JSON format that provides
 information about the valid entities in the map.
 
 For each entity it expects:
