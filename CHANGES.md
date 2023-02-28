@@ -1,4 +1,4 @@
-## Release 1.1.13 - ????-??-??
+## Release 1.1.13 - 2023-02-28
 
  - Updated apultra to 1.4.8
  - In `map.py`, the "Entities" layer is now optional
