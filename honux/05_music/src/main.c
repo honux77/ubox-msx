@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "ubox.h"
 #include "mplayer.h"
+#include "util.h"
 
 #define LOCAL
 #include "tiles.h"
@@ -8,12 +9,9 @@
 extern uint8_t SONG[];
 
 #define WHITESPACE_TILE 129
-
-void put_text(uint8_t x, uint8_t y, const uint8_t *text)
-{
-    while (*text)
-        ubox_put_tile(x++, y, *text++ + 128 - 31);
-}
+#define HC 15
+#define VC 11
+#define TITLE "MUSIC : ALIENALL"
 
 void main()
 {
@@ -29,9 +27,9 @@ void main()
     ubox_set_tiles(tiles);
     ubox_set_tiles_colors(tiles_colors);
   
-    ubox_fill_screen(WHITESPACE_TILE);
-	put_text(11, 11, "MUSIC : ALIENALL");
-		
+    ubox_fill_screen(WHITESPACE_TILE);    
+	put_text_hc(VC, TITLE);		    
+    put_text_hc(VC + 2, "PRESS ESC TO STOP");
     ubox_enable_screen();
 
     mplayer_init(SONG, 0);
@@ -42,6 +40,12 @@ void main()
 
     while (1)
     {	
+        if (ubox_read_keys(7) == UBOX_MSX_KEY_ESC)
+        {
+            put_text_hc(VC, "SORRY, CAN'T STOP PLAYING MUSIC");
+            mplayer_stop();
+            break;
+        }
         ubox_wait();
     }
 }
