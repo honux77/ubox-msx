@@ -43,7 +43,10 @@ void main()
     ubox_set_tiles_colors(tiles_colors);
 
     ubox_fill_screen(WHITESPACE_TILE);
-    put_text(11, 11, "EFFECTS TEST");
+    put_text(6, 11, "SOUND EFFECTS TEST");
+    put_text(1, 1, "PRESS NUM 1-5 KEY TO TEST SOUND");
+    put_text(1, 2, "PRESS ESC TO END");
+
 
     ubox_enable_screen();
 
@@ -56,7 +59,7 @@ void main()
     {
         if (ubox_read_keys(7) == UBOX_MSX_KEY_ESC)
         {
-            put_text(11, 11, "GOODBYE!      ");
+            put_text(5, 11, "GOODBYE! TO RESTART RESET YOUR PC!");
             break;
         }
 
