@@ -1,4 +1,4 @@
-all: hello console timer libc music sound copy
+all: hello console timer libc music sound snake sokoban copy
 
 MSX := /mnt/d/MSX/roms
 export PATH := $(PWD)/../bin:$(PATH)
@@ -23,7 +23,6 @@ sound: bin
 
 snake: bin	
 	make -C 07_snakebyte	
-
 
 sokoban: bin	
 	make -C 08_socoban
