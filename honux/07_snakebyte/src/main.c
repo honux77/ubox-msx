@@ -10,8 +10,6 @@ uint8_t ctl;
 
 uint8_t g_gamestate = STATE_TITLE;
 
-extern int g_score;
-
 void draw_title()
 {    
     ubox_disable_screen();

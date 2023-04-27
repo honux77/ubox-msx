@@ -7,6 +7,7 @@
 #define TILE_WIDTH 8
 #define MAP_WIDTH 30
 #define MAP_HEIGHT 20
+#define INIT_SPEED 7
 
 struct Rect
 {
@@ -46,15 +47,15 @@ typedef struct SnakeNode
 } SnakeNode;
 
 int g_score = 0; //획득점수
-uint8_t g_score_text[4] = "000";
+int g_high_score = 0; //최고점수
+uint8_t g_score_text[10] = "SCORE 000";
+uint8_t g_high_score_text[9] = "HIGH 000";
 int step_time = 10;
 char g_objMap[MAP_HEIGHT][MAP_WIDTH];
 
 extern uint8_t g_gamestate;
 
-
 long g_next_step = 0;		//조각 이동가능한 시간. 현재시간이 이 값을 넘으면 조각을 이동시킨다.
-int g_key = 0;				//키보드 입력값
 
 SnakeNode *g_player = 0;
 
@@ -62,19 +63,28 @@ void InitGame();
 void ProcessLogic(SnakeNode *player);
 void GenerateNewFrog(Point* point);
 void DrawBackground();
+void DrawScore();
+void DrawHighScore();
 
-//convert int to string
-void score2text(int num) {	
-	int i = 2;
-	if (num == 0) {
-		g_score_text[2] = '0';		
-		return;
-	}
-
-	while (num > 0) {
-		g_score_text[i--] = (num % 10) + '0';
+void DrawScore() {
+	int num = g_score;
+	for (int i = 8; i >= 6; i--) {			
+		g_score_text[i] = (num % 10) + '0';
 		num /= 10;
+	}	
+	put_text(MAP_WIDTH - 9, 0, g_score_text); 
+}
+void DrawHighScore() {
+	if (g_score > g_high_score) {
+		g_high_score = g_score;
 	}
+	int num = g_high_score;
+
+	for (int i = 7; i >= 5; i--) {			
+		g_high_score_text[i] = (num % 10) + '0';
+		num /= 10;
+	}	
+	put_text(MAP_WIDTH - 22, 0, g_high_score_text); 
 }
 
 void run_game()
@@ -99,17 +109,13 @@ void run_game()
 
 struct Point g_frog;
 
-void drawScore() {
-	score2text(g_score);			
-	put_text(MAP_WIDTH - 2, MAP_HEIGHT, g_score_text); 
-}
+
 
 void InitGame()
 {
 	srand(now());
 	g_score = 0;
-	step_time = 10;
-	//srand(time(NULL));
+	step_time = INIT_SPEED;
 
 	g_player = malloc(sizeof(SnakeNode));
 	g_player->dir = rand() % 4; //초기 방향
@@ -129,7 +135,6 @@ void InitGame()
 
 	GenerateNewFrog(&g_frog);
 	g_next_step = now() + step_time;	
-	drawScore();
 }
 
 SnakeNode* MoveBody(SnakeNode *node, int xPos, int yPos) 
@@ -261,7 +266,8 @@ void ProcessLogic(SnakeNode *player)
 				step_time = 1;
 			}
 
-			drawScore();			
+			DrawScore();				
+			DrawHighScore();	
 			MoveBody(player, next_pos_x, next_pos_y);
 			
 			SnakeNode *newNode = malloc(sizeof(SnakeNode));
@@ -309,4 +315,6 @@ void DrawBackground()
 
 	for (int index = 0; index < MAP_HEIGHT + 1; index++)
 		RenderTile(MAP_WIDTH + 1, index, 77);
+	DrawScore();
+	DrawHighScore();
 }
