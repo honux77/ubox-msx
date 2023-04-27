@@ -4309,8 +4309,8 @@ _draw_game_over::
 	call	_ubox_enable_screen
 	C$main.c$47$1_0$58	= .
 	.globl	C$main.c$47$1_0$58
-;main.c:47: ubox_wait_for(250);    
-	ld	l, #0xfa
+;main.c:47: ubox_wait_for(120);    
+	ld	l, #0x78
 	call	_ubox_wait_for
 	C$main.c$49$1_0$58	= .
 	.globl	C$main.c$49$1_0$58

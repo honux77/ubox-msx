@@ -44,7 +44,7 @@ void draw_game_over()
     put_text(11, 10, "GAME  OVER");
     ubox_enable_screen();
 
-    ubox_wait_for(250);    
+    ubox_wait_for(120);    
 
     ubox_disable_screen();
     ubox_fill_screen(WHITESPACE_TILE);
