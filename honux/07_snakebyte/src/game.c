@@ -16,6 +16,12 @@ struct Rect
 	uint8_t y2;
 };
 
+typedef struct Point
+{
+	uint8_t x;
+	uint8_t y;	
+}Point;
+
 typedef enum
 {
 	LEFT = 0,
@@ -40,22 +46,36 @@ typedef struct SnakeNode
 } SnakeNode;
 
 int g_score = 0; //획득점수
+uint8_t g_score_text[4] = "000";
+int step_time = 10;
 char g_objMap[MAP_HEIGHT][MAP_WIDTH];
 
 extern uint8_t g_gamestate;
-int step_time = 5;		 //스네이크 이동 시간 오프셋
 
-long g_next_step = 0; //입력받을 수 있는 시간. 현재시간이 이 값을 넘지 못하면 입력을 받을 수 없다.
-int g_key = 0;				//입력받은 키값
+
+long g_next_step = 0;		//조각 이동가능한 시간. 현재시간이 이 값을 넘으면 조각을 이동시킨다.
+int g_key = 0;				//키보드 입력값
 
 SnakeNode *g_player = 0;
 
 void InitGame();
 void ProcessLogic(SnakeNode *player);
-void DrawObject();
-void GenerateNewFrog();
+void GenerateNewFrog(Point* point);
 void DrawBackground();
-void inputKey();
+
+//convert int to string
+void score2text(int num) {	
+	int i = 2;
+	if (num == 0) {
+		g_score_text[2] = '0';		
+		return;
+	}
+
+	while (num > 0) {
+		g_score_text[i--] = (num % 10) + '0';
+		num /= 10;
+	}
+}
 
 void run_game()
 {
@@ -69,9 +89,7 @@ void run_game()
 
 	while (1)
 	{
-		inputKey();
-		ProcessLogic(g_player);
-		DrawObject();
+		ProcessLogic(g_player);		
 		ubox_wait();
 
 		if (g_gamestate == STATE_GAME_OVER)
@@ -79,9 +97,18 @@ void run_game()
 	}
 }
 
+struct Point g_frog;
+
+void drawScore() {
+	score2text(g_score);			
+	put_text(MAP_WIDTH - 2, MAP_HEIGHT, g_score_text); 
+}
+
 void InitGame()
 {
 	srand(now());
+	g_score = 0;
+	step_time = 10;
 	//srand(time(NULL));
 
 	g_player = malloc(sizeof(SnakeNode));
@@ -98,11 +125,11 @@ void InitGame()
 		{
 			g_objMap[i][j] = NOTHING;
 		}
-	}
+	}	
 
-	GenerateNewFrog();
-	
-	g_next_step = now() + step_time;
+	GenerateNewFrog(&g_frog);
+	g_next_step = now() + step_time;	
+	drawScore();
 }
 
 SnakeNode* MoveBody(SnakeNode *node, int xPos, int yPos) 
@@ -121,17 +148,16 @@ SnakeNode* MoveBody(SnakeNode *node, int xPos, int yPos)
 }
 
 
-void GenerateNewFrog()
-{
-	char randy = 0, randx = 0;
-
+void GenerateNewFrog(Point* point)
+{		
 	do
 	{
-		randy = (int)(rand() % MAP_HEIGHT);
-		randx = (int)(rand() % MAP_WIDTH);
+		point->x = (int)(rand() % (MAP_WIDTH - 1));
+		point->y = (int)(rand() % (MAP_HEIGHT - 1));
 
-	} while (g_objMap[randy][randx] != NOTHING);
-	g_objMap[randy][randx] = FROG;
+	} while (g_objMap[point->y][point->x] != NOTHING);
+	g_objMap[point->y][point->x] = FROG;
+
 }
 
 char CheckWall(SnakeNode *player)
@@ -161,131 +187,112 @@ char CheckWall(SnakeNode *player)
 	return result;
 }
 
-void inputKey() {
-	if (g_key == 0)
-		g_key = ubox_read_keys(8);
-}
-
 void ProcessLogic(SnakeNode *player)
 {
 	if (g_gamestate != STATE_IN_GAME)
 		return;
+	
+	char x_offset = 0;
+	char y_offset = 0;
 
-	//키 입력을 받을 수 있는 시간인가
-	if (now() > g_next_step)
+	switch(ubox_read_keys(8))
 	{
-		//다음 키 입력을 받을 시간을 갱신
-		g_next_step = now() + step_time;
-		char x_offset = 0;
-		char y_offset = 0;
+	case UBOX_MSX_KEY_LEFT:
+		player->dir = LEFT;
+		break;
+	case UBOX_MSX_KEY_RIGHT:
+		player->dir = RIGHT;
+		break;
+	case UBOX_MSX_KEY_UP:
+		player->dir = UP;
+		break;
+	case UBOX_MSX_KEY_DOWN:
+		player->dir = DOWN;
+		break;
+	}
 
-		switch(g_key)
-		{
-		case UBOX_MSX_KEY_LEFT:
-			player->dir = LEFT;
-			break;
-		case UBOX_MSX_KEY_RIGHT:
-			player->dir = RIGHT;
-			break;
-		case UBOX_MSX_KEY_UP:
-			player->dir = UP;
-			break;
-		case UBOX_MSX_KEY_DOWN:
-			player->dir = DOWN;
-			break;
-		}
-		g_key = 0;
+	switch(player->dir)
+	{
+	case LEFT:
+		x_offset = -1;
+		break;
+	case RIGHT:			
+		x_offset = 1;
+		break;
+	case UP:			
+		y_offset = -1;
+		break;
+	case DOWN:			
+		y_offset = 1;
+		break;
+	}
 
-		switch(player->dir)
-		{
-		case LEFT:
-			x_offset = -1;
-			break;
-		case RIGHT:			
-			x_offset = 1;
-			break;
-		case UP:			
-			y_offset = -1;
-			break;
-		case DOWN:			
-			y_offset = 1;
-			break;
-		}
-
+	if (now() > g_next_step)
+	{		
 		
 		if(CheckWall(player))
 		{
 			g_gamestate = STATE_GAME_OVER;
 			return;
-		}
+		}			
 
+		char pos_x = player->x;
+		char pos_y = player->y;
 		char next_pos_x = player->x + x_offset;
 		char next_pos_y = player->y + y_offset;
 
 		char objectType = g_objMap[next_pos_y][next_pos_x];
+		SnakeNode *tail = player; // 뱀의 마지막 부분을 찾는다
+		while (tail->next != NULL)
+		{
+			tail = tail->next;
+		}
+
+		int tail_x = tail->x;
+		int tail_y = tail->y;
 
 		switch (objectType)
 		{
-		case FROG:			
+		case FROG:					
 			g_score++;
-			SnakeNode *tail = player; //뱀의 마지막 부분을 찾는다
-			while (tail->next != NULL)
-			{
-				tail = tail->next;
+			if (g_score > 0 && g_score % 3 == 0) {
+				step_time -= 1;
+			if (step_time < 1)
+				step_time = 1;
 			}
-			int new_node_x = tail->x;
-			int new_node_y = tail->y;
 
+			drawScore();			
 			MoveBody(player, next_pos_x, next_pos_y);
 			
 			SnakeNode *newNode = malloc(sizeof(SnakeNode));
-			newNode->x = new_node_x;
-			newNode->y = new_node_y;
+			newNode->x = tail_x;
+			newNode->y = tail_y;
 
 			newNode->dir = tail->dir;
 			newNode->next = NULL;
 			tail->next = newNode;
 
-			GenerateNewFrog();			
+			GenerateNewFrog(&g_frog);						
+
 			break;
 		case SNAKE:
 			g_gamestate = STATE_GAME_OVER;
 			break;
 		default:
 			MoveBody(player, next_pos_x, next_pos_y);
+			RenderTile(tail_x + 1, tail_y + 1, BLACK_TILE); 
 			break;
 		}
 
-		g_objMap[next_pos_y][next_pos_x] = SNAKE;		
-	}
-}
+		g_objMap[next_pos_y][next_pos_x] = SNAKE;
+		g_next_step = now() + step_time;
+								
+		RenderTile(g_frog.x + 1, g_frog.y + 1, GREEN_TILE);
 
-void DrawObject()
-{
-	uint8_t c = 0;
+		if(g_score > 0)
+			RenderTile(pos_x + 1, pos_y + 1, YELLOW_TILE);  	
 
-	//맵의 정보를 그린다.
-	for (uint8_t row = 0; row < MAP_HEIGHT; row++)
-	{
-		for (uint8_t col = 0; col < MAP_WIDTH; col++)
-		{
-			if (g_objMap[row][col] == NOTHING) //정보가 없으면 검은색을 그린다.
-				c = BLACK_TILE;
-
-			else if (g_objMap[row][col] == FROG) //개구리라면 녹색을 그린다.
-				c = GREEN_TILE;
-
-			else if (g_objMap[row][col] == SNAKE)
-			{
-				//뱀의 머리라면 노란색을 그리고 그렇지 않으면 흰색을 그린다.
-				if (g_player->x == col && g_player->y == row)
-					c = YELLOW_TILE;
-				else
-					c = WHITE_TILE;
-			}
-
-			RenderTile(col + 1, row + 1, c); //타일을 그린다.
-		}
+		RenderTile(next_pos_x + 1, next_pos_y + 1, WHITE_TILE); 
 	}
 }
 

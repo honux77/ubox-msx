@@ -70,86 +70,95 @@ _g_gamestate::
 	.area _CODE
 	G$draw_title$0$0	= .
 	.globl	G$draw_title$0$0
-	C$main.c$14$0_0$57	= .
-	.globl	C$main.c$14$0_0$57
-;main.c:14: void draw_title()
+	C$main.c$15$0_0$56	= .
+	.globl	C$main.c$15$0_0$56
+;main.c:15: void draw_title()
 ;	---------------------------------
 ; Function draw_title
 ; ---------------------------------
 _draw_title::
-	C$main.c$16$1_0$57	= .
-	.globl	C$main.c$16$1_0$57
-;main.c:16: ubox_disable_screen();
+	C$main.c$17$1_0$56	= .
+	.globl	C$main.c$17$1_0$56
+;main.c:17: ubox_disable_screen();
 	call	_ubox_disable_screen
-	C$main.c$18$1_0$57	= .
-	.globl	C$main.c$18$1_0$57
-;main.c:18: ubox_fill_screen(WHITESPACE_TILE);
+	C$main.c$19$1_0$56	= .
+	.globl	C$main.c$19$1_0$56
+;main.c:19: ubox_fill_screen(WHITESPACE_TILE);
 	ld	l, #0x81
 	call	_ubox_fill_screen
-	C$main.c$20$1_0$57	= .
-	.globl	C$main.c$20$1_0$57
-;main.c:20: put_text(11, 9, "SNAKEBYTE");
+	C$main.c$21$1_0$56	= .
+	.globl	C$main.c$21$1_0$56
+;main.c:21: put_text(11, 9, "SNAKEBYTE");
 	ld	hl, #___str_0
 	push	hl
 	ld	de, #0x090b
 	push	de
 	call	_put_text
 	pop	af
-	C$main.c$21$1_0$57	= .
-	.globl	C$main.c$21$1_0$57
-;main.c:21: put_text(8, 11, "PRESS SPACE BAR");
+	C$main.c$22$1_0$56	= .
+	.globl	C$main.c$22$1_0$56
+;main.c:22: put_text(8, 11, "PRESS SPACE BAR");
 	ld	hl, #___str_1
 	ex	(sp),hl
 	ld	de, #0x0b08
 	push	de
 	call	_put_text
 	pop	af
-	C$main.c$23$1_0$57	= .
-	.globl	C$main.c$23$1_0$57
-;main.c:23: put_text(8, 18, "\0372021 YUZA SOFT");
+	C$main.c$24$1_0$56	= .
+	.globl	C$main.c$24$1_0$56
+;main.c:24: put_text(8, 18, "\0372021 YUZA SOFT");
 	ld	hl, #___str_2
 	ex	(sp),hl
 	ld	de, #0x1208
 	push	de
 	call	_put_text
 	pop	af
+	C$main.c$25$1_0$56	= .
+	.globl	C$main.c$25$1_0$56
+;main.c:25: put_text(8, 19, "\0372021 HONUX");
+	ld	hl, #___str_3
+	ex	(sp),hl
+	ld	de, #0x1308
+	push	de
+	call	_put_text
 	pop	af
-	C$main.c$25$1_0$57	= .
-	.globl	C$main.c$25$1_0$57
-;main.c:25: ubox_enable_screen();
+	pop	af
+	C$main.c$27$1_0$56	= .
+	.globl	C$main.c$27$1_0$56
+;main.c:27: ubox_enable_screen();
 	call	_ubox_enable_screen
-	C$main.c$27$1_0$57	= .
-	.globl	C$main.c$27$1_0$57
-;main.c:27: while (1)
+	C$main.c$29$1_0$56	= .
+	.globl	C$main.c$29$1_0$56
+;main.c:29: while (1)
 00104$:
-	C$main.c$29$2_0$58	= .
-	.globl	C$main.c$29$2_0$58
-;main.c:29: ctl = ubox_select_ctl();
+	C$main.c$31$2_0$57	= .
+	.globl	C$main.c$31$2_0$57
+;main.c:31: ctl = ubox_select_ctl();
 	call	_ubox_select_ctl
 	ld	a, l
 	ld	(_ctl+0), a
-	C$main.c$31$2_0$58	= .
-	.globl	C$main.c$31$2_0$58
-;main.c:31: if (ctl != UBOX_MSX_CTL_NONE)
+	C$main.c$33$2_0$57	= .
+	.globl	C$main.c$33$2_0$57
+;main.c:33: if (ctl != UBOX_MSX_CTL_NONE)
 	ld	a,(#_ctl + 0)
 	inc	a
 	jr	NZ,00105$
-	C$main.c$34$2_0$58	= .
-	.globl	C$main.c$34$2_0$58
-;main.c:34: ubox_wait();
+	C$main.c$36$2_0$57	= .
+	.globl	C$main.c$36$2_0$57
+;main.c:36: ubox_wait();
 	call	_ubox_wait
 	jr	00104$
 00105$:
-	C$main.c$37$1_0$57	= .
-	.globl	C$main.c$37$1_0$57
-;main.c:37: g_gamestate = STATE_IN_GAME;
+	C$main.c$39$1_0$56	= .
+	.globl	C$main.c$39$1_0$56
+;main.c:39: g_gamestate = STATE_IN_GAME;
 	ld	hl,#_g_gamestate + 0
 	ld	(hl), #0x01
-	C$main.c$38$1_0$57	= .
-	.globl	C$main.c$38$1_0$57
-;main.c:38: }
-	C$main.c$38$1_0$57	= .
-	.globl	C$main.c$38$1_0$57
+	C$main.c$40$1_0$56	= .
+	.globl	C$main.c$40$1_0$56
+;main.c:40: }
+	C$main.c$40$1_0$56	= .
+	.globl	C$main.c$40$1_0$56
 	XG$draw_title$0$0	= .
 	.globl	XG$draw_title$0$0
 	ret
@@ -4266,90 +4275,95 @@ ___str_2:
 	.db 0x1f
 	.ascii "2021 YUZA SOFT"
 	.db 0x00
+Fmain$__str_3$0_0$0 == .
+___str_3:
+	.db 0x1f
+	.ascii "2021 HONUX"
+	.db 0x00
 	G$draw_game_over$0$0	= .
 	.globl	G$draw_game_over$0$0
-	C$main.c$40$1_0$59	= .
-	.globl	C$main.c$40$1_0$59
-;main.c:40: void draw_game_over()
+	C$main.c$42$1_0$58	= .
+	.globl	C$main.c$42$1_0$58
+;main.c:42: void draw_game_over()
 ;	---------------------------------
 ; Function draw_game_over
 ; ---------------------------------
 _draw_game_over::
-	C$main.c$42$1_0$59	= .
-	.globl	C$main.c$42$1_0$59
-;main.c:42: ubox_disable_screen();
+	C$main.c$44$1_0$58	= .
+	.globl	C$main.c$44$1_0$58
+;main.c:44: ubox_disable_screen();
 	call	_ubox_disable_screen
-	C$main.c$44$1_0$59	= .
-	.globl	C$main.c$44$1_0$59
-;main.c:44: put_text(11, 10, "GAME  OVER");
-	ld	hl, #___str_3
+	C$main.c$46$1_0$58	= .
+	.globl	C$main.c$46$1_0$58
+;main.c:46: put_text(11, 10, "GAME  OVER");
+	ld	hl, #___str_4
 	push	hl
 	ld	de, #0x0a0b
 	push	de
 	call	_put_text
 	pop	af
 	pop	af
-	C$main.c$46$1_0$59	= .
-	.globl	C$main.c$46$1_0$59
-;main.c:46: ubox_enable_screen();
+	C$main.c$47$1_0$58	= .
+	.globl	C$main.c$47$1_0$58
+;main.c:47: ubox_enable_screen();
 	call	_ubox_enable_screen
-	C$main.c$48$1_0$59	= .
-	.globl	C$main.c$48$1_0$59
-;main.c:48: ubox_wait_for(128);
+	C$main.c$49$1_0$58	= .
+	.globl	C$main.c$49$1_0$58
+;main.c:49: ubox_wait_for(128);
 	ld	l, #0x80
 	call	_ubox_wait_for
-	C$main.c$50$1_0$59	= .
-	.globl	C$main.c$50$1_0$59
-;main.c:50: ubox_disable_screen();
+	C$main.c$51$1_0$58	= .
+	.globl	C$main.c$51$1_0$58
+;main.c:51: ubox_disable_screen();
 	call	_ubox_disable_screen
-	C$main.c$51$1_0$59	= .
-	.globl	C$main.c$51$1_0$59
-;main.c:51: ubox_fill_screen(WHITESPACE_TILE);
+	C$main.c$52$1_0$58	= .
+	.globl	C$main.c$52$1_0$58
+;main.c:52: ubox_fill_screen(WHITESPACE_TILE);
 	ld	l, #0x81
 	call	_ubox_fill_screen
-	C$main.c$52$1_0$59	= .
-	.globl	C$main.c$52$1_0$59
-;main.c:52: ubox_enable_screen();
+	C$main.c$53$1_0$58	= .
+	.globl	C$main.c$53$1_0$58
+;main.c:53: ubox_enable_screen();
 	call	_ubox_enable_screen
-	C$main.c$54$1_0$59	= .
-	.globl	C$main.c$54$1_0$59
-;main.c:54: g_gamestate = STATE_TITLE;
+	C$main.c$55$1_0$58	= .
+	.globl	C$main.c$55$1_0$58
+;main.c:55: g_gamestate = STATE_TITLE;
 	ld	hl,#_g_gamestate + 0
 	ld	(hl), #0x00
-	C$main.c$55$1_0$59	= .
-	.globl	C$main.c$55$1_0$59
-;main.c:55: }
-	C$main.c$55$1_0$59	= .
-	.globl	C$main.c$55$1_0$59
+	C$main.c$56$1_0$58	= .
+	.globl	C$main.c$56$1_0$58
+;main.c:56: }
+	C$main.c$56$1_0$58	= .
+	.globl	C$main.c$56$1_0$58
 	XG$draw_game_over$0$0	= .
 	.globl	XG$draw_game_over$0$0
 	ret
-Fmain$__str_3$0_0$0 == .
-___str_3:
+Fmain$__str_4$0_0$0 == .
+___str_4:
 	.ascii "GAME  OVER"
 	.db 0x00
 	G$main$0$0	= .
 	.globl	G$main$0$0
-	C$main.c$57$1_0$60	= .
-	.globl	C$main.c$57$1_0$60
-;main.c:57: void main()
+	C$main.c$58$1_0$59	= .
+	.globl	C$main.c$58$1_0$59
+;main.c:58: void main()
 ;	---------------------------------
 ; Function main
 ; ---------------------------------
 _main::
-	C$main.c$59$1_0$60	= .
-	.globl	C$main.c$59$1_0$60
-;main.c:59: ubox_init_isr(2);
+	C$main.c$60$1_0$59	= .
+	.globl	C$main.c$60$1_0$59
+;main.c:60: ubox_init_isr(2);
 	ld	l, #0x02
 	call	_ubox_init_isr
-	C$main.c$60$1_0$60	= .
-	.globl	C$main.c$60$1_0$60
-;main.c:60: ubox_set_mode(2);
+	C$main.c$61$1_0$59	= .
+	.globl	C$main.c$61$1_0$59
+;main.c:61: ubox_set_mode(2);
 	ld	l, #0x02
 	call	_ubox_set_mode
-	C$main.c$62$1_0$60	= .
-	.globl	C$main.c$62$1_0$60
-;main.c:62: ubox_set_colors(1, 1, 1);
+	C$main.c$63$1_0$59	= .
+	.globl	C$main.c$63$1_0$59
+;main.c:63: ubox_set_colors(1, 1, 1);
 	ld	de, #0x0101
 	push	de
 	ld	a, #0x01
@@ -4358,52 +4372,52 @@ _main::
 	call	_ubox_set_colors
 	pop	af
 	inc	sp
-	C$main.c$63$1_0$60	= .
-	.globl	C$main.c$63$1_0$60
-;main.c:63: ubox_disable_screen();
+	C$main.c$64$1_0$59	= .
+	.globl	C$main.c$64$1_0$59
+;main.c:64: ubox_disable_screen();
 	call	_ubox_disable_screen
-	C$main.c$65$1_0$60	= .
-	.globl	C$main.c$65$1_0$60
-;main.c:65: ubox_set_tiles(tiles);
+	C$main.c$66$1_0$59	= .
+	.globl	C$main.c$66$1_0$59
+;main.c:66: ubox_set_tiles(tiles);
 	ld	hl, #_tiles
 	call	_ubox_set_tiles
-	C$main.c$66$1_0$60	= .
-	.globl	C$main.c$66$1_0$60
-;main.c:66: ubox_set_tiles_colors(tiles_colors);
+	C$main.c$67$1_0$59	= .
+	.globl	C$main.c$67$1_0$59
+;main.c:67: ubox_set_tiles_colors(tiles_colors);
 	ld	hl, #_tiles_colors
 	call	_ubox_set_tiles_colors
-	C$main.c$68$1_0$60	= .
-	.globl	C$main.c$68$1_0$60
-;main.c:68: ubox_fill_screen(WHITESPACE_TILE);
+	C$main.c$69$1_0$59	= .
+	.globl	C$main.c$69$1_0$59
+;main.c:69: ubox_fill_screen(WHITESPACE_TILE);
 	ld	l, #0x81
 	call	_ubox_fill_screen
-	C$main.c$69$1_0$60	= .
-	.globl	C$main.c$69$1_0$60
-;main.c:69: ubox_enable_screen();
+	C$main.c$70$1_0$59	= .
+	.globl	C$main.c$70$1_0$59
+;main.c:70: ubox_enable_screen();
 	call	_ubox_enable_screen
-	C$main.c$71$1_0$60	= .
-	.globl	C$main.c$71$1_0$60
-;main.c:71: ubox_set_user_isr(my_isr);
+	C$main.c$72$1_0$59	= .
+	.globl	C$main.c$72$1_0$59
+;main.c:72: ubox_set_user_isr(my_isr);
 	ld	hl, #_my_isr
 	call	_ubox_set_user_isr
-	C$main.c$72$1_0$60	= .
-	.globl	C$main.c$72$1_0$60
-;main.c:72: ubox_wvdp(1, 0xe2);
+	C$main.c$73$1_0$59	= .
+	.globl	C$main.c$73$1_0$59
+;main.c:73: ubox_wvdp(1, 0xe2);
 	ld	de, #0xe201
 	push	de
 	call	_ubox_wvdp
 	pop	af
-	C$main.c$74$1_0$60	= .
-	.globl	C$main.c$74$1_0$60
-;main.c:74: draw_title();
+	C$main.c$75$1_0$59	= .
+	.globl	C$main.c$75$1_0$59
+;main.c:75: draw_title();
 	call	_draw_title
-	C$main.c$76$1_0$60	= .
-	.globl	C$main.c$76$1_0$60
-;main.c:76: while (1)
+	C$main.c$77$1_0$59	= .
+	.globl	C$main.c$77$1_0$59
+;main.c:77: while (1)
 00106$:
-	C$main.c$78$2_0$61	= .
-	.globl	C$main.c$78$2_0$61
-;main.c:78: switch (g_gamestate)
+	C$main.c$79$2_0$60	= .
+	.globl	C$main.c$79$2_0$60
+;main.c:79: switch (g_gamestate)
 	ld	iy, #_g_gamestate
 	ld	a, 0 (iy)
 	or	a, a
@@ -4414,47 +4428,47 @@ _main::
 	ld	a, 0 (iy)
 	sub	a, #0x02
 	jr	NZ,00104$
-	C$main.c$81$3_0$62	= .
-	.globl	C$main.c$81$3_0$62
-;main.c:81: draw_game_over();
+	C$main.c$82$3_0$61	= .
+	.globl	C$main.c$82$3_0$61
+;main.c:82: draw_game_over();
 	call	_draw_game_over
-	C$main.c$82$3_0$62	= .
-	.globl	C$main.c$82$3_0$62
-;main.c:82: break;
+	C$main.c$83$3_0$61	= .
+	.globl	C$main.c$83$3_0$61
+;main.c:83: break;
 	jr	00104$
-	C$main.c$83$3_0$62	= .
-	.globl	C$main.c$83$3_0$62
-;main.c:83: case STATE_IN_GAME:
+	C$main.c$84$3_0$61	= .
+	.globl	C$main.c$84$3_0$61
+;main.c:84: case STATE_IN_GAME:
 00102$:
-	C$main.c$84$3_0$62	= .
-	.globl	C$main.c$84$3_0$62
-;main.c:84: run_game();
+	C$main.c$85$3_0$61	= .
+	.globl	C$main.c$85$3_0$61
+;main.c:85: run_game();
 	call	_run_game
-	C$main.c$85$3_0$62	= .
-	.globl	C$main.c$85$3_0$62
-;main.c:85: break;
+	C$main.c$86$3_0$61	= .
+	.globl	C$main.c$86$3_0$61
+;main.c:86: break;
 	jr	00104$
-	C$main.c$86$3_0$62	= .
-	.globl	C$main.c$86$3_0$62
-;main.c:86: case STATE_TITLE:
+	C$main.c$87$3_0$61	= .
+	.globl	C$main.c$87$3_0$61
+;main.c:87: case STATE_TITLE:
 00103$:
-	C$main.c$87$3_0$62	= .
-	.globl	C$main.c$87$3_0$62
-;main.c:87: draw_title();
+	C$main.c$88$3_0$61	= .
+	.globl	C$main.c$88$3_0$61
+;main.c:88: draw_title();
 	call	_draw_title
-	C$main.c$89$2_0$61	= .
-	.globl	C$main.c$89$2_0$61
-;main.c:89: }
+	C$main.c$90$2_0$60	= .
+	.globl	C$main.c$90$2_0$60
+;main.c:90: }
 00104$:
-	C$main.c$91$2_0$61	= .
-	.globl	C$main.c$91$2_0$61
-;main.c:91: ubox_wait();
+	C$main.c$92$2_0$60	= .
+	.globl	C$main.c$92$2_0$60
+;main.c:92: ubox_wait();
 	call	_ubox_wait
-	C$main.c$93$1_0$60	= .
-	.globl	C$main.c$93$1_0$60
-;main.c:93: }
-	C$main.c$93$1_0$60	= .
-	.globl	C$main.c$93$1_0$60
+	C$main.c$94$1_0$59	= .
+	.globl	C$main.c$94$1_0$59
+;main.c:94: }
+	C$main.c$94$1_0$59	= .
+	.globl	C$main.c$94$1_0$59
 	XG$main$0$0	= .
 	.globl	XG$main$0$0
 	jr	00106$

@@ -7,6 +7,7 @@ T:Fmain$tm[({0}S:S$tm_sec$0_0$0({1}SC:U),Z,0,0)({1}S:S$tm_min$0_0$0({1}SC:U),Z,0
 S:G$g_gamestate$0_0$0({1}SC:U),E,0,0
 S:G$ubox_tick$0_0$0({1}SC:U),E,0,0
 S:G$ctl$0_0$0({1}SC:U),E,0,0
+S:G$g_score$0_0$0({2}SI:S),E,0,0
 S:G$ubox_set_mode$0_0$0({2}DF,SV:S),C,0,0
 S:G$ubox_enable_screen$0_0$0({2}DF,SV:S),C,0,0
 S:G$ubox_disable_screen$0_0$0({2}DF,SV:S),C,0,0
@@ -27,9 +28,9 @@ S:G$ubox_wait_for$0_0$0({2}DF,SV:S),C,0,0
 S:G$ubox_reset_tick$0_0$0({2}DF,SV:S),C,0,0
 S:G$ubox_set_sprite_pat8$0_0$0({2}DF,SV:S),C,0,0
 S:G$ubox_set_sprite_pat8_flip$0_0$0({2}DF,SV:S),C,0,0
+S:G$ubox_set_sprite_attr$0_0$0({2}DF,SV:S),C,0,0
 S:G$ubox_set_sprite_pat16$0_0$0({2}DF,SV:S),C,0,0
 S:G$ubox_set_sprite_pat16_flip$0_0$0({2}DF,SV:S),C,0,0
-S:G$ubox_set_sprite_attr$0_0$0({2}DF,SV:S),C,0,0
 S:G$ubox_select_ctl$0_0$0({2}DF,SC:U),C,0,0
 S:G$ubox_read_ctl$0_0$0({2}DF,SC:U),C,0,0
 S:G$ubox_read_keys$0_0$0({2}DF,SC:U),C,0,0

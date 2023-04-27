@@ -10,6 +10,7 @@ uint8_t ctl;
 
 uint8_t g_gamestate = STATE_TITLE;
 
+extern int g_score;
 
 void draw_title()
 {    
@@ -21,6 +22,7 @@ void draw_title()
     put_text(8, 11, "PRESS SPACE BAR");
 
     put_text(8, 18, "\0372021 YUZA SOFT");
+    put_text(8, 19, "\0372023 HONUX");
 
     ubox_enable_screen();
 
@@ -42,7 +44,6 @@ void draw_game_over()
     ubox_disable_screen();
 
     put_text(11, 10, "GAME  OVER");
-
     ubox_enable_screen();
 
     ubox_wait_for(128);
