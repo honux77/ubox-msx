@@ -115,7 +115,7 @@ _draw_title::
 	pop	af
 	C$main.c$25$1_0$56	= .
 	.globl	C$main.c$25$1_0$56
-;main.c:25: put_text(8, 19, "\0372021 HONUX");
+;main.c:25: put_text(8, 19, "\0372023 HONUX");
 	ld	hl, #___str_3
 	ex	(sp),hl
 	ld	de, #0x1308
@@ -4278,7 +4278,7 @@ ___str_2:
 Fmain$__str_3$0_0$0 == .
 ___str_3:
 	.db 0x1f
-	.ascii "2021 HONUX"
+	.ascii "2023 HONUX"
 	.db 0x00
 	G$draw_game_over$0$0	= .
 	.globl	G$draw_game_over$0$0
@@ -4309,8 +4309,8 @@ _draw_game_over::
 	call	_ubox_enable_screen
 	C$main.c$49$1_0$58	= .
 	.globl	C$main.c$49$1_0$58
-;main.c:49: ubox_wait_for(128);
-	ld	l, #0x80
+;main.c:49: ubox_wait_for(250);    
+	ld	l, #0xfa
 	call	_ubox_wait_for
 	C$main.c$51$1_0$58	= .
 	.globl	C$main.c$51$1_0$58
