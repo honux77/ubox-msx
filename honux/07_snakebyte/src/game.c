@@ -216,6 +216,21 @@ void ProcessLogic(SnakeNode *player)
 		break;
 	}
 
+	switch(ubox_read_ctl(UBOX_MSX_CTL_PORT1)) {
+	case UBOX_MSX_CTL_LEFT:
+		player->dir = LEFT;
+		break;
+	case UBOX_MSX_CTL_DOWN:
+		player->dir = DOWN;
+		break;
+	case UBOX_MSX_CTL_RIGHT:
+		player->dir = RIGHT;
+		break;	
+	case UBOX_MSX_CTL_UP:
+		player->dir = UP;
+		break;
+	}
+
 	switch(player->dir)
 	{
 	case LEFT:

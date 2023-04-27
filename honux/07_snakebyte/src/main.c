@@ -17,7 +17,7 @@ void draw_title()
     ubox_fill_screen(WHITESPACE_TILE);
 
     put_text(11, 9, "SNAKEBYTE");
-    put_text(8, 11, "PRESS SPACE BAR");
+    put_text(4, 11, "PRESS SPACE BAR OR TRIGGER");
 
     put_text(8, 18, "\0372021 YUZA SOFT");
     put_text(8, 19, "\0372023 HONUX");

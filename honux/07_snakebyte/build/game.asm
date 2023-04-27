@@ -17,6 +17,7 @@
 	.globl _srand
 	.globl _rand
 	.globl _ubox_read_keys
+	.globl _ubox_read_ctl
 	.globl _ubox_wait
 	.globl _ubox_fill_screen
 	.globl _ubox_disable_screen
@@ -1023,7 +1024,7 @@ _ProcessLogic::
 	.globl	C$game.c$200$2_0$112
 ;game.c:200: char x_offset = 0;
 	dec	a
-	jp	NZ,00131$
+	jp	NZ,00136$
 	ld	c,a
 	C$game.c$201$2_0$112	= .
 	.globl	C$game.c$201$2_0$112
@@ -1126,88 +1127,168 @@ _ProcessLogic::
 00107$:
 	C$game.c$219$1_1$112	= .
 	.globl	C$game.c$219$1_1$112
-;game.c:219: switch(player->dir)
-	ld	l, e
-	ld	h, d
-	ld	a, (hl)
-	ld	iy, #15
-	add	iy, sp
-	ld	0 (iy), a
-	inc	hl
-	ld	a, (hl)
-	ld	1 (iy), a
-	ld	a, 0 (iy)
-	or	a, a
-	or	a, 1 (iy)
-	jr	Z,00108$
-	ld	a, 0 (iy)
-	dec	a
-	or	a, 1 (iy)
-	jr	Z,00109$
-	ld	a, 0 (iy)
-	sub	a, #0x02
-	or	a, 1 (iy)
-	jr	Z,00110$
-	ld	a, 0 (iy)
-	sub	a, #0x03
-	or	a, 1 (iy)
+;game.c:219: switch(ubox_read_ctl(UBOX_MSX_CTL_PORT1)) {
+	push	bc
+	push	de
+	ld	l, #0x01
+	call	_ubox_read_ctl
+	ld	a, l
+	pop	de
+	pop	bc
+	cp	a, #0x01
 	jr	Z,00111$
+	cp	a, #0x02
+	jr	Z,00109$
+	cp	a, #0x04
+	jr	Z,00108$
+	sub	a, #0x08
+	jr	Z,00110$
 	jr	00112$
+	C$game.c$220$2_1$114	= .
+	.globl	C$game.c$220$2_1$114
+;game.c:220: case UBOX_MSX_CTL_LEFT:
+00108$:
 	C$game.c$221$2_1$114	= .
 	.globl	C$game.c$221$2_1$114
-;game.c:221: case LEFT:
-00108$:
+;game.c:221: player->dir = LEFT;
+	ld	l, e
+	ld	h, d
+	xor	a, a
+	ld	(hl), a
+	inc	hl
+	ld	(hl), a
 	C$game.c$222$2_1$114	= .
 	.globl	C$game.c$222$2_1$114
-;game.c:222: x_offset = -1;
-	ld	c, #0xff
+;game.c:222: break;
+	jr	00112$
 	C$game.c$223$2_1$114	= .
 	.globl	C$game.c$223$2_1$114
-;game.c:223: break;
-	jr	00112$
+;game.c:223: case UBOX_MSX_CTL_DOWN:
+00109$:
 	C$game.c$224$2_1$114	= .
 	.globl	C$game.c$224$2_1$114
-;game.c:224: case RIGHT:			
-00109$:
+;game.c:224: player->dir = DOWN;
+	ld	l, e
+	ld	h, d
+	ld	(hl), #0x03
+	inc	hl
+	ld	(hl), #0x00
 	C$game.c$225$2_1$114	= .
 	.globl	C$game.c$225$2_1$114
-;game.c:225: x_offset = 1;
-	ld	c, #0x01
+;game.c:225: break;
+	jr	00112$
 	C$game.c$226$2_1$114	= .
 	.globl	C$game.c$226$2_1$114
-;game.c:226: break;
-	jr	00112$
+;game.c:226: case UBOX_MSX_CTL_RIGHT:
+00110$:
 	C$game.c$227$2_1$114	= .
 	.globl	C$game.c$227$2_1$114
-;game.c:227: case UP:			
-00110$:
+;game.c:227: player->dir = RIGHT;
+	ld	l, e
+	ld	h, d
+	ld	(hl), #0x01
+	inc	hl
+	ld	(hl), #0x00
 	C$game.c$228$2_1$114	= .
 	.globl	C$game.c$228$2_1$114
-;game.c:228: y_offset = -1;
+;game.c:228: break;	
+	jr	00112$
+	C$game.c$229$2_1$114	= .
+	.globl	C$game.c$229$2_1$114
+;game.c:229: case UBOX_MSX_CTL_UP:
+00111$:
+	C$game.c$230$2_1$114	= .
+	.globl	C$game.c$230$2_1$114
+;game.c:230: player->dir = UP;
+	ld	l, e
+	ld	h, d
+	ld	(hl), #0x02
+	inc	hl
+	ld	(hl), #0x00
+	C$game.c$232$1_1$112	= .
+	.globl	C$game.c$232$1_1$112
+;game.c:232: }
+00112$:
+	C$game.c$234$1_1$112	= .
+	.globl	C$game.c$234$1_1$112
+;game.c:234: switch(player->dir)
+	ld	l, e
+	ld	h, d
+	ld	b, (hl)
+	inc	hl
+	ld	l, (hl)
+	ld	a, b
+	or	a, a
+	or	a, l
+	jr	Z,00113$
+	ld	a, b
+	dec	a
+	or	a, l
+	jr	Z,00114$
+	ld	a, b
+	sub	a, #0x02
+	or	a, l
+	jr	Z,00115$
+	ld	a, b
+	sub	a, #0x03
+	or	a, l
+	jr	Z,00116$
+	jr	00117$
+	C$game.c$236$2_1$115	= .
+	.globl	C$game.c$236$2_1$115
+;game.c:236: case LEFT:
+00113$:
+	C$game.c$237$2_1$115	= .
+	.globl	C$game.c$237$2_1$115
+;game.c:237: x_offset = -1;
+	ld	c, #0xff
+	C$game.c$238$2_1$115	= .
+	.globl	C$game.c$238$2_1$115
+;game.c:238: break;
+	jr	00117$
+	C$game.c$239$2_1$115	= .
+	.globl	C$game.c$239$2_1$115
+;game.c:239: case RIGHT:			
+00114$:
+	C$game.c$240$2_1$115	= .
+	.globl	C$game.c$240$2_1$115
+;game.c:240: x_offset = 1;
+	ld	c, #0x01
+	C$game.c$241$2_1$115	= .
+	.globl	C$game.c$241$2_1$115
+;game.c:241: break;
+	jr	00117$
+	C$game.c$242$2_1$115	= .
+	.globl	C$game.c$242$2_1$115
+;game.c:242: case UP:			
+00115$:
+	C$game.c$243$2_1$115	= .
+	.globl	C$game.c$243$2_1$115
+;game.c:243: y_offset = -1;
 	ld	iy, #17
 	add	iy, sp
 	ld	0 (iy), #0xff
-	C$game.c$229$2_1$114	= .
-	.globl	C$game.c$229$2_1$114
-;game.c:229: break;
-	jr	00112$
-	C$game.c$230$2_1$114	= .
-	.globl	C$game.c$230$2_1$114
-;game.c:230: case DOWN:			
-00111$:
-	C$game.c$231$2_1$114	= .
-	.globl	C$game.c$231$2_1$114
-;game.c:231: y_offset = 1;
+	C$game.c$244$2_1$115	= .
+	.globl	C$game.c$244$2_1$115
+;game.c:244: break;
+	jr	00117$
+	C$game.c$245$2_1$115	= .
+	.globl	C$game.c$245$2_1$115
+;game.c:245: case DOWN:			
+00116$:
+	C$game.c$246$2_1$115	= .
+	.globl	C$game.c$246$2_1$115
+;game.c:246: y_offset = 1;
 	ld	iy, #17
 	add	iy, sp
 	ld	0 (iy), #0x01
-	C$game.c$233$1_1$112	= .
-	.globl	C$game.c$233$1_1$112
-;game.c:233: }
-00112$:
-	C$game.c$235$1_1$112	= .
-	.globl	C$game.c$235$1_1$112
-;game.c:235: if (now() > g_next_step)
+	C$game.c$248$1_1$112	= .
+	.globl	C$game.c$248$1_1$112
+;game.c:248: }
+00117$:
+	C$game.c$250$1_1$112	= .
+	.globl	C$game.c$250$1_1$112
+;game.c:250: if (now() > g_next_step)
 	push	bc
 	push	de
 	call	_now
@@ -1234,13 +1315,13 @@ _ProcessLogic::
 	inc	hl
 	ld	a, (hl)
 	sbc	a, 3 (iy)
-	jp	PO, 00237$
+	jp	PO, 00266$
 	xor	a, #0x80
-00237$:
-	jp	P, 00131$
-	C$game.c$238$2_1$115	= .
-	.globl	C$game.c$238$2_1$115
-;game.c:238: if(CheckWall(player))
+00266$:
+	jp	P, 00136$
+	C$game.c$253$2_1$116	= .
+	.globl	C$game.c$253$2_1$116
+;game.c:253: if(CheckWall(player))
 	push	bc
 	push	de
 	push	de
@@ -1250,20 +1331,20 @@ _ProcessLogic::
 	pop	de
 	pop	bc
 	or	a, a
-	jr	Z,00114$
-	C$game.c$240$3_1$116	= .
-	.globl	C$game.c$240$3_1$116
-;game.c:240: g_gamestate = STATE_GAME_OVER;
+	jr	Z,00119$
+	C$game.c$255$3_1$117	= .
+	.globl	C$game.c$255$3_1$117
+;game.c:255: g_gamestate = STATE_GAME_OVER;
 	ld	hl,#_g_gamestate + 0
 	ld	(hl), #0x02
-	C$game.c$241$3_1$116	= .
-	.globl	C$game.c$241$3_1$116
-;game.c:241: return;
-	jp	00131$
-00114$:
-	C$game.c$244$2_2$117	= .
-	.globl	C$game.c$244$2_2$117
-;game.c:244: char pos_x = player->x;
+	C$game.c$256$3_1$117	= .
+	.globl	C$game.c$256$3_1$117
+;game.c:256: return;
+	jp	00136$
+00119$:
+	C$game.c$259$2_2$118	= .
+	.globl	C$game.c$259$2_2$118
+;game.c:259: char pos_x = player->x;
 	inc	sp
 	inc	sp
 	push	de
@@ -1275,9 +1356,9 @@ _ProcessLogic::
 	ld	iy, #2
 	add	iy, sp
 	ld	0 (iy), b
-	C$game.c$245$2_2$117	= .
-	.globl	C$game.c$245$2_2$117
-;game.c:245: char pos_y = player->y;
+	C$game.c$260$2_2$118	= .
+	.globl	C$game.c$260$2_2$118
+;game.c:260: char pos_y = player->y;
 	ld	l, e
 	ld	h, d
 	inc	hl
@@ -1286,24 +1367,24 @@ _ProcessLogic::
 	ld	l, (hl)
 	inc	iy
 	ld	0 (iy), l
-	C$game.c$246$2_2$117	= .
-	.globl	C$game.c$246$2_2$117
-;game.c:246: char next_pos_x = player->x + x_offset;
+	C$game.c$261$2_2$118	= .
+	.globl	C$game.c$261$2_2$118
+;game.c:261: char next_pos_x = player->x + x_offset;
 	ld	a, b
 	add	a, c
 	ld	iy, #18
 	add	iy, sp
 	ld	0 (iy), a
-	C$game.c$247$2_2$117	= .
-	.globl	C$game.c$247$2_2$117
-;game.c:247: char next_pos_y = player->y + y_offset;
+	C$game.c$262$2_2$118	= .
+	.globl	C$game.c$262$2_2$118
+;game.c:262: char next_pos_y = player->y + y_offset;
 	ld	a, l
 	dec	iy
 	add	a, 0 (iy)
 	ld	0 (iy), a
-	C$game.c$249$2_2$117	= .
-	.globl	C$game.c$249$2_2$117
-;game.c:249: char objectType = g_objMap[next_pos_y][next_pos_x];
+	C$game.c$264$2_2$118	= .
+	.globl	C$game.c$264$2_2$118
+;game.c:264: char objectType = g_objMap[next_pos_y][next_pos_x];
 	ld	c, 0 (iy)
 	ld	a, c
 	rlc	a
@@ -1343,16 +1424,16 @@ _ProcessLogic::
 	inc	iy
 	inc	iy
 	ld	0 (iy), a
-	C$game.c$250$2_2$117	= .
-	.globl	C$game.c$250$2_2$117
-;game.c:250: SnakeNode *tail = player; // 뱀의 마지막 부분을 찾는다
+	C$game.c$265$2_2$118	= .
+	.globl	C$game.c$265$2_2$118
+;game.c:265: SnakeNode *tail = player; // 뱀의 마지막 부분을 찾는다
 	inc	iy
 	ld	0 (iy), e
 	ld	1 (iy), d
-	C$game.c$251$2_2$117	= .
-	.globl	C$game.c$251$2_2$117
-;game.c:251: while (tail->next != NULL)
-00115$:
+	C$game.c$266$2_2$118	= .
+	.globl	C$game.c$266$2_2$118
+;game.c:266: while (tail->next != NULL)
+00120$:
 	ld	hl, #9
 	add	hl, sp
 	ld	iy, #7
@@ -1377,10 +1458,10 @@ _ProcessLogic::
 	ld	1 (iy), a
 	ld	a, 1 (iy)
 	or	a, 0 (iy)
-	jr	Z,00117$
-	C$game.c$253$3_2$118	= .
-	.globl	C$game.c$253$3_2$118
-;game.c:253: tail = tail->next;
+	jr	Z,00122$
+	C$game.c$268$3_2$119	= .
+	.globl	C$game.c$268$3_2$119
+;game.c:268: tail = tail->next;
 	ld	a, 0 (iy)
 	ld	iy, #7
 	add	iy, sp
@@ -1391,11 +1472,11 @@ _ProcessLogic::
 	ld	iy, #7
 	add	iy, sp
 	ld	1 (iy), a
-	jr	00115$
-00117$:
-	C$game.c$256$2_3$119	= .
-	.globl	C$game.c$256$2_3$119
-;game.c:256: int tail_x = tail->x;
+	jr	00120$
+00122$:
+	C$game.c$271$2_3$120	= .
+	.globl	C$game.c$271$2_3$120
+;game.c:271: int tail_x = tail->x;
 	ld	hl, #7
 	add	hl, sp
 	ld	a, (hl)
@@ -1411,9 +1492,9 @@ _ProcessLogic::
 	rla
 	sbc	a, a
 	ld	1 (iy), a
-	C$game.c$257$2_3$119	= .
-	.globl	C$game.c$257$2_3$119
-;game.c:257: int tail_y = tail->y;
+	C$game.c$272$2_3$120	= .
+	.globl	C$game.c$272$2_3$120
+;game.c:272: int tail_y = tail->y;
 	ld	hl, #7
 	add	hl, sp
 	ld	a, (hl)
@@ -1430,9 +1511,9 @@ _ProcessLogic::
 	rla
 	sbc	a, a
 	ld	1 (iy), a
-	C$game.c$271$1_1$111	= .
-	.globl	C$game.c$271$1_1$111
-;game.c:271: MoveBody(player, next_pos_x, next_pos_y);
+	C$game.c$286$1_1$111	= .
+	.globl	C$game.c$286$1_1$111
+;game.c:286: MoveBody(player, next_pos_x, next_pos_y);
 	ld	iy, #17
 	add	iy, sp
 	ld	a, 0 (iy)
@@ -1451,39 +1532,39 @@ _ProcessLogic::
 	rla
 	sbc	a, a
 	ld	1 (iy), a
-	C$game.c$259$2_3$119	= .
-	.globl	C$game.c$259$2_3$119
-;game.c:259: switch (objectType)
+	C$game.c$274$2_3$120	= .
+	.globl	C$game.c$274$2_3$120
+;game.c:274: switch (objectType)
 	ld	iy, #6
 	add	iy, sp
 	ld	a, 0 (iy)
 	dec	a
-	jr	Z,00118$
+	jr	Z,00123$
 	ld	a, 0 (iy)
 	sub	a, #0x02
-	jp	Z,00124$
-	jp	00125$
-	C$game.c$261$3_3$120	= .
-	.globl	C$game.c$261$3_3$120
-;game.c:261: case FROG:					
-00118$:
-	C$game.c$262$3_3$120	= .
-	.globl	C$game.c$262$3_3$120
-;game.c:262: g_score++;
+	jp	Z,00129$
+	jp	00130$
+	C$game.c$276$3_3$121	= .
+	.globl	C$game.c$276$3_3$121
+;game.c:276: case FROG:					
+00123$:
+	C$game.c$277$3_3$121	= .
+	.globl	C$game.c$277$3_3$121
+;game.c:277: g_score++;
 	ld	hl, (_g_score)
 	inc	hl
 	ld	(_g_score), hl
-	C$game.c$263$3_3$120	= .
-	.globl	C$game.c$263$3_3$120
-;game.c:263: if (g_score > 0 && g_score % 3 == 0) {
+	C$game.c$278$3_3$121	= .
+	.globl	C$game.c$278$3_3$121
+;game.c:278: if (g_score > 0 && g_score % 3 == 0) {
 	xor	a, a
 	ld	iy, #_g_score
 	cp	a, 0 (iy)
 	sbc	a, 1 (iy)
-	jp	PO, 00240$
+	jp	PO, 00269$
 	xor	a, #0x80
-00240$:
-	jp	P, 00122$
+00269$:
+	jp	P, 00127$
 	ld	hl, #0x0003
 	push	hl
 	ld	hl, (_g_score)
@@ -1493,16 +1574,16 @@ _ProcessLogic::
 	pop	af
 	ld	a, h
 	or	a, l
-	jr	NZ,00122$
-	C$game.c$264$4_3$121	= .
-	.globl	C$game.c$264$4_3$121
-;game.c:264: step_time -= 1;
+	jr	NZ,00127$
+	C$game.c$279$4_3$122	= .
+	.globl	C$game.c$279$4_3$122
+;game.c:279: step_time -= 1;
 	ld	hl, (_step_time)
 	dec	hl
 	ld	(_step_time), hl
-	C$game.c$265$4_3$121	= .
-	.globl	C$game.c$265$4_3$121
-;game.c:265: if (step_time < 1)
+	C$game.c$280$4_3$122	= .
+	.globl	C$game.c$280$4_3$122
+;game.c:280: if (step_time < 1)
 	ld	iy, #_step_time
 	ld	a, 0 (iy)
 	sub	a, #0x01
@@ -1511,24 +1592,24 @@ _ProcessLogic::
 	ccf
 	rra
 	sbc	a, #0x80
-	jr	NC,00122$
-	C$game.c$266$4_3$121	= .
-	.globl	C$game.c$266$4_3$121
-;game.c:266: step_time = 1;
+	jr	NC,00127$
+	C$game.c$281$4_3$122	= .
+	.globl	C$game.c$281$4_3$122
+;game.c:281: step_time = 1;
 	ld	hl, #0x0001
 	ld	(_step_time), hl
-00122$:
-	C$game.c$269$3_3$120	= .
-	.globl	C$game.c$269$3_3$120
-;game.c:269: DrawScore();				
+00127$:
+	C$game.c$284$3_3$121	= .
+	.globl	C$game.c$284$3_3$121
+;game.c:284: DrawScore();				
 	call	_DrawScore
-	C$game.c$270$3_3$120	= .
-	.globl	C$game.c$270$3_3$120
-;game.c:270: DrawHighScore();	
+	C$game.c$285$3_3$121	= .
+	.globl	C$game.c$285$3_3$121
+;game.c:285: DrawHighScore();	
 	call	_DrawHighScore
-	C$game.c$271$3_3$120	= .
-	.globl	C$game.c$271$3_3$120
-;game.c:271: MoveBody(player, next_pos_x, next_pos_y);
+	C$game.c$286$3_3$121	= .
+	.globl	C$game.c$286$3_3$121
+;game.c:286: MoveBody(player, next_pos_x, next_pos_y);
 	ld	iy, #15
 	add	iy, sp
 	ld	l, 0 (iy)
@@ -1549,18 +1630,18 @@ _ProcessLogic::
 	ld	hl, #6
 	add	hl, sp
 	ld	sp, hl
-	C$game.c$273$3_4$122	= .
-	.globl	C$game.c$273$3_4$122
-;game.c:273: SnakeNode *newNode = malloc(sizeof(SnakeNode));
+	C$game.c$288$3_4$123	= .
+	.globl	C$game.c$288$3_4$123
+;game.c:288: SnakeNode *newNode = malloc(sizeof(SnakeNode));
 	ld	hl, #0x0006
 	push	hl
 	call	_malloc
 	pop	af
 	ld	c, l
 	ld	b, h
-	C$game.c$274$3_4$122	= .
-	.globl	C$game.c$274$3_4$122
-;game.c:274: newNode->x = tail_x;
+	C$game.c$289$3_4$123	= .
+	.globl	C$game.c$289$3_4$123
+;game.c:289: newNode->x = tail_x;
 	ld	e, c
 	ld	d, b
 	inc	de
@@ -1569,9 +1650,9 @@ _ProcessLogic::
 	add	iy, sp
 	ld	a, 0 (iy)
 	ld	(de), a
-	C$game.c$275$3_4$122	= .
-	.globl	C$game.c$275$3_4$122
-;game.c:275: newNode->y = tail_y;
+	C$game.c$290$3_4$123	= .
+	.globl	C$game.c$290$3_4$123
+;game.c:290: newNode->y = tail_y;
 	ld	e, c
 	ld	d, b
 	inc	de
@@ -1581,9 +1662,9 @@ _ProcessLogic::
 	inc	iy
 	ld	a, 0 (iy)
 	ld	(de), a
-	C$game.c$277$3_4$122	= .
-	.globl	C$game.c$277$3_4$122
-;game.c:277: newNode->dir = tail->dir;
+	C$game.c$292$3_4$123	= .
+	.globl	C$game.c$292$3_4$123
+;game.c:292: newNode->dir = tail->dir;
 	ld	iy, #7
 	add	iy, sp
 	ld	l, 0 (iy)
@@ -1596,18 +1677,18 @@ _ProcessLogic::
 	ld	(hl), e
 	inc	hl
 	ld	(hl), d
-	C$game.c$278$3_4$122	= .
-	.globl	C$game.c$278$3_4$122
-;game.c:278: newNode->next = NULL;
+	C$game.c$293$3_4$123	= .
+	.globl	C$game.c$293$3_4$123
+;game.c:293: newNode->next = NULL;
 	ld	hl, #0x0004
 	add	hl, bc
 	xor	a, a
 	ld	(hl), a
 	inc	hl
 	ld	(hl), a
-	C$game.c$279$3_4$122	= .
-	.globl	C$game.c$279$3_4$122
-;game.c:279: tail->next = newNode;
+	C$game.c$294$3_4$123	= .
+	.globl	C$game.c$294$3_4$123
+;game.c:294: tail->next = newNode;
 	inc	iy
 	inc	iy
 	ld	l, 0 (iy)
@@ -1615,37 +1696,37 @@ _ProcessLogic::
 	ld	(hl), c
 	inc	hl
 	ld	(hl), b
-	C$game.c$281$3_4$122	= .
-	.globl	C$game.c$281$3_4$122
-;game.c:281: GenerateNewFrog(&g_frog);						
+	C$game.c$296$3_4$123	= .
+	.globl	C$game.c$296$3_4$123
+;game.c:296: GenerateNewFrog(&g_frog);						
 	ld	hl, #_g_frog
 	push	hl
 	call	_GenerateNewFrog
 	pop	af
-	C$game.c$283$3_4$122	= .
-	.globl	C$game.c$283$3_4$122
-;game.c:283: break;
-	jr	00126$
-	C$game.c$284$3_4$122	= .
-	.globl	C$game.c$284$3_4$122
-;game.c:284: case SNAKE:
-00124$:
-	C$game.c$285$3_4$122	= .
-	.globl	C$game.c$285$3_4$122
-;game.c:285: g_gamestate = STATE_GAME_OVER;
+	C$game.c$298$3_4$123	= .
+	.globl	C$game.c$298$3_4$123
+;game.c:298: break;
+	jr	00131$
+	C$game.c$299$3_4$123	= .
+	.globl	C$game.c$299$3_4$123
+;game.c:299: case SNAKE:
+00129$:
+	C$game.c$300$3_4$123	= .
+	.globl	C$game.c$300$3_4$123
+;game.c:300: g_gamestate = STATE_GAME_OVER;
 	ld	hl,#_g_gamestate + 0
 	ld	(hl), #0x02
-	C$game.c$286$3_4$122	= .
-	.globl	C$game.c$286$3_4$122
-;game.c:286: break;
-	jr	00126$
-	C$game.c$287$3_4$122	= .
-	.globl	C$game.c$287$3_4$122
-;game.c:287: default:
-00125$:
-	C$game.c$288$3_4$122	= .
-	.globl	C$game.c$288$3_4$122
-;game.c:288: MoveBody(player, next_pos_x, next_pos_y);
+	C$game.c$301$3_4$123	= .
+	.globl	C$game.c$301$3_4$123
+;game.c:301: break;
+	jr	00131$
+	C$game.c$302$3_4$123	= .
+	.globl	C$game.c$302$3_4$123
+;game.c:302: default:
+00130$:
+	C$game.c$303$3_4$123	= .
+	.globl	C$game.c$303$3_4$123
+;game.c:303: MoveBody(player, next_pos_x, next_pos_y);
 	ld	iy, #15
 	add	iy, sp
 	ld	l, 0 (iy)
@@ -1666,9 +1747,9 @@ _ProcessLogic::
 	ld	hl, #6
 	add	hl, sp
 	ld	sp, hl
-	C$game.c$289$3_4$122	= .
-	.globl	C$game.c$289$3_4$122
-;game.c:289: RenderTile(tail_x + 1, tail_y + 1, BLACK_TILE); 
+	C$game.c$304$3_4$123	= .
+	.globl	C$game.c$304$3_4$123
+;game.c:304: RenderTile(tail_x + 1, tail_y + 1, BLACK_TILE); 
 	ld	iy, #13
 	add	iy, sp
 	ld	c, 0 (iy)
@@ -1687,13 +1768,13 @@ _ProcessLogic::
 	ld	hl, #6
 	add	hl, sp
 	ld	sp, hl
-	C$game.c$291$2_3$119	= .
-	.globl	C$game.c$291$2_3$119
-;game.c:291: }
-00126$:
-	C$game.c$293$2_3$119	= .
-	.globl	C$game.c$293$2_3$119
-;game.c:293: g_objMap[next_pos_y][next_pos_x] = SNAKE;
+	C$game.c$306$2_3$120	= .
+	.globl	C$game.c$306$2_3$120
+;game.c:306: }
+00131$:
+	C$game.c$308$2_3$120	= .
+	.globl	C$game.c$308$2_3$120
+;game.c:308: g_objMap[next_pos_y][next_pos_x] = SNAKE;
 	ld	hl, #4
 	add	hl, sp
 	ld	a, (hl)
@@ -1701,9 +1782,9 @@ _ProcessLogic::
 	ld	h, (hl)
 	ld	l, a
 	ld	(hl), #0x02
-	C$game.c$294$2_3$119	= .
-	.globl	C$game.c$294$2_3$119
-;game.c:294: g_next_step = now() + step_time;
+	C$game.c$309$2_3$120	= .
+	.globl	C$game.c$309$2_3$120
+;game.c:309: g_next_step = now() + step_time;
 	call	_now
 	ld	de, (_step_time)
 	add	hl, de
@@ -1715,9 +1796,9 @@ _ProcessLogic::
 	sbc	a, a
 	ld	(_g_next_step+2), a
 	ld	(_g_next_step+3), a
-	C$game.c$296$2_3$119	= .
-	.globl	C$game.c$296$2_3$119
-;game.c:296: RenderTile(g_frog.x + 1, g_frog.y + 1, GREEN_TILE);
+	C$game.c$311$2_3$120	= .
+	.globl	C$game.c$311$2_3$120
+;game.c:311: RenderTile(g_frog.x + 1, g_frog.y + 1, GREEN_TILE);
 	ld	a, (#_g_frog + 1)
 	ld	c, a
 	ld	b, #0x00
@@ -1734,20 +1815,20 @@ _ProcessLogic::
 	ld	hl, #6
 	add	hl, sp
 	ld	sp, hl
-	C$game.c$298$2_3$119	= .
-	.globl	C$game.c$298$2_3$119
-;game.c:298: if(g_score > 0)
+	C$game.c$313$2_3$120	= .
+	.globl	C$game.c$313$2_3$120
+;game.c:313: if(g_score > 0)
 	xor	a, a
 	ld	iy, #_g_score
 	cp	a, 0 (iy)
 	sbc	a, 1 (iy)
-	jp	PO, 00241$
+	jp	PO, 00270$
 	xor	a, #0x80
-00241$:
-	jp	P, 00128$
-	C$game.c$299$2_3$119	= .
-	.globl	C$game.c$299$2_3$119
-;game.c:299: RenderTile(pos_x + 1, pos_y + 1, YELLOW_TILE);  	
+00270$:
+	jp	P, 00133$
+	C$game.c$314$2_3$120	= .
+	.globl	C$game.c$314$2_3$120
+;game.c:314: RenderTile(pos_x + 1, pos_y + 1, YELLOW_TILE);  	
 	ld	iy, #3
 	add	iy, sp
 	ld	a, 0 (iy)
@@ -1771,10 +1852,10 @@ _ProcessLogic::
 	ld	hl, #6
 	add	hl, sp
 	ld	sp, hl
-00128$:
-	C$game.c$301$2_3$119	= .
-	.globl	C$game.c$301$2_3$119
-;game.c:301: RenderTile(next_pos_x + 1, next_pos_y + 1, WHITE_TILE); 
+00133$:
+	C$game.c$316$2_3$120	= .
+	.globl	C$game.c$316$2_3$120
+;game.c:316: RenderTile(next_pos_x + 1, next_pos_y + 1, WHITE_TILE); 
 	ld	iy, #15
 	add	iy, sp
 	ld	c, 0 (iy)
@@ -1793,30 +1874,30 @@ _ProcessLogic::
 	ld	hl, #6
 	add	hl, sp
 	ld	sp, hl
-00131$:
-	C$game.c$303$1_1$111	= .
-	.globl	C$game.c$303$1_1$111
-;game.c:303: }
+00136$:
+	C$game.c$318$1_1$111	= .
+	.globl	C$game.c$318$1_1$111
+;game.c:318: }
 	ld	hl, #19
 	add	hl, sp
 	ld	sp, hl
-	C$game.c$303$1_1$111	= .
-	.globl	C$game.c$303$1_1$111
+	C$game.c$318$1_1$111	= .
+	.globl	C$game.c$318$1_1$111
 	XG$ProcessLogic$0$0	= .
 	.globl	XG$ProcessLogic$0$0
 	ret
 	G$DrawBackground$0$0	= .
 	.globl	G$DrawBackground$0$0
-	C$game.c$305$1_1$123	= .
-	.globl	C$game.c$305$1_1$123
-;game.c:305: void DrawBackground()
+	C$game.c$320$1_1$124	= .
+	.globl	C$game.c$320$1_1$124
+;game.c:320: void DrawBackground()
 ;	---------------------------------
 ; Function DrawBackground
 ; ---------------------------------
 _DrawBackground::
-	C$game.c$307$1_0$123	= .
-	.globl	C$game.c$307$1_0$123
-;game.c:307: for (int index = 0; index < MAP_WIDTH + 1; index++)
+	C$game.c$322$1_0$124	= .
+	.globl	C$game.c$322$1_0$124
+;game.c:322: for (int index = 0; index < MAP_WIDTH + 1; index++)
 	ld	bc, #0x0000
 00106$:
 	ld	a, c
@@ -1827,9 +1908,9 @@ _DrawBackground::
 	rra
 	sbc	a, #0x80
 	jr	NC,00101$
-	C$game.c$308$2_0$124	= .
-	.globl	C$game.c$308$2_0$124
-;game.c:308: RenderTile(index, 0, 77);
+	C$game.c$323$2_0$125	= .
+	.globl	C$game.c$323$2_0$125
+;game.c:323: RenderTile(index, 0, 77);
 	push	bc
 	ld	hl, #0x004d
 	push	hl
@@ -1841,15 +1922,15 @@ _DrawBackground::
 	add	hl, sp
 	ld	sp, hl
 	pop	bc
-	C$game.c$307$2_0$124	= .
-	.globl	C$game.c$307$2_0$124
-;game.c:307: for (int index = 0; index < MAP_WIDTH + 1; index++)
+	C$game.c$322$2_0$125	= .
+	.globl	C$game.c$322$2_0$125
+;game.c:322: for (int index = 0; index < MAP_WIDTH + 1; index++)
 	inc	bc
 	jr	00106$
 00101$:
-	C$game.c$310$1_0$123	= .
-	.globl	C$game.c$310$1_0$123
-;game.c:310: for (int index = 0; index < MAP_WIDTH + 2; index++)
+	C$game.c$325$1_0$124	= .
+	.globl	C$game.c$325$1_0$124
+;game.c:325: for (int index = 0; index < MAP_WIDTH + 2; index++)
 	ld	bc, #0x0000
 00109$:
 	ld	a, c
@@ -1860,9 +1941,9 @@ _DrawBackground::
 	rra
 	sbc	a, #0x80
 	jr	NC,00102$
-	C$game.c$311$2_0$125	= .
-	.globl	C$game.c$311$2_0$125
-;game.c:311: RenderTile(index, MAP_HEIGHT + 1, 77);
+	C$game.c$326$2_0$126	= .
+	.globl	C$game.c$326$2_0$126
+;game.c:326: RenderTile(index, MAP_HEIGHT + 1, 77);
 	push	bc
 	ld	hl, #0x004d
 	push	hl
@@ -1874,15 +1955,15 @@ _DrawBackground::
 	add	hl, sp
 	ld	sp, hl
 	pop	bc
-	C$game.c$310$2_0$125	= .
-	.globl	C$game.c$310$2_0$125
-;game.c:310: for (int index = 0; index < MAP_WIDTH + 2; index++)
+	C$game.c$325$2_0$126	= .
+	.globl	C$game.c$325$2_0$126
+;game.c:325: for (int index = 0; index < MAP_WIDTH + 2; index++)
 	inc	bc
 	jr	00109$
 00102$:
-	C$game.c$313$1_0$123	= .
-	.globl	C$game.c$313$1_0$123
-;game.c:313: for (int index = 1; index < MAP_HEIGHT + 1; index++)
+	C$game.c$328$1_0$124	= .
+	.globl	C$game.c$328$1_0$124
+;game.c:328: for (int index = 1; index < MAP_HEIGHT + 1; index++)
 	ld	bc, #0x0001
 00112$:
 	ld	a, c
@@ -1893,9 +1974,9 @@ _DrawBackground::
 	rra
 	sbc	a, #0x80
 	jr	NC,00103$
-	C$game.c$314$2_0$126	= .
-	.globl	C$game.c$314$2_0$126
-;game.c:314: RenderTile(0, index, 77);
+	C$game.c$329$2_0$127	= .
+	.globl	C$game.c$329$2_0$127
+;game.c:329: RenderTile(0, index, 77);
 	push	bc
 	ld	hl, #0x004d
 	push	hl
@@ -1907,15 +1988,15 @@ _DrawBackground::
 	add	hl, sp
 	ld	sp, hl
 	pop	bc
-	C$game.c$313$2_0$126	= .
-	.globl	C$game.c$313$2_0$126
-;game.c:313: for (int index = 1; index < MAP_HEIGHT + 1; index++)
+	C$game.c$328$2_0$127	= .
+	.globl	C$game.c$328$2_0$127
+;game.c:328: for (int index = 1; index < MAP_HEIGHT + 1; index++)
 	inc	bc
 	jr	00112$
 00103$:
-	C$game.c$316$1_0$123	= .
-	.globl	C$game.c$316$1_0$123
-;game.c:316: for (int index = 0; index < MAP_HEIGHT + 1; index++)
+	C$game.c$331$1_0$124	= .
+	.globl	C$game.c$331$1_0$124
+;game.c:331: for (int index = 0; index < MAP_HEIGHT + 1; index++)
 	ld	bc, #0x0000
 00115$:
 	ld	a, c
@@ -1926,9 +2007,9 @@ _DrawBackground::
 	rra
 	sbc	a, #0x80
 	jr	NC,00104$
-	C$game.c$317$2_0$127	= .
-	.globl	C$game.c$317$2_0$127
-;game.c:317: RenderTile(MAP_WIDTH + 1, index, 77);
+	C$game.c$332$2_0$128	= .
+	.globl	C$game.c$332$2_0$128
+;game.c:332: RenderTile(MAP_WIDTH + 1, index, 77);
 	push	bc
 	ld	hl, #0x004d
 	push	hl
@@ -1940,24 +2021,24 @@ _DrawBackground::
 	add	hl, sp
 	ld	sp, hl
 	pop	bc
-	C$game.c$316$2_0$127	= .
-	.globl	C$game.c$316$2_0$127
-;game.c:316: for (int index = 0; index < MAP_HEIGHT + 1; index++)
+	C$game.c$331$2_0$128	= .
+	.globl	C$game.c$331$2_0$128
+;game.c:331: for (int index = 0; index < MAP_HEIGHT + 1; index++)
 	inc	bc
 	jr	00115$
 00104$:
-	C$game.c$318$1_0$123	= .
-	.globl	C$game.c$318$1_0$123
-;game.c:318: DrawScore();
+	C$game.c$333$1_0$124	= .
+	.globl	C$game.c$333$1_0$124
+;game.c:333: DrawScore();
 	call	_DrawScore
-	C$game.c$319$1_0$123	= .
-	.globl	C$game.c$319$1_0$123
-;game.c:319: DrawHighScore();
-	C$game.c$320$1_0$123	= .
-	.globl	C$game.c$320$1_0$123
-;game.c:320: }
-	C$game.c$320$1_0$123	= .
-	.globl	C$game.c$320$1_0$123
+	C$game.c$334$1_0$124	= .
+	.globl	C$game.c$334$1_0$124
+;game.c:334: DrawHighScore();
+	C$game.c$335$1_0$124	= .
+	.globl	C$game.c$335$1_0$124
+;game.c:335: }
+	C$game.c$335$1_0$124	= .
+	.globl	C$game.c$335$1_0$124
 	XG$DrawBackground$0$0	= .
 	.globl	XG$DrawBackground$0$0
 	jp	_DrawHighScore

@@ -97,10 +97,10 @@ _draw_title::
 	pop	af
 	C$main.c$20$1_0$56	= .
 	.globl	C$main.c$20$1_0$56
-;main.c:20: put_text(8, 11, "PRESS SPACE BAR");
+;main.c:20: put_text(4, 11, "PRESS SPACE BAR OR TRIGGER");
 	ld	hl, #___str_1
 	ex	(sp),hl
-	ld	de, #0x0b08
+	ld	de, #0x0b04
 	push	de
 	call	_put_text
 	pop	af
@@ -4268,7 +4268,7 @@ ___str_0:
 	.db 0x00
 Fmain$__str_1$0_0$0 == .
 ___str_1:
-	.ascii "PRESS SPACE BAR"
+	.ascii "PRESS SPACE BAR OR TRIGGER"
 	.db 0x00
 Fmain$__str_2$0_0$0 == .
 ___str_2:
